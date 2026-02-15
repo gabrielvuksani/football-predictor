@@ -374,13 +374,19 @@ def score_finished_predictions(verbose: bool = True) -> dict:
       - logloss  (-log of the probability assigned to the actual outcome)
       - brier    (mean squared error across the probability vector)
       - correct  (True if highest probability matched the outcome)
+      - goals_mae (MAE of predicted vs actual goals)
+      - btts_correct (was BTTS prediction correct?)
+      - ou25_correct (was Over 2.5 prediction correct?)
+      - score_correct (was exact score correct?)
     """
     import math
+    import json as _json
 
     con = connect()
     rows = con.execute("""
         SELECT m.match_id, m.home_goals, m.away_goals,
-               p.model_version, p.p_home, p.p_draw, p.p_away
+               p.model_version, p.p_home, p.p_draw, p.p_away,
+               p.eg_home, p.eg_away, p.notes
         FROM matches m
         JOIN predictions p ON m.match_id = p.match_id
         WHERE m.status = 'FINISHED'
@@ -401,8 +407,14 @@ def score_finished_predictions(verbose: bool = True) -> dict:
     scored = 0
     total_ll = 0.0
     total_correct = 0
+    total_btts_correct = 0
+    total_ou25_correct = 0
+    total_score_correct = 0
+    n_btts = 0
+    n_ou25 = 0
+    n_score = 0
 
-    for match_id, hg, ag, model_version, ph, pd_, pa in rows:
+    for match_id, hg, ag, model_version, ph, pd_, pa, eg_h, eg_a, notes in rows:
         outcome = 0 if hg > ag else (1 if hg == ag else 2)
         probs = [float(ph), float(pd_), float(pa)]
         outcome_prob = probs[outcome]
@@ -413,14 +425,75 @@ def score_finished_predictions(verbose: bool = True) -> dict:
                      for i, p in enumerate(probs)) / 3.0
         correct = predicted == outcome
 
+        # Goal prediction accuracy
+        goals_mae = None
+        eg_home_v = float(eg_h) if eg_h is not None else None
+        eg_away_v = float(eg_a) if eg_a is not None else None
+        if eg_home_v is not None and eg_away_v is not None:
+            goals_mae = (abs(eg_home_v - hg) + abs(eg_away_v - ag)) / 2.0
+
+        # Parse notes JSON for BTTS, O2.5, predicted score
+        p_btts = None
+        p_o25 = None
+        pred_h = None
+        pred_a = None
+        btts_ok = None
+        ou25_ok = None
+        score_ok = None
+
+        if notes:
+            try:
+                nj = _json.loads(notes) if isinstance(notes, str) else {}
+            except Exception:
+                nj = {}
+
+            p_btts_v = nj.get("btts")
+            p_o25_v = nj.get("o25")
+            pred_score = nj.get("predicted_score")
+
+            # BTTS scoring
+            if p_btts_v is not None:
+                p_btts = float(p_btts_v)
+                actual_btts = (hg > 0) and (ag > 0)
+                predicted_btts = p_btts >= 0.5
+                btts_ok = predicted_btts == actual_btts
+
+            # Over 2.5 scoring
+            if p_o25_v is not None:
+                p_o25 = float(p_o25_v)
+                actual_o25 = (hg + ag) > 2
+                predicted_o25 = p_o25 >= 0.5
+                ou25_ok = predicted_o25 == actual_o25
+
+            # Exact score scoring
+            if pred_score and isinstance(pred_score, (list, tuple)) and len(pred_score) == 2:
+                pred_h = int(pred_score[0])
+                pred_a = int(pred_score[1])
+                score_ok = (pred_h == hg) and (pred_a == ag)
+
         con.execute("""
             INSERT OR REPLACE INTO prediction_scores
-            (match_id, model_version, outcome, logloss, brier, correct)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, [match_id, model_version, outcome, ll, brier, correct])
+            (match_id, model_version, outcome, logloss, brier, correct,
+             goals_mae, eg_home, eg_away,
+             btts_correct, ou25_correct, score_correct,
+             p_btts, p_o25, predicted_score_h, predicted_score_a)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [match_id, model_version, outcome, ll, brier, correct,
+              goals_mae, eg_home_v, eg_away_v,
+              btts_ok, ou25_ok, score_ok,
+              p_btts, p_o25, pred_h, pred_a])
         scored += 1
         total_ll += ll
         total_correct += int(correct)
+        if btts_ok is not None:
+            total_btts_correct += int(btts_ok)
+            n_btts += 1
+        if ou25_ok is not None:
+            total_ou25_correct += int(ou25_ok)
+            n_ou25 += 1
+        if score_ok is not None:
+            total_score_correct += int(score_ok)
+            n_score += 1
 
     # Update aggregate metrics table
     for mv in set(r[3] for r in rows):
@@ -439,10 +512,20 @@ def score_finished_predictions(verbose: bool = True) -> dict:
     if verbose:
         avg_ll = total_ll / scored if scored else 0
         acc = total_correct / scored if scored else 0
-        print(f"[score] scored {scored} predictions — logloss={avg_ll:.4f} accuracy={acc:.1%}", flush=True)
+        parts = [f"scored {scored} predictions — logloss={avg_ll:.4f} accuracy={acc:.1%}"]
+        if n_btts:
+            parts.append(f"BTTS={total_btts_correct / n_btts:.1%}({n_btts})")
+        if n_ou25:
+            parts.append(f"O2.5={total_ou25_correct / n_ou25:.1%}({n_ou25})")
+        if n_score:
+            parts.append(f"ExactScore={total_score_correct / n_score:.1%}({n_score})")
+        print(f"[score] {' | '.join(parts)}", flush=True)
 
     return {"scored": scored, "logloss": total_ll / scored if scored else 0,
-            "accuracy": total_correct / scored if scored else 0}
+            "accuracy": total_correct / scored if scored else 0,
+            "btts_accuracy": total_btts_correct / n_btts if n_btts else None,
+            "ou25_accuracy": total_ou25_correct / n_ou25 if n_ou25 else None,
+            "score_accuracy": total_score_correct / n_score if n_score else None}
 
 
 def ingest_news_for_teams(days_back: int = 2, max_records: int = 10) -> int:

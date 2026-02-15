@@ -271,7 +271,7 @@ def explain_match(
     home_pred: float,
     draw_pred: float,
     away_pred: float,
-    model_version: str = "v5_ultimate"
+    model_version: str = "v7_council"
 ) -> dict:
     """
     Generate detailed LLM explanation for why a match has given probabilities.
@@ -404,7 +404,7 @@ Return JSON:
 
 def explain_matches_batch(
     matches: list[dict],
-    model_version: str = "v5_ultimate"
+    model_version: str = "v7_council"
 ) -> list[dict]:
     """
     Generate explanations for multiple matches.
@@ -513,7 +513,7 @@ def preview_match(match_id: int) -> dict:
     pred = con.execute("""
         SELECT p_home, p_draw, p_away
         FROM predictions
-        WHERE match_id = ? AND model_version LIKE 'v5%'
+        WHERE match_id = ? AND model_version LIKE 'v%'
         ORDER BY created_at DESC LIMIT 1
     """, [match_id]).fetchone()
     ph, pd_, pa = (pred if pred else (0.33, 0.34, 0.33))
@@ -607,7 +607,7 @@ def value_bet_scan(min_edge: float = 0.05) -> list[dict]:
         JOIN predictions p ON p.match_id = m.match_id
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE m.status IN ('TIMED','SCHEDULED')
-          AND p.model_version LIKE 'v5%'
+          AND p.model_version LIKE 'v%'
         ORDER BY m.utc_date
     """).fetchall()
 
@@ -695,7 +695,7 @@ def league_round_summary(competition_code: str = "PL") -> dict:
         JOIN predictions p ON p.match_id = m.match_id
         WHERE m.status IN ('TIMED','SCHEDULED')
           AND m.competition = ?
-          AND p.model_version LIKE 'v5%'
+          AND p.model_version LIKE 'v%'
         ORDER BY m.utc_date
     """, [competition_code]).fetchall()
 
@@ -768,7 +768,7 @@ def post_match_review(days_back: int = 3, competition_code: str | None = None) -
         JOIN predictions p ON p.match_id = m.match_id
         WHERE m.status = 'FINISHED'
           AND m.utc_date >= '{cutoff}'
-          AND p.model_version LIKE 'v5%'
+          AND p.model_version LIKE 'v%'
           {comp_filter}
         ORDER BY m.utc_date DESC
     """).fetchall()
@@ -821,4 +821,353 @@ def post_match_review(days_back: int = 3, competition_code: str | None = None) -
         "accuracy": round(acc, 3),
         "review": fallback_review,
         "misses": sorted(misses, key=lambda x: x["confidence"], reverse=True)[:5],
+    }
+
+
+# ============================================================================
+# BTTS & Over/Under Insights
+# ============================================================================
+
+
+def btts_ou_insights() -> dict:
+    """
+    Analyse upcoming BTTS and Over/Under 2.5 predictions from the notes JSON.
+
+    Returns:
+        {
+            "btts_likely": list[dict],     # matches with BTTS prob > 0.55
+            "btts_unlikely": list[dict],   # matches with BTTS prob < 0.35
+            "over25": list[dict],          # matches with O2.5 prob > 0.55
+            "under25": list[dict],         # matches with O2.5 prob < 0.35
+        }
+    """
+    con = connect()
+    rows = con.execute("""
+        SELECT m.match_id, m.home_team, m.away_team, m.competition, m.utc_date,
+               p.p_home, p.p_draw, p.p_away, p.eg_home, p.eg_away, p.notes
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        WHERE m.status IN ('TIMED', 'SCHEDULED')
+        ORDER BY m.utc_date
+    """).fetchall()
+
+    btts_likely, btts_unlikely, over25, under25 = [], [], [], []
+    for mid, ht, at, comp, dt, ph, pd_, pa, egh, ega, notes_str in rows:
+        notes = {}
+        if notes_str:
+            try:
+                notes = json.loads(notes_str)
+            except Exception:
+                pass
+
+        btts_p = notes.get("btts")
+        o25_p = notes.get("o25")
+
+        # fallback: estimate from expected goals if model heads not yet trained
+        if btts_p is None and egh is not None and ega is not None:
+            try:
+                from math import exp
+                lam_h, lam_a = float(egh), float(ega)
+                p_h0 = exp(-lam_h)
+                p_a0 = exp(-lam_a)
+                btts_p = (1 - p_h0) * (1 - p_a0)
+            except Exception:
+                pass
+        if o25_p is None and egh is not None and ega is not None:
+            try:
+                from math import exp
+                lam_h, lam_a = float(egh), float(ega)
+                total = lam_h + lam_a
+                p_0 = exp(-total)
+                p_1 = total * exp(-total)
+                p_2 = (total ** 2 / 2) * exp(-total)
+                o25_p = 1 - (p_0 + p_1 + p_2)
+            except Exception:
+                pass
+
+        entry = {
+            "match_id": mid,
+            "home_team": ht,
+            "away_team": at,
+            "competition": comp,
+            "date": str(dt)[:10],
+            "eg_home": round(float(egh), 2) if egh else None,
+            "eg_away": round(float(ega), 2) if ega else None,
+            "btts_prob": round(float(btts_p), 3) if btts_p is not None else None,
+            "o25_prob": round(float(o25_p), 3) if o25_p is not None else None,
+        }
+
+        if btts_p is not None:
+            if btts_p > 0.55:
+                btts_likely.append(entry)
+            elif btts_p < 0.35:
+                btts_unlikely.append(entry)
+
+        if o25_p is not None:
+            if o25_p > 0.55:
+                over25.append(entry)
+            elif o25_p < 0.35:
+                under25.append(entry)
+
+    # Sort by probability
+    btts_likely.sort(key=lambda x: x["btts_prob"] or 0, reverse=True)
+    btts_unlikely.sort(key=lambda x: x["btts_prob"] or 1)
+    over25.sort(key=lambda x: x["o25_prob"] or 0, reverse=True)
+    under25.sort(key=lambda x: x["o25_prob"] or 1)
+
+    return {
+        "btts_likely": btts_likely[:15],
+        "btts_unlikely": btts_unlikely[:15],
+        "over25": over25[:15],
+        "under25": under25[:15],
+    }
+
+
+# ============================================================================
+# League Form Table
+# ============================================================================
+
+
+def league_form_table(competition_code: str, last_n: int = 6) -> list[dict]:
+    """
+    Generate a mini form-table for a league: PPG, GF/GA, BTTS%, O2.5%
+    over the last *last_n* matches.
+    """
+    con = connect()
+    teams = con.execute("""
+        SELECT DISTINCT home_team FROM matches
+        WHERE competition = ? AND status = 'FINISHED'
+        UNION
+        SELECT DISTINCT away_team FROM matches
+        WHERE competition = ? AND status = 'FINISHED'
+    """, [competition_code, competition_code]).fetchall()
+
+    table = []
+    for (team,) in teams:
+        rows = con.execute(f"""
+            SELECT home_team, away_team, home_goals, away_goals
+            FROM matches
+            WHERE (home_team = ? OR away_team = ?)
+              AND competition = ? AND status = 'FINISHED'
+            ORDER BY utc_date DESC LIMIT {last_n}
+        """, [team, team, competition_code]).fetchall()
+
+        if not rows:
+            continue
+
+        w = d = l = gf = ga = btts = o25 = 0
+        for ht, at, hg, ag in rows:
+            is_home = (ht == team)
+            tgf = hg if is_home else ag
+            tga = ag if is_home else hg
+            gf += tgf
+            ga += tga
+            if tgf > tga:
+                w += 1
+            elif tgf == tga:
+                d += 1
+            else:
+                l += 1
+            if hg > 0 and ag > 0:
+                btts += 1
+            if hg + ag > 2:
+                o25 += 1
+
+        n = len(rows)
+        table.append({
+            "team": team,
+            "played": n,
+            "w": w, "d": d, "l": l,
+            "ppg": round((w * 3 + d) / n, 2),
+            "gf": gf, "ga": ga,
+            "gd": gf - ga,
+            "btts_pct": round(btts / n * 100),
+            "o25_pct": round(o25 / n * 100),
+        })
+
+    table.sort(key=lambda x: x["ppg"], reverse=True)
+    return table
+
+
+# ============================================================================
+# Accumulator Builder
+# ============================================================================
+
+
+def build_accumulators(min_prob: float = 0.55, max_legs: int = 5) -> list[dict]:
+    """
+    Build accumulator suggestions from upcoming predictions.
+    Returns up to 3 accumulators: safe (2-3 legs), medium (3-4), bold (4-5).
+    """
+    con = connect()
+    rows = con.execute("""
+        SELECT m.match_id, m.home_team, m.away_team, m.competition, m.utc_date,
+               p.p_home, p.p_draw, p.p_away,
+               e.b365h, e.b365d, e.b365a
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        LEFT JOIN match_extras e ON e.match_id = m.match_id
+        WHERE m.status IN ('TIMED', 'SCHEDULED')
+        ORDER BY m.utc_date
+    """).fetchall()
+
+    # Build pool of confident picks
+    pool = []
+    for mid, ht, at, comp, dt, ph, pd_, pa, oh, od, oa in rows:
+        probs = {"Home": ph, "Draw": pd_, "Away": pa}
+        odds_map = {"Home": oh, "Draw": od, "Away": oa}
+        best = max(probs, key=probs.get)
+        best_p = probs[best]
+        if best_p < min_prob:
+            continue
+        pool.append({
+            "match_id": mid,
+            "home_team": ht,
+            "away_team": at,
+            "competition": comp,
+            "date": str(dt)[:10],
+            "pick": best,
+            "prob": round(best_p, 3),
+            "odds": round(float(odds_map[best]), 2) if odds_map[best] else None,
+        })
+
+    pool.sort(key=lambda x: x["prob"], reverse=True)
+
+    accumulators = []
+    # Safe: top 2-3 highest probability
+    if len(pool) >= 2:
+        safe_legs = pool[:3]
+        combined = 1.0
+        for leg in safe_legs:
+            combined *= leg["prob"]
+            if leg["odds"]:
+                combined_odds = 1.0
+        combined_odds = 1.0
+        for leg in safe_legs:
+            if leg["odds"]:
+                combined_odds *= leg["odds"]
+        accumulators.append({
+            "type": "🛡️ Safe",
+            "legs": safe_legs,
+            "combined_prob": round(combined, 4),
+            "combined_odds": round(combined_odds, 2) if combined_odds > 1 else None,
+        })
+
+    # Medium: mix high + mid confidence
+    if len(pool) >= 4:
+        med_legs = [pool[0], pool[2], pool[4]] if len(pool) > 4 else pool[1:4]
+        combined = 1.0
+        combined_odds = 1.0
+        for leg in med_legs:
+            combined *= leg["prob"]
+            if leg["odds"]:
+                combined_odds *= leg["odds"]
+        accumulators.append({
+            "type": "⚖️ Medium",
+            "legs": med_legs,
+            "combined_prob": round(combined, 4),
+            "combined_odds": round(combined_odds, 2) if combined_odds > 1 else None,
+        })
+
+    # Bold: 4-5 legs including some lower-prob picks
+    if len(pool) >= 5:
+        bold_legs = pool[:5]
+        combined = 1.0
+        combined_odds = 1.0
+        for leg in bold_legs:
+            combined *= leg["prob"]
+            if leg["odds"]:
+                combined_odds *= leg["odds"]
+        accumulators.append({
+            "type": "🎯 Bold",
+            "legs": bold_legs,
+            "combined_prob": round(combined, 4),
+            "combined_odds": round(combined_odds, 2) if combined_odds > 1 else None,
+        })
+
+    return accumulators
+
+
+# ============================================================================
+# Prediction Accuracy Dashboard
+# ============================================================================
+
+
+def prediction_accuracy_stats(days_back: int = 30) -> dict:
+    """
+    Calculate detailed accuracy stats for the accuracy dashboard.
+    """
+    con = connect()
+    cutoff = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
+
+    rows = con.execute(f"""
+        SELECT m.match_id, m.competition,
+               p.p_home, p.p_draw, p.p_away,
+               m.home_goals, m.away_goals
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        WHERE m.status = 'FINISHED'
+          AND m.utc_date >= '{cutoff}'
+        ORDER BY m.utc_date DESC
+    """).fetchall()
+
+    if not rows:
+        return {"total": 0}
+
+    total = correct = 0
+    by_comp = {}
+    by_confidence = {"high": [0, 0], "mid": [0, 0], "low": [0, 0]}
+    brier_sum = 0.0
+
+    for mid, comp, ph, pd_, pa, hg, ag in rows:
+        total += 1
+        pred_idx = [ph, pd_, pa].index(max(ph, pd_, pa))
+        actual_idx = 0 if hg > ag else (1 if hg == ag else 2)
+        ok = pred_idx == actual_idx
+        if ok:
+            correct += 1
+
+        # Brier score
+        actual_vec = [0.0, 0.0, 0.0]
+        actual_vec[actual_idx] = 1.0
+        brier_sum += sum((p - a) ** 2 for p, a in zip([ph, pd_, pa], actual_vec))
+
+        # By competition
+        if comp not in by_comp:
+            by_comp[comp] = [0, 0]
+        by_comp[comp][0] += 1
+        if ok:
+            by_comp[comp][1] += 1
+
+        # By confidence tier
+        max_p = max(ph, pd_, pa)
+        if max_p >= 0.60:
+            tier = "high"
+        elif max_p >= 0.45:
+            tier = "mid"
+        else:
+            tier = "low"
+        by_confidence[tier][0] += 1
+        if ok:
+            by_confidence[tier][1] += 1
+
+    comp_stats = {
+        k: {"total": v[0], "correct": v[1],
+            "accuracy": round(v[1] / v[0], 3) if v[0] else 0}
+        for k, v in by_comp.items()
+    }
+    conf_stats = {
+        k: {"total": v[0], "correct": v[1],
+            "accuracy": round(v[1] / v[0], 3) if v[0] else 0}
+        for k, v in by_confidence.items()
+    }
+
+    return {
+        "total": total,
+        "correct": correct,
+        "accuracy": round(correct / total, 3) if total else 0,
+        "brier_score": round(brier_sum / total, 4) if total else 0,
+        "days_back": days_back,
+        "by_competition": comp_stats,
+        "by_confidence": conf_stats,
     }

@@ -438,3 +438,280 @@ class PerformanceTracker:
 def get_performance_tracker() -> PerformanceTracker:
     """Get or create performance tracker instance"""
     return PerformanceTracker()
+
+
+# ===================================================================
+# SELF-IMPROVEMENT: Error Analysis & Feedback Loop
+# ===================================================================
+
+def analyze_prediction_errors(model_version: str = "v7_council",
+                               days: int = 180) -> dict:
+    """
+    Deep error analysis — identifies systematic weaknesses in predictions.
+
+    Returns a dict with:
+    - error_patterns: where the model consistently gets it wrong
+    - calibration_analysis: reliability curve data
+    - btts_accuracy / ou25_accuracy: market prediction stats
+    - goal_mae: expected goal accuracy
+    - recommendations: actionable retraining suggestions
+    """
+    con = connect()
+    window = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # ---- 1. Outcome confusion matrix ----
+    rows = con.execute("""
+        SELECT ps.outcome, p.p_home, p.p_draw, p.p_away,
+               m.competition, m.home_team, m.away_team,
+               m.home_goals, m.away_goals,
+               ps.goals_mae, ps.btts_correct, ps.ou25_correct,
+               ps.score_correct, ps.p_btts, ps.p_o25,
+               ps.eg_home, ps.eg_away
+        FROM prediction_scores ps
+        JOIN predictions p ON ps.match_id = p.match_id AND ps.model_version = p.model_version
+        JOIN matches m ON ps.match_id = m.match_id
+        WHERE ps.model_version = ? AND ps.scored_at >= ?
+        ORDER BY ps.scored_at
+    """, [model_version, window]).fetchall()
+
+    if not rows:
+        return {"status": "no_data", "n_scored": 0}
+
+    # Confusion matrix
+    confusion = [[0]*3 for _ in range(3)]  # confusion[predicted][actual]
+    comp_errors = {}
+    confidence_buckets = {i: {"n": 0, "correct": 0} for i in range(10)}  # 0-10%, 10-20%, etc.
+
+    total_goals_mae = 0.0
+    n_goals = 0
+    n_btts = 0
+    n_btts_correct = 0
+    n_ou25 = 0
+    n_ou25_correct = 0
+    n_score = 0
+    n_score_correct = 0
+    overconfident_wrong = []  # Cases where model was very confident but wrong
+    draw_bias_data = {"predicted_draws": 0, "actual_draws": 0, "draw_correct": 0}
+
+    for (outcome, ph, pd_, pa, comp, ht, at, hg, ag,
+         g_mae, btts_ok, ou_ok, sc_ok, p_btts, p_o25, eg_h, eg_a) in rows:
+        probs = [float(ph), float(pd_), float(pa)]
+        predicted = max(range(3), key=lambda i: probs[i])
+        max_prob = probs[predicted]
+
+        confusion[predicted][outcome] += 1
+
+        # Calibration buckets
+        bucket = min(9, int(max_prob * 10))
+        confidence_buckets[bucket]["n"] += 1
+        if predicted == outcome:
+            confidence_buckets[bucket]["correct"] += 1
+
+        # Competition-level errors
+        if comp not in comp_errors:
+            comp_errors[comp] = {"n": 0, "correct": 0, "draw_missed": 0, "home_bias": 0}
+        comp_errors[comp]["n"] += 1
+        if predicted == outcome:
+            comp_errors[comp]["correct"] += 1
+        if outcome == 1 and predicted != 1:
+            comp_errors[comp]["draw_missed"] += 1
+        if predicted == 0 and outcome != 0:
+            comp_errors[comp]["home_bias"] += 1
+
+        # Draw analysis
+        if predicted == 1:
+            draw_bias_data["predicted_draws"] += 1
+        if outcome == 1:
+            draw_bias_data["actual_draws"] += 1
+            if predicted == 1:
+                draw_bias_data["draw_correct"] += 1
+
+        # Overconfident wrong
+        if max_prob >= 0.65 and predicted != outcome:
+            overconfident_wrong.append({
+                "match": f"{ht} vs {at}", "comp": comp,
+                "predicted": ["Home", "Draw", "Away"][predicted],
+                "actual": ["Home", "Draw", "Away"][outcome],
+                "confidence": max_prob,
+            })
+
+        # Goals MAE
+        if g_mae is not None:
+            total_goals_mae += g_mae
+            n_goals += 1
+        # BTTS
+        if btts_ok is not None:
+            n_btts += 1
+            n_btts_correct += int(btts_ok)
+        # O/U 2.5
+        if ou_ok is not None:
+            n_ou25 += 1
+            n_ou25_correct += int(ou_ok)
+        # Score
+        if sc_ok is not None:
+            n_score += 1
+            n_score_correct += int(sc_ok)
+
+    n = len(rows)
+    # ---- 2. Calibration curve ----
+    calibration = []
+    for bucket_i in range(10):
+        b = confidence_buckets[bucket_i]
+        if b["n"] > 0:
+            calibration.append({
+                "bin_center": (bucket_i + 0.5) / 10,
+                "predicted_prob": (bucket_i + 0.5) / 10,
+                "actual_freq": b["correct"] / b["n"],
+                "count": b["n"],
+            })
+
+    # ---- 3. Per-competition analysis ----
+    comp_analysis = {}
+    for comp, data in comp_errors.items():
+        acc = data["correct"] / data["n"] if data["n"] > 0 else 0
+        comp_analysis[comp] = {
+            "accuracy": acc,
+            "n": data["n"],
+            "draw_miss_rate": data["draw_missed"] / data["n"] if data["n"] > 0 else 0,
+            "home_bias_rate": data["home_bias"] / data["n"] if data["n"] > 0 else 0,
+        }
+
+    # ---- 4. Generate recommendations ----
+    recommendations = []
+    overall_accuracy = sum(confusion[i][i] for i in range(3)) / n if n > 0 else 0
+
+    # Draw detection
+    draw_rate = draw_bias_data["actual_draws"] / n if n > 0 else 0
+    draw_pred_rate = draw_bias_data["predicted_draws"] / n if n > 0 else 0
+    if draw_rate > 0.25 and draw_pred_rate < draw_rate * 0.5:
+        recommendations.append({
+            "type": "draw_underprediction",
+            "severity": "high",
+            "message": f"Model predicts draws {draw_pred_rate:.0%} of the time but actual draw rate is {draw_rate:.0%}. Consider adding draw-specialist features.",
+        })
+
+    # Home bias
+    home_pred_rate = sum(confusion[0]) / n if n > 0 else 0
+    actual_home_rate = (confusion[0][0] + confusion[1][0] + confusion[2][0]) / n if n > 0 else 0
+    if home_pred_rate > actual_home_rate * 1.2:
+        recommendations.append({
+            "type": "home_bias",
+            "severity": "medium",
+            "message": f"Model over-predicts home wins ({home_pred_rate:.0%} predicted vs {actual_home_rate:.0%} actual).",
+        })
+
+    # Overconfidence
+    if len(overconfident_wrong) > n * 0.1:
+        recommendations.append({
+            "type": "overconfidence",
+            "severity": "high",
+            "message": f"{len(overconfident_wrong)} predictions had >=65% confidence but were wrong ({len(overconfident_wrong)/n:.0%} of total).",
+        })
+
+    # Per-competition weakness
+    for comp, data in comp_analysis.items():
+        if data["n"] >= 10 and data["accuracy"] < overall_accuracy - 0.1:
+            recommendations.append({
+                "type": "weak_competition",
+                "severity": "medium",
+                "message": f"Accuracy in {comp} is {data['accuracy']:.0%} vs {overall_accuracy:.0%} overall. Consider competition-specific features.",
+                "competition": comp,
+            })
+
+    # Goals accuracy
+    if n_goals > 0:
+        avg_mae = total_goals_mae / n_goals
+        if avg_mae > 1.0:
+            recommendations.append({
+                "type": "goal_accuracy",
+                "severity": "medium",
+                "message": f"Expected goals MAE is {avg_mae:.2f} — consider improving Poisson/DC models.",
+            })
+
+    return {
+        "status": "ok",
+        "model_version": model_version,
+        "n_scored": n,
+        "window_days": days,
+        "overall_accuracy": overall_accuracy,
+        "confusion_matrix": {
+            "labels": ["Home", "Draw", "Away"],
+            "matrix": confusion,
+        },
+        "calibration": calibration,
+        "by_competition": comp_analysis,
+        "draw_analysis": draw_bias_data,
+        "goals_mae": total_goals_mae / n_goals if n_goals else None,
+        "btts_accuracy": n_btts_correct / n_btts if n_btts else None,
+        "ou25_accuracy": n_ou25_correct / n_ou25 if n_ou25 else None,
+        "score_accuracy": n_score_correct / n_score if n_score else None,
+        "n_btts": n_btts,
+        "n_ou25": n_ou25,
+        "n_score": n_score,
+        "overconfident_wrong": overconfident_wrong[:10],  # top 10 worst
+        "recommendations": recommendations,
+    }
+
+
+def generate_improvement_report(model_version: str = "v7_council",
+                                 days: int = 180) -> str:
+    """
+    Generate a human-readable self-improvement report.
+
+    Used by CLI `footy improvement-report` and by the auto-retrain system
+    to decide whether retraining should focus on specific weaknesses.
+    """
+    analysis = analyze_prediction_errors(model_version, days)
+
+    if analysis["status"] == "no_data":
+        return "No scored predictions to analyze."
+
+    lines = [
+        f"=== Self-Improvement Report: {model_version} ===",
+        f"Window: last {days} days | Scored: {analysis['n_scored']}",
+        f"Overall Accuracy: {analysis['overall_accuracy']:.1%}",
+        "",
+        "--- Confusion Matrix ---",
+        "            Actual: Home   Draw   Away",
+    ]
+
+    labels = ["Home", "Draw", "Away"]
+    for i, label in enumerate(labels):
+        row = analysis["confusion_matrix"]["matrix"][i]
+        lines.append(f"  Predicted {label:5s}: {row[0]:5d}  {row[1]:5d}  {row[2]:5d}")
+
+    # Market predictions
+    lines.append("")
+    lines.append("--- Market Predictions ---")
+    if analysis["btts_accuracy"] is not None:
+        lines.append(f"  BTTS:       {analysis['btts_accuracy']:.1%} ({analysis['n_btts']} scored)")
+    if analysis["ou25_accuracy"] is not None:
+        lines.append(f"  Over 2.5:   {analysis['ou25_accuracy']:.1%} ({analysis['n_ou25']} scored)")
+    if analysis["score_accuracy"] is not None:
+        lines.append(f"  Exact Score: {analysis['score_accuracy']:.1%} ({analysis['n_score']} scored)")
+    if analysis["goals_mae"] is not None:
+        lines.append(f"  Goals MAE:  {analysis['goals_mae']:.3f}")
+
+    # Calibration
+    lines.append("")
+    lines.append("--- Calibration ---")
+    for cal in analysis["calibration"]:
+        bar_len = int(cal["actual_freq"] * 20)
+        bar = "█" * bar_len + "░" * (20 - bar_len)
+        lines.append(f"  {cal['predicted_prob']:.0%}: {bar} {cal['actual_freq']:.0%} (n={cal['count']})")
+
+    # Per-competition
+    lines.append("")
+    lines.append("--- By Competition ---")
+    for comp, data in sorted(analysis["by_competition"].items(), key=lambda x: x[1]["accuracy"]):
+        lines.append(f"  {comp:5s}: {data['accuracy']:.1%} (n={data['n']}, draw_miss={data['draw_miss_rate']:.0%})")
+
+    # Recommendations
+    if analysis["recommendations"]:
+        lines.append("")
+        lines.append("--- Recommendations ---")
+        for rec in analysis["recommendations"]:
+            icon = "🔴" if rec["severity"] == "high" else "🟡"
+            lines.append(f"  {icon} [{rec['type']}] {rec['message']}")
+
+    return "\n".join(lines)

@@ -6,7 +6,7 @@ Tracks model versions, training windows, validates improvements, and auto-deploy
 
 Features:
 - Drift detection: monitors prediction accuracy on recent results
-- Auto-retrain: triggers v5 retraining when new-match or drift thresholds are met
+- Auto-retrain: triggers v7_council retraining when new-match or drift thresholds are met
 - Performance gating: only deploys if new model beats current on held-out set
 - Automatic rollback: reverts if deployed model degrades within grace window
 - Full audit trail: every train/deploy/rollback is logged with metrics
@@ -62,7 +62,7 @@ class ContinuousTrainingManager:
     Example usage:
         manager = ContinuousTrainingManager()
         manager.setup_continuous_training(
-            model_type="v5_ultimate",
+            model_type="v7_council",
             retrain_threshold_matches=10,
             performance_threshold_improvement=0.01
         )
@@ -310,15 +310,15 @@ class ContinuousTrainingManager:
         End-to-end auto-retrain: check thresholds → train → validate → deploy/rollback.
         
         1. Checks if retraining is needed (new matches or drift detected)
-        2. Trains new v5 model
+        2. Trains new v7_council model
         3. Compares test-set performance vs current model
         4. Deploys only if performance improves (or force=True)
         5. Backs up old model artifact for rollback
         
         Returns summary dict.
         """
-        check = self.check_and_retrain("v5_ultimate")
-        result = check.get("v5_ultimate", {})
+        check = self.check_and_retrain("v7_council")
+        result = check.get("v7_council", {})
         status = result.get("status", "")
 
         if not force and status not in ("ready_to_retrain", "drift_detected"):
@@ -332,16 +332,16 @@ class ContinuousTrainingManager:
 
         # ---- Backup current model artifact ----
         model_dir = Path("data/models")
-        current_artifact = model_dir / "v5_ultimate.joblib"
-        backup_artifact = model_dir / "v5_ultimate.joblib.bak"
+        current_artifact = model_dir / "v7_council.joblib"
+        backup_artifact = model_dir / "v7_council.joblib.bak"
         if current_artifact.exists():
             shutil.copy2(current_artifact, backup_artifact)
 
         # ---- Train new model ----
-        from footy.models.v5 import train_and_save as v5_train, V5_MODEL_VERSION
+        from footy.models.council import train_and_save as council_train
 
         try:
-            train_result = v5_train(self.con, eval_days=365, verbose=verbose)
+            train_result = council_train(self.con, eval_days=365, verbose=verbose)
         except Exception as e:
             log.error("Auto-retrain: training failed: %s", e)
             # Restore backup
@@ -352,16 +352,25 @@ class ContinuousTrainingManager:
         new_metrics = {
             "accuracy": train_result.get("test_accuracy", 0),
             "logloss": train_result.get("test_logloss", 999),
+            "brier": train_result.get("test_brier", 999),
+            "ece": train_result.get("test_ece", 999),
             "n_train": train_result.get("n_train", 0),
             "n_test": train_result.get("n_test", 0),
         }
 
+        if "error" in train_result:
+            log.error("Auto-retrain: training returned error: %s", train_result["error"])
+            if backup_artifact.exists():
+                shutil.copy2(backup_artifact, current_artifact)
+            return {"action": "train_failed", "error": train_result["error"]}
+
         # ---- Record training ----
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        new_version = f"{V5_MODEL_VERSION}_{ts}"
+        from datetime import timezone as _tz
+        ts = datetime.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+        new_version = f"v7_council_{ts}"
         record = self.record_training(
             model_version=new_version,
-            model_type="v5_ultimate",
+            model_type="v7_council",
             training_window_days=train_result.get("window_days", 3650),
             n_matches_used=new_metrics["n_train"],
             n_matches_test=new_metrics["n_test"],
@@ -372,7 +381,7 @@ class ContinuousTrainingManager:
         # ---- Deploy or rollback ----
         improved = record.get("improvement_pct", 0) >= 0 or force
         if improved:
-            deploy = self.deploy_model(new_version, "v5_ultimate", force=True)
+            deploy = self.deploy_model(new_version, "v7_council", force=True)
             if verbose:
                 log.info("Auto-retrain: deployed %s (improvement %.2f%%)",
                          new_version, record["improvement_pct"])

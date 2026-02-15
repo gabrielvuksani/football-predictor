@@ -1170,6 +1170,26 @@ def performance_summary():
 
 
 @app.command()
+def improvement_report(model: str = "v7_council", days: int = 180):
+    """Deep error analysis with actionable recommendations for model improvement."""
+    from footy.performance_tracker import generate_improvement_report
+    report = generate_improvement_report(model, days)
+    print(report)
+
+
+@app.command()
+def error_analysis(model: str = "v7_council", days: int = 180):
+    """Show prediction error patterns: confusion matrix, calibration, market accuracy."""
+    from footy.performance_tracker import analyze_prediction_errors
+    import json
+    analysis = analyze_prediction_errors(model, days)
+    if analysis["status"] == "no_data":
+        print("[yellow]No scored predictions to analyze.[/yellow]")
+        return
+    print(json.dumps(analysis, indent=2, default=str))
+
+
+@app.command()
 def performance_ranking(days: int = 365):
     """Rank all models by accuracy."""
     from footy.performance_tracker import get_performance_tracker

@@ -39,7 +39,29 @@ def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
     inserted = 0
     file_i = 0
 
-    wanted_cols = ["B365H","B365D","B365A","HS","AS","HST","AST","HC","AC","HY","AY","HR","AR"]
+    # Extended column list: 1X2 odds (opening + closing + Pinnacle + avg + max),
+    # O/U 2.5, Asian Handicap, half-time scores, basic stats
+    wanted_cols = [
+        # B365 opening
+        "B365H","B365D","B365A",
+        # B365 closing
+        "B365CH","B365CD","B365CA",
+        # Pinnacle (sharpest bookmaker)
+        "PSH","PSD","PSA",
+        # Market average & max
+        "AvgH","AvgD","AvgA",
+        "MaxH","MaxD","MaxA",
+        # Over/Under 2.5
+        "B365>2.5","B365<2.5",
+        "Avg>2.5","Avg<2.5",
+        "Max>2.5","Max<2.5",
+        # Asian Handicap
+        "B365AHH","B365AH","B365AHA",
+        # Half-time (goals)
+        "HTHG","HTAG",
+        # Match stats
+        "HS","AS","HST","AST","HC","AC","HY","AY","HR","AR",
+    ]
 
     for season_code in seasons:
         for d in divs:
@@ -101,10 +123,19 @@ def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
                     """INSERT OR REPLACE INTO match_extras
                        (match_id, provider, competition, season_code, div_code,
                         b365h, b365d, b365a,
+                        b365ch, b365cd, b365ca,
+                        psh, psd, psa,
+                        avgh, avgd, avga,
+                        maxh, maxd, maxa,
+                        b365_o25, b365_u25,
+                        avg_o25, avg_u25,
+                        max_o25, max_u25,
+                        b365ahh, b365ahha, b365ahaw,
+                        hthg, htag,
                         hs, as_, hst, ast,
                         hc, ac, hy, ay, hr, ar,
                         raw_json)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
                         int(mid),
                         "football-data.co.uk",
@@ -112,6 +143,15 @@ def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
                         season_code,
                         d.div,
                         _num(g("B365H")), _num(g("B365D")), _num(g("B365A")),
+                        _num(g("B365CH")), _num(g("B365CD")), _num(g("B365CA")),
+                        _num(g("PSH")), _num(g("PSD")), _num(g("PSA")),
+                        _num(g("AvgH")), _num(g("AvgD")), _num(g("AvgA")),
+                        _num(g("MaxH")), _num(g("MaxD")), _num(g("MaxA")),
+                        _num(g("B365>2.5")), _num(g("B365<2.5")),
+                        _num(g("Avg>2.5")), _num(g("Avg<2.5")),
+                        _num(g("Max>2.5")), _num(g("Max<2.5")),
+                        _num(g("B365AHH")), _num(g("B365AH")), _num(g("B365AHA")),
+                        _num(g("HTHG")), _num(g("HTAG")),
                         _num(g("HS")), _num(g("AS")), _num(g("HST")), _num(g("AST")),
                         _num(g("HC")), _num(g("AC")), _num(g("HY")), _num(g("AY")), _num(g("HR")), _num(g("AR")),
                         json.dumps(raw, default=str),

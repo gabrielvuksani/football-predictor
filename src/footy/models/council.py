@@ -287,17 +287,29 @@ class MarketExpert(Expert):
             b365d = _f(getattr(r, "b365d", None))
             b365a = _f(getattr(r, "b365a", None))
 
-            # best available odds (closing > avg > max > primary)
-            for keys, sq in [
-                (("B365CH", "B365CD", "B365CA"), 3.0),
-                (("AvgH", "AvgD", "AvgA"), 2.0),
-                (("MaxH", "MaxD", "MaxA"), 1.0),
-                (("B365H", "B365D", "B365A"), 0.0),
+            # Read structured columns first, fall back to raw_json
+            b365ch = _f(getattr(r, "b365ch", None)) or _f(raw.get("B365CH"))
+            b365cd = _f(getattr(r, "b365cd", None)) or _f(raw.get("B365CD"))
+            b365ca = _f(getattr(r, "b365ca", None)) or _f(raw.get("B365CA"))
+            avgh_v = _f(getattr(r, "avgh", None)) or _f(raw.get("AvgH"))
+            avgd_v = _f(getattr(r, "avgd", None)) or _f(raw.get("AvgD"))
+            avga_v = _f(getattr(r, "avga", None)) or _f(raw.get("AvgA"))
+            maxh_v = _f(getattr(r, "maxh", None)) or _f(raw.get("MaxH"))
+            maxd_v = _f(getattr(r, "maxd", None)) or _f(raw.get("MaxD"))
+            maxa_v = _f(getattr(r, "maxa", None)) or _f(raw.get("MaxA"))
+            psh_v = _f(getattr(r, "psh", None)) or _f(raw.get("PSH"))
+            psd_v = _f(getattr(r, "psd", None)) or _f(raw.get("PSD"))
+            psa_v = _f(getattr(r, "psa", None)) or _f(raw.get("PSA"))
+
+            # best available odds (closing > Pinnacle > avg > max > primary)
+            for trio, sq in [
+                ((b365ch, b365cd, b365ca), 4.0),
+                ((psh_v, psd_v, psa_v), 3.0),
+                ((avgh_v, avgd_v, avga_v), 2.0),
+                ((maxh_v, maxd_v, maxa_v), 1.0),
+                ((b365h, b365d, b365a), 0.0),
             ]:
-                h_ = _f(raw.get(keys[0], b365h if keys[0].startswith("B365") else 0))
-                d_ = _f(raw.get(keys[1], b365d if keys[1].startswith("B365") else 0))
-                a_ = _f(raw.get(keys[2], b365a if keys[2].startswith("B365") else 0))
-                imp = _implied(h_, d_, a_)
+                imp = _implied(trio[0], trio[1], trio[2])
                 if imp[0] > 0:
                     ph[i], pd_[i], pa[i] = imp[0], imp[1], imp[2]
                     overround[i] = imp[3]
@@ -306,19 +318,28 @@ class MarketExpert(Expert):
                     break
 
             # line movement (opening → closing)
-            imp_o = _implied(raw.get("B365H", b365h), raw.get("B365D", b365d), raw.get("B365A", b365a))
-            imp_c = _implied(raw.get("B365CH"), raw.get("B365CD"), raw.get("B365CA"))
+            imp_o = _implied(b365h, b365d, b365a)
+            imp_c = _implied(b365ch, b365cd, b365ca)
             if imp_o[0] > 0 and imp_c[0] > 0:
                 move_h[i] = imp_c[0] - imp_o[0]
                 move_d[i] = imp_c[1] - imp_o[1]
                 move_a[i] = imp_c[2] - imp_o[2]
                 has_move[i] = 1.0
 
-            # over/under 2.5
-            for ok, uk in [("AvgC>2.5", "AvgC<2.5"), ("Avg>2.5", "Avg<2.5"),
-                           ("B365C>2.5", "B365C<2.5"), ("B365>2.5", "B365<2.5")]:
-                o_, u_ = _f(raw.get(ok)), _f(raw.get(uk))
-                if o_ > 1 and u_ > 1:
+            # over/under 2.5 — read from proper columns first
+            avg_o25_v = _f(getattr(r, "avg_o25", None)) or _f(raw.get("AvgC>2.5")) or _f(raw.get("Avg>2.5"))
+            avg_u25_v = _f(getattr(r, "avg_u25", None)) or _f(raw.get("AvgC<2.5")) or _f(raw.get("Avg<2.5"))
+            b365_o25_v = _f(getattr(r, "b365_o25", None)) or _f(raw.get("B365C>2.5")) or _f(raw.get("B365>2.5"))
+            b365_u25_v = _f(getattr(r, "b365_u25", None)) or _f(raw.get("B365C<2.5")) or _f(raw.get("B365<2.5"))
+            max_o25_v = _f(getattr(r, "max_o25", None)) or _f(raw.get("Max>2.5"))
+            max_u25_v = _f(getattr(r, "max_u25", None)) or _f(raw.get("Max<2.5"))
+
+            for o_, u_ in [
+                (avg_o25_v, avg_u25_v),
+                (b365_o25_v, b365_u25_v),
+                (max_o25_v, max_u25_v),
+            ]:
+                if o_ and u_ and o_ > 1 and u_ > 1:
                     io, iu = 1 / o_, 1 / u_
                     ou25[i] = io / (io + iu)
                     ou_over[i] = io + iu - 1
@@ -921,15 +942,17 @@ def _run_experts(df: pd.DataFrame, experts: list[Expert] | None = None) -> list[
     return [expert.compute(df) for expert in experts]
 
 
-def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = None) -> np.ndarray:
+def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = None,
+                  competitions: np.ndarray | None = None) -> np.ndarray:
     """Construct the meta-feature matrix from expert results.
 
     Layout:
-        - Expert probs:          6 × 3 = 18
-        - Expert confidence:     6
+        - Expert probs:          7 × 3 = 21
+        - Expert confidence:     7
         - Expert domain features: ~60-70
         - Conflict signals:      ~10
-        ≈ 100+ total columns
+        - Competition encoding:  6 (ordinal league ID)
+        ≈ 110+ total columns
     """
     if experts is None:
         experts = ALL_EXPERTS
@@ -1007,6 +1030,12 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
         winner_votes[:, None],
     ])
 
+    # 5. Competition encoding (ordinal league ID)
+    if competitions is not None:
+        _COMP_MAP = {"PL": 1, "PD": 2, "SA": 3, "BL1": 4, "FL1": 5, "DED": 6, "ELC": 7}
+        comp_ids = np.array([_COMP_MAP.get(str(c), 0) for c in competitions], dtype=float)
+        blocks.append(comp_ids[:, None])
+
     X = np.hstack(blocks)
     return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -1020,6 +1049,14 @@ def _prepare_df(con, finished_only: bool = True, days: int = 3650) -> pd.DataFra
         SELECT m.match_id, m.utc_date, m.competition, m.home_team, m.away_team,
                m.home_goals, m.away_goals,
                e.b365h, e.b365d, e.b365a, e.raw_json,
+               e.b365ch, e.b365cd, e.b365ca,
+               e.psh, e.psd, e.psa,
+               e.avgh, e.avgd, e.avga,
+               e.maxh, e.maxd, e.maxa,
+               e.b365_o25, e.b365_u25,
+               e.avg_o25, e.avg_u25,
+               e.max_o25, e.max_u25,
+               e.hthg, e.htag,
                e.hs, e.hst, e.hc, e.hy, e.hr,
                e.as_ AS as_, e.ast, e.ac, e.ay, e.ar
         FROM matches m
@@ -1097,7 +1134,8 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
     all_results = results + [dc_result]
 
     # build meta features
-    X = _build_meta_X(all_results)
+    competitions = df["competition"].to_numpy() if "competition" in df.columns else None
+    X = _build_meta_X(all_results, competitions=competitions)
     y = np.array([_label(int(hg), int(ag))
                   for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
 
@@ -1142,14 +1180,78 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
         if (m := (c_max >= bins[b_i]) & (c_max < bins[b_i + 1])).any()
     )
 
+    # ---- BTTS & Over 2.5 model heads ----
+    # Binary classifiers trained on same meta-features for market predictions
+    btts_model = None
+    ou25_model = None
+
+    y_btts = np.array([(int(hg) > 0 and int(ag) > 0) for hg, ag in
+                       zip(df["home_goals"], df["away_goals"])], dtype=int)
+    y_ou25 = np.array([(int(hg) + int(ag)) > 2 for hg, ag in
+                       zip(df["home_goals"], df["away_goals"])], dtype=int)
+
+    ytr_btts, yte_btts = y_btts[train_mask.to_numpy()], y_btts[test_mask.to_numpy()]
+    ytr_ou25, yte_ou25 = y_ou25[train_mask.to_numpy()], y_ou25[test_mask.to_numpy()]
+
+    # BTTS head
+    try:
+        btts_base = HistGradientBoostingClassifier(
+            learning_rate=0.03, max_depth=4, max_iter=800,
+            l2_regularization=0.5, min_samples_leaf=80,
+            early_stopping=True, validation_fraction=0.12,
+            n_iter_no_change=20, random_state=42,
+        )
+        btts_model = CalibratedClassifierCV(btts_base, method="isotonic", cv=5)
+        btts_model.fit(Xtr, ytr_btts)
+        P_btts = btts_model.predict_proba(Xte)
+        btts_acc = float(np.mean((P_btts[:, 1] >= 0.5) == yte_btts))
+        btts_ll = float(np.mean(-np.log(P_btts[np.arange(len(yte_btts)), yte_btts] + eps)))
+        if verbose:
+            print(f"[council] BTTS head: accuracy={btts_acc:.4f} logloss={btts_ll:.4f}", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[council] BTTS head failed: {e}", flush=True)
+        btts_model = None
+        btts_acc = 0
+        btts_ll = 999
+
+    # Over 2.5 head
+    try:
+        ou25_base = HistGradientBoostingClassifier(
+            learning_rate=0.03, max_depth=4, max_iter=800,
+            l2_regularization=0.5, min_samples_leaf=80,
+            early_stopping=True, validation_fraction=0.12,
+            n_iter_no_change=20, random_state=42,
+        )
+        ou25_model = CalibratedClassifierCV(ou25_base, method="isotonic", cv=5)
+        ou25_model.fit(Xtr, ytr_ou25)
+        P_ou25 = ou25_model.predict_proba(Xte)
+        ou25_acc = float(np.mean((P_ou25[:, 1] >= 0.5) == yte_ou25))
+        ou25_ll = float(np.mean(-np.log(P_ou25[np.arange(len(yte_ou25)), yte_ou25] + eps)))
+        if verbose:
+            print(f"[council] O2.5 head: accuracy={ou25_acc:.4f} logloss={ou25_ll:.4f}", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[council] O2.5 head failed: {e}", flush=True)
+        ou25_model = None
+        ou25_acc = 0
+        ou25_ll = 999
+
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "dc_by_comp": dc_by_comp}, MODEL_PATH)
+    joblib.dump({
+        "model": model,
+        "dc_by_comp": dc_by_comp,
+        "btts_model": btts_model,
+        "ou25_model": ou25_model,
+    }, MODEL_PATH)
 
     out = {
         "n_train": n_tr, "n_test": n_te,
         "logloss": round(logloss, 5), "brier": round(brier, 5),
         "accuracy": round(acc, 4), "ece": round(float(ece), 4),
         "n_features": int(X.shape[1]),
+        "btts_accuracy": round(btts_acc, 4) if btts_model else None,
+        "ou25_accuracy": round(ou25_acc, 4) if ou25_model else None,
     }
     if verbose:
         print(f"[council] saved {MODEL_VERSION} → {MODEL_PATH} | {out}", flush=True)
@@ -1180,7 +1282,14 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
 
     up = con.execute(f"""
         SELECT m.match_id, m.utc_date, m.competition, m.home_team, m.away_team,
-               e.b365h, e.b365d, e.b365a, e.raw_json
+               e.b365h, e.b365d, e.b365a, e.raw_json,
+               e.b365ch, e.b365cd, e.b365ca,
+               e.psh, e.psd, e.psa,
+               e.avgh, e.avgd, e.avga,
+               e.maxh, e.maxd, e.maxa,
+               e.b365_o25, e.b365_u25,
+               e.avg_o25, e.avg_u25,
+               e.max_o25, e.max_u25
         FROM matches m
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE m.status IN ('SCHEDULED','TIMED')
@@ -1202,6 +1311,13 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     hist = con.execute("""
         SELECT m.utc_date, m.home_team, m.away_team, m.home_goals, m.away_goals,
                e.b365h, e.b365d, e.b365a, e.raw_json,
+               e.b365ch, e.b365cd, e.b365ca,
+               e.psh, e.psd, e.psa,
+               e.avgh, e.avgd, e.avga,
+               e.maxh, e.maxd, e.maxa,
+               e.b365_o25, e.b365_u25,
+               e.avg_o25, e.avg_u25,
+               e.max_o25, e.max_u25,
                e.hs, e.hst, e.hc, e.hy, e.hr,
                e.as_ AS as_, e.ast, e.ac, e.ay, e.ar
         FROM matches m
@@ -1284,8 +1400,15 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             features={k: v[-tail:] for k, v in res.features.items()},
         ))
 
-    X = _build_meta_X(tail_results)
+    up_competitions = up["competition"].to_numpy() if "competition" in up.columns else None
+    X = _build_meta_X(tail_results, competitions=up_competitions)
     P = model.predict_proba(X)
+
+    # BTTS & O2.5 model heads
+    btts_model = obj.get("btts_model")
+    ou25_model = obj.get("ou25_model")
+    P_btts = btts_model.predict_proba(X) if btts_model else None
+    P_ou25 = ou25_model.predict_proba(X) if ou25_model else None
 
     count = 0
     for j, (mid, ph, p_d, pa) in enumerate(zip(
@@ -1296,18 +1419,24 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
 
         # Collect Poisson stats for notes
         pois_res = tail_results[3]  # PoissonExpert is 4th (index 3)
-        btts_val = float(pois_res.features.get("pois_btts", np.zeros(tail))[j])
-        o25_val = float(pois_res.features.get("pois_o25", np.zeros(tail))[j])
+        btts_pois = float(pois_res.features.get("pois_btts", np.zeros(tail))[j])
+        o25_pois = float(pois_res.features.get("pois_o25", np.zeros(tail))[j])
         ml_hg = int(pois_res.features.get("pois_ml_hg", np.zeros(tail))[j])
         ml_ag = int(pois_res.features.get("pois_ml_ag", np.zeros(tail))[j])
         lam_h_val = float(pois_res.features.get("pois_lambda_h", np.zeros(tail))[j])
         lam_a_val = float(pois_res.features.get("pois_lambda_a", np.zeros(tail))[j])
 
+        # Use trained model heads if available, else fall back to Poisson
+        btts_val = float(P_btts[j, 1]) if P_btts is not None else btts_pois
+        o25_val = float(P_ou25[j, 1]) if P_ou25 is not None else o25_pois
+
         notes_dict = {
             "model": "Expert Council (6 experts + meta-learner)",
             "btts": round(btts_val, 3),
             "o25": round(o25_val, 3),
-            "predicted_score": f"{ml_hg}-{ml_ag}",
+            "btts_poisson": round(btts_pois, 3),
+            "o25_poisson": round(o25_pois, 3),
+            "predicted_score": [ml_hg, ml_ag],
             "lambda_home": round(lam_h_val, 2),
             "lambda_away": round(lam_a_val, 2),
         }

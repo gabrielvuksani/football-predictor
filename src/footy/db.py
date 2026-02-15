@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS prediction_scores (
   logloss DOUBLE,
   brier DOUBLE,
   correct BOOLEAN,
+  -- Goal prediction accuracy
+  goals_mae DOUBLE,         -- mean absolute error of predicted goals
+  eg_home DOUBLE,           -- predicted expected goals home
+  eg_away DOUBLE,           -- predicted expected goals away
+  -- Market prediction accuracy
+  btts_correct BOOLEAN,     -- was BTTS prediction correct?
+  ou25_correct BOOLEAN,     -- was O/U 2.5 prediction correct?
+  score_correct BOOLEAN,    -- was exact score prediction correct?
+  p_btts DOUBLE,            -- predicted BTTS probability
+  p_o25 DOUBLE,             -- predicted Over 2.5 probability
+  predicted_score_h INT,    -- predicted home score
+  predicted_score_a INT,    -- predicted away score
   PRIMARY KEY(match_id, model_version)
 );
 
@@ -73,8 +85,23 @@ CREATE TABLE IF NOT EXISTS match_extras (
   competition VARCHAR,
   season_code VARCHAR,
   div_code VARCHAR,
-  -- odds (common)
+  -- 1X2 odds: opening B365
   b365h DOUBLE, b365d DOUBLE, b365a DOUBLE,
+  -- 1X2 odds: closing B365
+  b365ch DOUBLE, b365cd DOUBLE, b365ca DOUBLE,
+  -- 1X2 odds: Pinnacle (sharpest book)
+  psh DOUBLE, psd DOUBLE, psa DOUBLE,
+  -- 1X2 odds: market average & max
+  avgh DOUBLE, avgd DOUBLE, avga DOUBLE,
+  maxh DOUBLE, maxd DOUBLE, maxa DOUBLE,
+  -- Over/Under 2.5 odds
+  b365_o25 DOUBLE, b365_u25 DOUBLE,
+  avg_o25 DOUBLE, avg_u25 DOUBLE,
+  max_o25 DOUBLE, max_u25 DOUBLE,
+  -- Asian Handicap
+  b365ahh DOUBLE, b365ahha DOUBLE, b365ahaw DOUBLE,
+  -- Half-time scores
+  hthg INT, htag INT,
   -- basic stats (common but not guaranteed across seasons/leagues)
   hs DOUBLE, as_ DOUBLE, hst DOUBLE, ast DOUBLE,
   hc DOUBLE, ac DOUBLE,
@@ -193,8 +220,57 @@ CREATE INDEX IF NOT EXISTS idx_predictions_model ON predictions(model_version);
 CREATE INDEX IF NOT EXISTS idx_pscores_model ON prediction_scores(model_version);
 """
 
+# Columns that may need adding to older match_extras tables
+_EXTRAS_MIGRATIONS = [
+    ("b365ch", "DOUBLE"), ("b365cd", "DOUBLE"), ("b365ca", "DOUBLE"),
+    ("psh", "DOUBLE"), ("psd", "DOUBLE"), ("psa", "DOUBLE"),
+    ("avgh", "DOUBLE"), ("avgd", "DOUBLE"), ("avga", "DOUBLE"),
+    ("maxh", "DOUBLE"), ("maxd", "DOUBLE"), ("maxa", "DOUBLE"),
+    ("b365_o25", "DOUBLE"), ("b365_u25", "DOUBLE"),
+    ("avg_o25", "DOUBLE"), ("avg_u25", "DOUBLE"),
+    ("max_o25", "DOUBLE"), ("max_u25", "DOUBLE"),
+    ("b365ahh", "DOUBLE"), ("b365ahha", "DOUBLE"), ("b365ahaw", "DOUBLE"),
+    ("hthg", "INT"), ("htag", "INT"),
+    # prediction_scores expansions
+    ("goals_mae", "DOUBLE"), ("btts_correct", "BOOLEAN"),
+    ("ou25_correct", "BOOLEAN"), ("score_correct", "BOOLEAN"),
+    ("eg_home", "DOUBLE"), ("eg_away", "DOUBLE"),
+    ("p_btts", "DOUBLE"), ("p_o25", "DOUBLE"),
+    ("predicted_score_h", "INT"), ("predicted_score_a", "INT"),
+]
+
+def _migrate_columns(con):
+    """Add new columns to existing tables if they don't exist yet."""
+    try:
+        existing = {r[0].lower() for r in con.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='match_extras'"
+        ).fetchall()}
+        for col, typ in _EXTRAS_MIGRATIONS[:21]:  # match_extras columns
+            if col not in existing:
+                try:
+                    con.execute(f"ALTER TABLE match_extras ADD COLUMN {col} {typ}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    try:
+        existing = {r[0].lower() for r in con.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='prediction_scores'"
+        ).fetchall()}
+        for col, typ in _EXTRAS_MIGRATIONS[21:]:  # prediction_scores columns
+            if col not in existing:
+                try:
+                    con.execute(f"ALTER TABLE prediction_scores ADD COLUMN {col} {typ}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def connect() -> duckdb.DuckDBPyConnection:
     s = settings()
     con = duckdb.connect(s.db_path)
     con.execute(SCHEMA_SQL)
+    _migrate_columns(con)
     return con
