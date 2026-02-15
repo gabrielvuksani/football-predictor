@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Footy Predictor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body x-data="app">
+
+  <!-- ══════════ NAV ══════════ -->
+  <nav class="nav">
+    <div class="container nav-inner">
+      <div class="nav-brand">⚽ Footy Predictor</div>
+      <div class="nav-right">
+        <template x-if="lastUpdated">
+          <span class="last-updated" x-text="'Updated ' + formatUpdated(lastUpdated)"></span>
+        </template>
+        <div class="nav-tabs">
+          <button class="nav-tab" :class="{ active: tab === 'matches' }"
+                  @click="switchTab('matches')">Matches</button>
+          <button class="nav-tab" :class="{ active: tab === 'insights' }"
+                  @click="switchTab('insights')">Insights</button>
+          <button class="nav-tab" :class="{ active: tab === 'stats' }"
+                  @click="switchTab('stats')">Stats</button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container" style="padding-top: 1rem; padding-bottom: 3rem;">
+
+    <!-- ══════════ MATCHES TAB ══════════ -->
+    <div x-show="tab === 'matches'" class="tab-content" x-cloak>
+
+      <template x-if="loading">
+        <div class="loading"><div class="spinner"></div></div>
+      </template>
+
+      <template x-if="!loading && matches.length === 0">
+        <div class="empty">
+          <div class="empty-icon">📭</div>
+          <p>No upcoming matches</p>
+          <p class="text-3" style="margin-top:0.3rem">Run <code style="background:var(--surface-2);padding:0.15rem 0.5rem;border-radius:4px;">footy go</code> to ingest &amp; predict</p>
+        </div>
+      </template>
+
+      <template x-if="!loading && matches.length > 0">
+        <div>
+          <!-- League filter pills -->
+          <div class="filter-bar">
+            <template x-for="lg in leagues" :key="lg">
+              <button class="filter-pill" :class="{ active: league === lg }"
+                      @click="league = lg"
+                      x-text="lg === 'all' ? 'All' : lg"></button>
+            </template>
+            <span class="filter-count" x-text="filteredMatches.length + ' matches'"></span>
+          </div>
+
+          <!-- Grouped match cards -->
+          <template x-for="[date, group] in groupedMatches()" :key="date">
+            <div>
+              <div class="date-header" x-text="formatDate(date)"></div>
+
+              <template x-for="m in group" :key="m.match_id">
+                <div class="glass glass-hover match-card"
+                     @click="openDetail(m)" tabindex="0"
+                     @keydown.enter="openDetail(m)">
+
+                  <div class="match-top">
+                    <div class="match-teams-text">
+                      <span class="match-home" x-text="m.home_team"></span>
+                      <span class="match-vs">vs</span>
+                      <span class="match-away" x-text="m.away_team"></span>
+                    </div>
+                    <div class="match-meta">
+                      <span class="match-time" x-text="matchTime(m)"></span>
+                      <span :class="badgeClass(m.competition)" x-text="m.competition"></span>
+                    </div>
+                  </div>
+
+                  <template x-if="m.p_home != null">
+                    <div class="prob-section">
+                      <div class="prob-bar">
+                        <div class="home" :style="'width:' + (m.p_home*100) + '%'"></div>
+                        <div class="draw" :style="'width:' + (m.p_draw*100) + '%'"></div>
+                        <div class="away" :style="'width:' + (m.p_away*100) + '%'"></div>
+                      </div>
+                      <div class="prob-labels">
+                        <div class="prob-label">
+                          <span class="prob-dot home"></span>
+                          <span class="prob-pct" x-text="pct(m.p_home)"></span>
+                        </div>
+                        <div class="prob-label">
+                          <span class="prob-dot draw"></span>
+                          <span class="prob-pct" x-text="pct(m.p_draw)"></span>
+                        </div>
+                        <div class="prob-label">
+                          <span class="prob-dot away"></span>
+                          <span class="prob-pct" x-text="pct(m.p_away)"></span>
+                        </div>
+                      </div>
+
+                      <!-- Verdict + Confidence -->
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.25rem;">
+                        <div class="verdict" :class="verdict(m).cls" x-text="verdict(m).text"></div>
+                        <template x-if="confidence(m)">
+                          <span class="conf-badge" :class="'conf-' + confidence(m)">
+                            <span class="conf-dot"></span>
+                            <span x-text="confLabel(m)"></span>
+                          </span>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+
+                  <template x-if="m.p_home == null">
+                    <p class="text-3" style="font-size:0.78rem; margin-top:0.3rem;">No prediction yet</p>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <!-- ══════════ INSIGHTS TAB ══════════ -->
+    <div x-show="tab === 'insights'" class="tab-content" x-cloak>
+      <div class="insights-header">
+        <h2 style="font-size:1.2rem; font-weight:700;">💰 Value Bets</h2>
+        <span class="text-3" x-text="valueBets.length + ' opportunities'"></span>
+      </div>
+
+      <template x-if="loadingBets">
+        <div class="loading"><div class="spinner"></div></div>
+      </template>
+
+      <template x-if="!loadingBets && valueBets.length === 0">
+        <div class="empty">
+          <div class="empty-icon">🔍</div>
+          <p>No value bets found</p>
+          <p class="text-3" style="margin-top:0.3rem">No edges detected at current threshold</p>
+        </div>
+      </template>
+
+      <template x-for="b in valueBets" :key="b.match_id + b.bet">
+        <div class="glass bet-card">
+          <div class="bet-left">
+            <div class="bet-match" x-text="b.home_team + ' vs ' + b.away_team"></div>
+            <div class="bet-meta">
+              <span :class="badgeClass(b.competition)" x-text="b.competition"></span>
+              <span x-text="b.date"></span>
+              <span class="bet-type" :class="b.bet" x-text="b.bet"></span>
+              <span>Model: <strong x-text="pct(b.model_prob)"></strong></span>
+            </div>
+            <div class="bet-kelly" x-text="'Kelly stake: ' + kellyPct(b.model_prob, b.odds)"></div>
+          </div>
+          <div class="bet-right">
+            <div class="bet-odds" x-text="b.odds.toFixed(2)"></div>
+            <div class="bet-edge-tag" x-text="'+' + (b.edge * 100).toFixed(1) + '%'"></div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ══════════ STATS TAB ══════════ -->
+    <div x-show="tab === 'stats'" class="tab-content" x-cloak>
+
+      <!-- ── Performance Section ── -->
+      <h2 style="font-size:1.2rem; font-weight:700; margin-bottom: 1rem;">📈 Model Performance</h2>
+
+      <template x-if="loadingPerf && !performance">
+        <div class="loading" style="padding:1.5rem 0"><div class="spinner"></div></div>
+      </template>
+
+      <template x-if="performance">
+        <div style="margin-bottom: 2rem;">
+          <!-- Metrics cards -->
+          <template x-if="performance.metrics">
+            <div class="perf-grid" style="margin-bottom: 1rem;">
+              <div class="stat-card glass perf-card">
+                <div class="stat-val" :style="'color:' + perfAccuracyColor(performance.metrics.accuracy)"
+                     x-text="performance.metrics.accuracy != null ? (performance.metrics.accuracy * 100).toFixed(1) + '%' : '—'"></div>
+                <div class="stat-label">Accuracy</div>
+              </div>
+              <div class="stat-card glass perf-card">
+                <div class="stat-val" x-text="performance.metrics.logloss?.toFixed(3) || '—'"></div>
+                <div class="stat-label">Log Loss</div>
+                <div class="stat-grade" x-text="loglossGrade(performance.metrics.logloss)"></div>
+              </div>
+              <div class="stat-card glass perf-card">
+                <div class="stat-val" x-text="performance.metrics.brier?.toFixed(3) || '—'"></div>
+                <div class="stat-label">Brier Score</div>
+              </div>
+              <div class="stat-card glass perf-card">
+                <div class="stat-val" x-text="performance.metrics.n_scored || 0"></div>
+                <div class="stat-label">Scored</div>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="!performance.metrics">
+            <div class="glass" style="padding: 1.25rem; text-align:center; margin-bottom: 1rem;">
+              <div style="font-size:0.85rem; color:var(--text-3);">No scored predictions yet. Run <code style="background:var(--surface-2);padding:0.1rem 0.4rem;border-radius:4px;font-size:0.78rem;">footy go</code> after matches finish to score predictions.</div>
+            </div>
+          </template>
+
+          <!-- Accuracy by competition -->
+          <template x-if="performance.by_competition?.length > 0">
+            <div>
+              <div class="section-label"><span class="icon">🏆</span> Accuracy by League</div>
+              <template x-for="c in performance.by_competition" :key="c.competition">
+                <div class="comp-row" style="position:relative; overflow:hidden;">
+                  <div style="position:absolute;left:0;top:0;bottom:0;opacity:0.08;border-radius:var(--r-xs);"
+                       :style="'width:' + (c.accuracy*100) + '%; background:' + perfAccuracyColor(c.accuracy)"></div>
+                  <div style="display:flex; align-items:center; gap:0.5rem; position:relative;">
+                    <span :class="badgeClass(c.competition)" x-text="c.competition"></span>
+                    <span class="comp-code" x-text="leagueName(c.competition)"></span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:0.75rem; position:relative;">
+                    <span class="mono" style="font-size:0.72rem; color:var(--text-3);"
+                          x-text="c.n + ' matches'"></span>
+                    <span class="mono" style="font-weight:700; font-size:0.85rem;"
+                          :style="'color:' + perfAccuracyColor(c.accuracy)"
+                          x-text="(c.accuracy * 100).toFixed(0) + '%'"></span>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Recent scored predictions -->
+          <template x-if="performance.recent?.length > 0">
+            <div style="margin-top: 1.25rem;">
+              <div class="section-label"><span class="icon">📋</span> Recent Results</div>
+              <div class="glass" style="padding: 0.5rem 0.75rem;">
+                <template x-for="s in performance.recent.slice(0, 15)" :key="s.date + s.home_team">
+                  <div class="scored-row">
+                    <span class="scored-result" :class="s.correct ? 'correct' : 'wrong'"
+                          x-text="s.correct ? '✓' : '✗'"></span>
+                    <div class="scored-info">
+                      <span class="scored-teams" x-text="s.home_team + ' ' + s.home_goals + '-' + s.away_goals + ' ' + s.away_team"></span>
+                      <span class="scored-meta">
+                        <span x-text="s.outcome"></span>
+                        <span> · </span>
+                        <span x-text="'We said ' + pct(s.outcome === 'Home' ? s.p_home : s.outcome === 'Draw' ? s.p_draw : s.p_away)"></span>
+                      </span>
+                    </div>
+                    <span class="scored-date" x-text="s.date"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ── Database Section ── -->
+      <h2 style="font-size:1.2rem; font-weight:700; margin-bottom: 1rem;">📊 Database</h2>
+
+      <template x-if="loadingStats && !stats">
+        <div class="loading"><div class="spinner"></div></div>
+      </template>
+
+      <template x-if="stats">
+        <div>
+          <div class="stats-grid" style="margin-bottom: 1.5rem;">
+            <div class="stat-card glass">
+              <div class="stat-val" x-text="stats.total_matches?.toLocaleString()"></div>
+              <div class="stat-label">Total Matches</div>
+            </div>
+            <div class="stat-card glass">
+              <div class="stat-val" x-text="stats.finished?.toLocaleString()"></div>
+              <div class="stat-label">Finished</div>
+            </div>
+            <div class="stat-card glass">
+              <div class="stat-val" x-text="stats.upcoming"></div>
+              <div class="stat-label">Upcoming</div>
+            </div>
+            <div class="stat-card glass">
+              <div class="stat-val" x-text="stats.teams"></div>
+              <div class="stat-label">Teams</div>
+            </div>
+            <div class="stat-card glass">
+              <div class="stat-val" x-text="stats.predictions?.toLocaleString()"></div>
+              <div class="stat-label">Predictions</div>
+            </div>
+            <div class="stat-card glass">
+              <div class="stat-val" x-text="stats.h2h_pairs || '—'"></div>
+              <div class="stat-label">H2H Pairs</div>
+            </div>
+          </div>
+
+          <div class="section-label"><span class="icon">🏆</span> Competitions</div>
+          <template x-for="c in stats.competitions" :key="c.code">
+            <div class="comp-row">
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <span :class="badgeClass(c.code)" x-text="c.code"></span>
+                <span class="comp-code" x-text="leagueName(c.code)"></span>
+              </div>
+              <span class="comp-count" x-text="c.count.toLocaleString()"></span>
+            </div>
+          </template>
+
+          <div class="section-label" style="margin-top:1.25rem;"><span class="icon">🤖</span> Models</div>
+          <template x-for="m in stats.models" :key="m.version">
+            <div class="model-row">
+              <span class="model-ver" :class="{ current: m.version === 'v7_council' }" x-text="m.version"></span>
+              <span class="model-count" x-text="m.predictions + ' predictions'"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </main>
+
+  <!-- ══════════ DETAIL SLIDE-OVER ══════════ -->
+  <div class="detail-overlay" :class="{ open: detailOpen }" @click="closeDetail()"></div>
+  <div class="detail-panel" :class="{ open: detailOpen }" @keydown.escape.window="closeDetail()">
+
+    <div class="detail-header">
+      <button class="detail-close" @click="closeDetail()">✕</button>
+      <div>
+        <div class="detail-title" x-text="detailMatch?.home_team + ' vs ' + detailMatch?.away_team"></div>
+        <div class="detail-subtitle">
+          <span x-text="detailMatch?.competition"></span>
+          <span> · </span>
+          <span x-text="detailMatch?.utc_date?.slice(0,10)"></span>
+          <span x-show="matchTime(detailMatch || {})"> · </span>
+          <span x-text="matchTime(detailMatch || {})"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-body">
+
+      <template x-if="loadingDetail">
+        <div class="loading"><div class="spinner"></div></div>
+      </template>
+
+      <template x-if="detailMatch && !loadingDetail">
+        <div>
+
+          <!-- ── Prediction Scoring Result (for finished matches) ── -->
+          <template x-if="detailData?.score">
+            <div class="section">
+              <div class="score-result-banner" :class="detailData.score.correct ? 'correct' : 'wrong'">
+                <span class="score-icon" x-text="detailData.score.correct ? '✓' : '✗'"></span>
+                <div>
+                  <div class="score-result-text"
+                       x-text="detailData.score.correct ? 'Prediction correct!' : 'Prediction incorrect'"></div>
+                  <div class="score-result-detail">
+                    <span x-text="'Result: ' + detailData.score.outcome"></span>
+                    <span> · </span>
+                    <span x-text="'LogLoss: ' + detailData.score.logloss.toFixed(3)"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- ── FT Score (if finished) ── -->
+          <template x-if="detailData?.status === 'FINISHED' && detailData?.home_goals != null">
+            <div class="section">
+              <div class="ft-score glass">
+                <div class="ft-label">FT</div>
+                <div class="ft-goals">
+                  <span x-text="detailData.home_goals"></span>
+                  <span class="ft-dash">–</span>
+                  <span x-text="detailData.away_goals"></span>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- ── Hero Probabilities ── -->
+          <div class="section">
+            <div class="hero-probs">
+              <div class="hero-prob home" :class="{ highest: isHighest('home', detailMatch) }">
+                <div class="pct" x-text="pct(detailMatch.p_home)"></div>
+                <div class="lbl">Home</div>
+              </div>
+              <div class="hero-prob draw" :class="{ highest: isHighest('draw', detailMatch) }">
+                <div class="pct" x-text="pct(detailMatch.p_draw)"></div>
+                <div class="lbl">Draw</div>
+              </div>
+              <div class="hero-prob away" :class="{ highest: isHighest('away', detailMatch) }">
+                <div class="pct" x-text="pct(detailMatch.p_away)"></div>
+                <div class="lbl">Away</div>
+              </div>
+            </div>
+
+            <!-- xG -->
+            <template x-if="detailMatch.eg_home != null">
+              <div class="xg-row">
+                <div style="text-align:center">
+                  <div class="xg-val" x-text="detailMatch.eg_home"></div>
+                  <div class="xg-lbl">xG Home</div>
+                </div>
+                <div style="text-align:center">
+                  <div class="xg-val" x-text="detailMatch.eg_away"></div>
+                  <div class="xg-lbl">xG Away</div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- ── Poisson Stats (BTTS, O2.5, Predicted Score) ── -->
+          <template x-if="detailData?.poisson">
+            <div class="section">
+              <div class="section-label"><span class="icon">🎯</span> Poisson Analysis</div>
+              <div class="glass poisson-grid">
+                <div class="poisson-cell">
+                  <div class="poisson-val"
+                       x-text="detailData.poisson.predicted_score || '—'"></div>
+                  <div class="poisson-lbl">Predicted Score</div>
+                </div>
+                <div class="poisson-cell">
+                  <div class="poisson-val"
+                       :class="detailData.poisson.btts >= 0.5 ? 'poisson-yes' : 'poisson-no'"
+                       x-text="pct(detailData.poisson.btts)"></div>
+                  <div class="poisson-lbl">BTTS</div>
+                </div>
+                <div class="poisson-cell">
+                  <div class="poisson-val"
+                       :class="detailData.poisson.o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'"
+                       x-text="pct(detailData.poisson.o25)"></div>
+                  <div class="poisson-lbl">Over 2.5</div>
+                </div>
+              </div>
+              <div class="poisson-lambda text-3" style="margin-top:0.4rem;">
+                <span x-text="'λ Home: ' + (detailData.poisson.lambda_home?.toFixed(2) || '—')"></span>
+                <span> · </span>
+                <span x-text="'λ Away: ' + (detailData.poisson.lambda_away?.toFixed(2) || '—')"></span>
+              </div>
+            </div>
+          </template>
+
+          <!-- ── Form Streaks ── -->
+          <template x-if="detailForm?.home_form || detailForm?.away_form">
+            <div class="section">
+              <div class="section-label"><span class="icon">📈</span> Recent Form</div>
+              <div class="glass" style="padding: 0.75rem 1rem;">
+                <template x-if="detailForm?.home_form">
+                  <div style="margin-bottom:0.5rem; display:flex; align-items:center; gap:0.5rem;">
+                    <span class="form-label" x-text="detailMatch?.home_team"></span>
+                    <div class="form-streak">
+                      <template x-for="(r, i) in detailForm.home_form" :key="'hf'+i">
+                        <div class="form-dot" :class="r" x-text="r"></div>
+                      </template>
+                    </div>
+                    <span class="text-3 mono" x-text="detailForm.home_ppg != null ? detailForm.home_ppg.toFixed(1) + ' ppg' : ''"></span>
+                  </div>
+                </template>
+                <template x-if="detailForm?.away_form">
+                  <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <span class="form-label" x-text="detailMatch?.away_team"></span>
+                    <div class="form-streak">
+                      <template x-for="(r, i) in detailForm.away_form" :key="'af'+i">
+                        <div class="form-dot" :class="r" x-text="r"></div>
+                      </template>
+                    </div>
+                    <span class="text-3 mono" x-text="detailForm.away_ppg != null ? detailForm.away_ppg.toFixed(1) + ' ppg' : ''"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- ── Market Odds with Edge ── -->
+          <template x-if="detailData?.odds">
+            <div class="section">
+              <div class="section-label"><span class="icon">📊</span> Market Odds</div>
+              <div class="glass" style="padding: 0.75rem 1rem;">
+                <div class="odds-grid">
+                  <div class="odds-cell">
+                    <div class="odds-val" x-text="detailData.odds.b365h"></div>
+                    <div class="odds-lbl">HOME</div>
+                    <div class="odds-implied" x-text="pct(detailData.odds.implied_h)"></div>
+                    <template x-if="detailData?.prediction">
+                      <div :class="edge(detailData.prediction.p_home, detailData.odds.b365h) > 0 ? 'edge-pos' : 'edge-neg'"
+                           style="font-size:0.65rem; margin-top:0.15rem; font-family:var(--mono);"
+                           x-text="edgeText(detailData.prediction.p_home, detailData.odds.b365h)"></div>
+                    </template>
+                  </div>
+                  <div class="odds-cell">
+                    <div class="odds-val" x-text="detailData.odds.b365d"></div>
+                    <div class="odds-lbl">DRAW</div>
+                    <div class="odds-implied" x-text="pct(detailData.odds.implied_d)"></div>
+                    <template x-if="detailData?.prediction">
+                      <div :class="edge(detailData.prediction.p_draw, detailData.odds.b365d) > 0 ? 'edge-pos' : 'edge-neg'"
+                           style="font-size:0.65rem; margin-top:0.15rem; font-family:var(--mono);"
+                           x-text="edgeText(detailData.prediction.p_draw, detailData.odds.b365d)"></div>
+                    </template>
+                  </div>
+                  <div class="odds-cell">
+                    <div class="odds-val" x-text="detailData.odds.b365a"></div>
+                    <div class="odds-lbl">AWAY</div>
+                    <div class="odds-implied" x-text="pct(detailData.odds.implied_a)"></div>
+                    <template x-if="detailData?.prediction">
+                      <div :class="edge(detailData.prediction.p_away, detailData.odds.b365a) > 0 ? 'edge-pos' : 'edge-neg'"
+                           style="font-size:0.65rem; margin-top:0.15rem; font-family:var(--mono);"
+                           x-text="edgeText(detailData.prediction.p_away, detailData.odds.b365a)"></div>
+                    </template>
+                  </div>
+                </div>
+                <div class="text-3" style="text-align:center"
+                     x-text="'Overround: ' + pct1(detailData.odds.overround)"></div>
+              </div>
+            </div>
+          </template>
+
+          <!-- ── Expert Council ── -->
+          <div class="section">
+            <div class="section-label"><span class="icon">🧠</span> Expert Council</div>
+            <template x-if="loadingExperts">
+              <div class="loading" style="padding:1.5rem 0"><div class="spinner"></div></div>
+            </template>
+            <template x-if="detailExperts?.experts">
+              <div class="glass" style="padding: 0.6rem;">
+                <div class="expert-grid">
+                  <template x-for="[name, data] in Object.entries(detailExperts.experts)" :key="name">
+                    <div class="expert-row">
+                      <div class="expert-name" x-text="name"></div>
+                      <div>
+                        <div class="expert-bar">
+                          <div class="home" :style="'width:' + (data.probs.home*100) + '%'"></div>
+                          <div class="draw" :style="'width:' + (data.probs.draw*100) + '%'"></div>
+                          <div class="away" :style="'width:' + (data.probs.away*100) + '%'"></div>
+                        </div>
+                        <div class="expert-pcts">
+                          <span x-text="pct(data.probs.home)"></span>
+                          <span x-text="pct(data.probs.draw)"></span>
+                          <span x-text="pct(data.probs.away)"></span>
+                        </div>
+                      </div>
+                      <div class="expert-conf" x-text="pct(data.confidence)"></div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Consensus meter -->
+                <div class="consensus-bar">
+                  <div class="consensus-meter">
+                    <div class="consensus-fill" :class="consensusClass()"
+                         :style="'width:' + consensusScore() + '%'"></div>
+                  </div>
+                  <span class="consensus-label" x-text="consensusLabel()"></span>
+                </div>
+              </div>
+            </template>
+            <template x-if="!detailExperts && !loadingExperts">
+              <button class="action-btn" @click="loadExperts()">
+                Load expert analysis <span class="arrow">→</span>
+              </button>
+            </template>
+          </div>
+
+          <!-- ── H2H (auto-loaded) ── -->
+          <div class="section">
+            <div class="section-label"><span class="icon">⚔️</span> Head-to-Head</div>
+            <template x-if="loadingH2H">
+              <div class="loading" style="padding:1.5rem 0"><div class="spinner"></div></div>
+            </template>
+            <template x-if="detailH2H">
+              <div>
+                <template x-if="detailH2H.stats">
+                  <div class="glass" style="padding: 0.75rem 1rem; margin-bottom: 0.5rem;">
+                    <div class="h2h-hero">
+                      <div>
+                        <div class="h2h-team-name" x-text="detailH2H.stats.team_a"></div>
+                        <div class="h2h-team-wins" style="color:var(--green)" x-text="detailH2H.stats.team_a_wins"></div>
+                      </div>
+                      <div class="h2h-center">
+                        <div class="h2h-draws" x-text="detailH2H.stats.draws"></div>
+                        <div class="h2h-played" x-text="detailH2H.stats.total_matches + ' played'"></div>
+                      </div>
+                      <div>
+                        <div class="h2h-team-name" x-text="detailH2H.stats.team_b"></div>
+                        <div class="h2h-team-wins" style="color:var(--red)" x-text="detailH2H.stats.team_b_wins"></div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+
+                <template x-if="!detailH2H.stats">
+                  <div class="empty" style="padding: 1.5rem;">
+                    <p class="text-3">No H2H records found</p>
+                  </div>
+                </template>
+
+                <template x-if="detailH2H.recent_matches?.length > 0">
+                  <div class="glass" style="padding: 0.6rem 0.85rem;">
+                    <template x-for="m in detailH2H.recent_matches" :key="m.utc_date + m.home_team">
+                      <div class="h2h-match-row">
+                        <span class="h2h-date" x-text="m.utc_date"></span>
+                        <span class="h2h-team h2h-team-left"
+                              :class="{ 'h2h-winner': winner(m.home_goals, m.away_goals)==='home' }"
+                              x-text="m.home_team"></span>
+                        <span class="h2h-score" x-text="m.home_goals + '-' + m.away_goals"></span>
+                        <span class="h2h-team"
+                              :class="{ 'h2h-winner': winner(m.home_goals, m.away_goals)==='away' }"
+                              x-text="m.away_team"></span>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="!detailH2H && !loadingH2H">
+              <div class="text-3" style="padding: 0.5rem 0; font-size: 0.78rem;">Loading...</div>
+            </template>
+          </div>
+
+          <!-- ── AI Narrative ── -->
+          <div class="section">
+            <div class="section-label"><span class="icon">✦</span> AI Analysis</div>
+            <template x-if="!detailNarrative && !loadingAI">
+              <button class="action-btn" @click="loadAI()">
+                Generate AI narrative <span class="arrow">→</span>
+              </button>
+            </template>
+            <template x-if="loadingAI">
+              <div class="loading" style="padding:1.5rem 0"><div class="spinner"></div></div>
+            </template>
+            <template x-if="detailNarrative">
+              <div class="ai-narrative" x-text="detailNarrative"></div>
+            </template>
+          </div>
+
+          <!-- ── Elo Ratings ── -->
+          <template x-if="detailData?.elo">
+            <div class="section">
+              <div class="section-label"><span class="icon">📐</span> Elo Ratings</div>
+              <div class="glass" style="padding: 0.75rem 1rem;">
+                <div class="elo-grid">
+                  <div>
+                    <div class="elo-val" x-text="detailData.elo.home || '—'"></div>
+                    <div class="elo-lbl" x-text="detailMatch?.home_team"></div>
+                  </div>
+                  <div class="elo-diff"
+                       :class="{
+                         'elo-diff-pos': detailData.elo.diff > 0,
+                         'elo-diff-neg': detailData.elo.diff < 0,
+                         'elo-diff-neu': detailData.elo.diff === 0 || detailData.elo.diff == null
+                       }">
+                    <span x-text="detailData.elo.diff != null ? (detailData.elo.diff > 0 ? '+' : '') + Math.round(detailData.elo.diff) : '—'"></span>
+                    <span class="elo-lbl">Diff</span>
+                  </div>
+                  <div>
+                    <div class="elo-val" x-text="detailData.elo.away || '—'"></div>
+                    <div class="elo-lbl" x-text="detailMatch?.away_team"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
+  <script src="/static/app.js"></script>
+
+</body>
+</html>

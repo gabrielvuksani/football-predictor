@@ -1,0 +1,774 @@
+from __future__ import annotations
+import json
+from datetime import date, timedelta, datetime, timezone
+import time
+
+import numpy as np
+import pandas as pd
+
+from footy.db import connect
+from footy.config import settings
+from footy.providers.football_data_org import fetch_matches_range, normalize_match
+from footy.providers.news_gdelt import fetch_team_news
+from footy.providers.fdcuk_history import DIV_MAP, season_codes_last_n, download_division_csv
+from footy.normalize import canonical_team_name
+from footy.models import elo
+from footy.models.poisson import fit_poisson, expected_goals, outcome_probs
+from footy.models.meta import make_model as make_meta_model, save as save_meta_model, load as load_meta_model, META_MODEL_VERSION
+from footy.h2h import recompute_h2h_stats
+from footy.xg import backfill_xg_for_finished_matches
+
+MODEL_VERSION = "v1_elo_poisson"
+
+# Preferred provider for finished-match training after history is ingested
+TRAIN_PROVIDER = "football-data.co.uk"
+
+def reset_states(verbose: bool = True) -> None:
+    """
+    Use this once after ingesting large history, to rebuild Elo/Poisson cleanly.
+    Does NOT delete matches/news.
+    """
+    con = connect()
+    con.execute("DELETE FROM predictions")
+    con.execute("DELETE FROM metrics")
+    con.execute("DELETE FROM elo_state")
+    con.execute("DELETE FROM elo_applied")
+    con.execute("DELETE FROM poisson_state")
+    if verbose:
+        print("[reset] cleared predictions/metrics/elo_state/elo_applied/poisson_state", flush=True)
+
+def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
+    """
+    Downloads football-data.co.uk historical season CSVs for tracked top leagues,
+    inserts finished matches only (rows with FTHG/FTAG).
+    """
+    con = connect()
+    s = settings()
+
+    # Map tracked competitions -> football-data.co.uk division codes
+    divs = []
+    for comp in s.tracked_competitions:
+        if comp in DIV_MAP:
+            divs.append(DIV_MAP[comp])
+
+    if not divs:
+        raise RuntimeError("No tracked competitions map to football-data.co.uk divisions. Use PL,PD,SA,BL1,FL1,DED.")
+
+    seasons = season_codes_last_n(n_seasons, include_current=True)
+    total_files = len(seasons) * len(divs)
+
+    if verbose:
+        print(f"[history] seasons={seasons}", flush=True)
+        print(f"[history] divisions={[d.div for d in divs]} (files={total_files})", flush=True)
+
+    inserted = 0
+    file_i = 0
+    for season_code in seasons:
+        for d in divs:
+            file_i += 1
+            if verbose:
+                print(f"[history] [{file_i}/{total_files}] downloading {season_code}/{d.div}.csv …", flush=True)
+
+            try:
+                df = download_division_csv(season_code, d.div)
+            except Exception as e:
+                if verbose:
+                    print(f"[history]   failed {season_code}/{d.div}: {e}", flush=True)
+                continue
+
+            # minimal column set
+            # common columns: Div,Date,Time,HomeTeam,AwayTeam,FTHG,FTAG
+            cols = {c: c for c in df.columns}
+            need = ["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"]
+            if not all(n in cols for n in need):
+                if verbose:
+                    print(f"[history]   missing required columns; got={list(df.columns)[:12]}… skipping", flush=True)
+                continue
+
+            # parse datetime
+            # Date examples: 05/08/2022, 05/08/22, 2022-08-05 ; Time optional: 20:00
+            date_col = df["Date"].astype(str)
+            if "Time" in df.columns:
+                date_col = date_col + " " + df["Time"].fillna("00:00").astype(str)
+            dt = pd.to_datetime(date_col, dayfirst=True, format="mixed", errors="coerce")
+
+            df2 = pd.DataFrame({
+                "utc_date": dt,
+                "home_team": df["HomeTeam"].map(canonical_team_name),
+                "away_team": df["AwayTeam"].map(canonical_team_name),
+                "home_goals": pd.to_numeric(df["FTHG"], errors="coerce"),
+                "away_goals": pd.to_numeric(df["FTAG"], errors="coerce"),
+            }).dropna(subset=["utc_date","home_team","away_team","home_goals","away_goals"])
+
+            if df2.empty:
+                if verbose:
+                    print("[history]   no finished rows in this file (yet)", flush=True)
+                continue
+
+            # Deterministic 64-bit match_id via blake2b
+            import hashlib
+            def make_id(row) -> int:
+                key = f"fdcuk|{season_code}|{d.competition}|{row.utc_date.date()}|{row.home_team}|{row.away_team}"
+                h = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
+                u = int.from_bytes(h, byteorder="big", signed=False)
+                u = u & 0x7FFFFFFFFFFFFFFF  # fit signed BIGINT
+                return u if u != 0 else 1
+
+            raw_json = None  # keep null; can add full row later if needed
+
+            before = inserted
+            for r in df2.itertuples(index=False):
+                mid = make_id(r)
+                con.execute(
+                    """INSERT OR REPLACE INTO matches
+                       (match_id, provider, competition, season, utc_date, status,
+                        home_team, away_team, home_goals, away_goals, raw_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        mid,
+                        "football-data.co.uk",
+                        d.competition,
+                        int("20" + season_code[:2]),
+                        r.utc_date.to_pydatetime(),
+                        "FINISHED",
+                        r.home_team,
+                        r.away_team,
+                        int(r.home_goals),
+                        int(r.away_goals),
+                        raw_json,
+                    ]
+                )
+                inserted += 1
+
+            if verbose:
+                print(f"[history]   inserted {inserted - before} finished matches", flush=True)
+
+    if verbose:
+        print(f"[history] total inserted/updated: {inserted}", flush=True)
+    return inserted
+
+def _features_for_match(con, poisson_state: dict, home: str, away: str):
+    # base probs
+    pE = elo.predict_probs(con, home, away)
+    lam_h, lam_a = expected_goals(poisson_state, home, away)
+    pP = outcome_probs(lam_h, lam_a)
+
+    # rating diff (home advantage already baked into elo.predict_probs, but diff still useful)
+    rh = elo.get_rating(con, home)
+    ra = elo.get_rating(con, away)
+    elo_diff = (rh - ra)
+
+    X = [
+        pE[0], pE[1], pE[2],
+        pP[0], pP[1], pP[2],
+        float(elo_diff),
+        float(lam_h), float(lam_a), float(lam_h - lam_a),
+    ]
+    return X, pE, pP, lam_h, lam_a
+
+def ingest(days_back: int = 30, days_forward: int = 7, chunk_days: int = 10, verbose: bool = True) -> int:
+    con = connect()
+    d0 = date.today() - timedelta(days=days_back)
+    d1 = date.today() + timedelta(days=days_forward)
+
+    if verbose:
+        print(f"[ingest] fetching matches {d0} → {d1} (chunk_days={chunk_days})", flush=True)
+
+    matches = fetch_matches_range(d0, d1, chunk_days=chunk_days, verbose=verbose)
+    if verbose:
+        print(f"[ingest] fetched {len(matches)} raw matches; inserting…", flush=True)
+
+    s = settings()
+    n = 0
+    kept = 0
+
+    for i, m in enumerate(matches, start=1):
+        nm = normalize_match(m)
+
+        if nm["competition"] and nm["competition"] not in s.tracked_competitions:
+            continue
+
+        kept += 1
+        con.execute(
+            """INSERT OR REPLACE INTO matches
+               (match_id, provider, competition, season, utc_date, status, home_team, away_team, home_goals, away_goals, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                nm["match_id"], nm["provider"], nm["competition"], nm["season"],
+                nm["utc_date"], nm["status"], nm["home_team"], nm["away_team"],
+                nm["home_goals"], nm["away_goals"], nm["raw_json"]
+            ],
+        )
+        n += 1
+
+        if verbose and i % 100 == 0:
+            print(f"[ingest] processed {i}/{len(matches)} raw matches…", flush=True)
+
+    if verbose:
+        print(f"[ingest] inserted/updated {n} matches (kept={kept} after competition filter)", flush=True)
+
+    return n
+
+def update_elo_from_finished(verbose: bool = True) -> int:
+    """
+    Applies Elo updates ONLY ONCE per finished match (tracks applied match_ids).
+    """
+    con = connect()
+    rows = con.execute(
+        """SELECT m.match_id, m.home_team, m.away_team, m.home_goals, m.away_goals
+           FROM matches m
+           LEFT JOIN elo_applied ea ON ea.match_id = m.match_id
+           WHERE m.status='FINISHED'
+             AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL
+             AND ea.match_id IS NULL
+           ORDER BY m.utc_date ASC"""
+    ).fetchall()
+
+    if verbose:
+        print(f"[elo] new finished matches to apply: {len(rows)}", flush=True)
+
+    count = 0
+    for i, (mid, home, away, hg, ag) in enumerate(rows, start=1):
+        elo.update_from_match(con, home, away, int(hg), int(ag))
+        con.execute("INSERT OR IGNORE INTO elo_applied(match_id) VALUES (?)", [int(mid)])
+        count += 1
+
+        if verbose and (i % 500 == 0 or i == len(rows)):
+            print(f"[elo] applied {i}/{len(rows)}…", flush=True)
+
+    return count
+
+def refit_poisson(verbose: bool = True) -> dict:
+    con = connect()
+    df = con.execute(
+        """SELECT home_team, away_team, home_goals, away_goals, utc_date
+           FROM matches
+           WHERE status='FINISHED' AND home_goals IS NOT NULL AND away_goals IS NOT NULL"""
+    ).df()
+
+    if verbose:
+        print(f"[poisson] fitting on finished matches: {len(df)}", flush=True)
+
+    state = fit_poisson(df)
+    con.execute("INSERT OR REPLACE INTO poisson_state(key, value) VALUES ('state', ?)", [json.dumps(state)])
+
+    if verbose:
+        print(f"[poisson] fit complete; teams={len(state.get('teams', []))}", flush=True)
+
+    return state
+
+def load_poisson() -> dict:
+    con = connect()
+    row = con.execute("SELECT value FROM poisson_state WHERE key='state'").fetchone()
+    if not row:
+        return {"teams": [], "attack": [], "defense": [], "home_adv": 0.0, "mu": 0.0}
+    return json.loads(row[0])
+
+def predict_upcoming(lookahead_days: int | None = None, verbose: bool = True) -> int:
+    con = connect()
+    s = settings()
+    look = lookahead_days or s.lookahead_days
+
+    df = con.execute(
+        f"""SELECT match_id, home_team, away_team, utc_date, status
+            FROM matches
+            WHERE status IN ('SCHEDULED','TIMED')
+              AND utc_date <= (CURRENT_TIMESTAMP + INTERVAL {look} DAY)
+            ORDER BY utc_date ASC"""
+    ).df()
+
+    if verbose:
+        print(f"[predict] upcoming matches in next {look} days: {len(df)}", flush=True)
+
+    poisson_state = load_poisson()
+    meta = load_meta_model()
+    if verbose:
+        print(f"[predict] meta model available: {bool(meta)}", flush=True)
+
+    n = 0
+    for _, r in df.iterrows():
+        mid = int(r["match_id"])
+        home = r["home_team"]
+        away = r["away_team"]
+
+        X, pE, pP, lam_h, lam_a = _features_for_match(con, poisson_state, home, away)
+
+        # --- v1 baseline (blend) ---
+        p_home = 0.45 * pE[0] + 0.55 * pP[0]
+        p_draw = 0.45 * pE[1] + 0.55 * pP[1]
+        p_away = 0.45 * pE[2] + 0.55 * pP[2]
+        ssum = p_home + p_draw + p_away
+        p_home, p_draw, p_away = p_home / ssum, p_draw / ssum, p_away / ssum
+
+        con.execute(
+            """INSERT OR REPLACE INTO predictions
+               (match_id, model_version, p_home, p_draw, p_away, eg_home, eg_away, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [mid, MODEL_VERSION, p_home, p_draw, p_away, lam_h, lam_a, "blend(elo,poisson)"]
+        )
+        n += 1
+
+        # --- v2 meta stack ---
+        if meta is not None:
+            import numpy as np
+            Pm = meta.predict_proba(np.array([X], dtype=float))[0]
+            con.execute(
+                """INSERT OR REPLACE INTO predictions
+                   (match_id, model_version, p_home, p_draw, p_away, eg_home, eg_away, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [mid, META_MODEL_VERSION, float(Pm[0]), float(Pm[1]), float(Pm[2]), lam_h, lam_a, "meta(logreg stack)"]
+            )
+
+    return n
+
+def backtest_metrics() -> dict:
+    con = connect()
+    df = con.execute(
+        """SELECT p.match_id, p.p_home, p.p_draw, p.p_away,
+                  m.home_goals, m.away_goals
+           FROM predictions p
+           JOIN matches m USING(match_id)
+           WHERE p.model_version=? AND m.status='FINISHED'
+             AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL""",
+        [MODEL_VERSION]
+    ).df()
+
+    if df.empty:
+        return {"n": 0, "logloss": None, "brier": None, "accuracy": None}
+
+    P = df[["p_home", "p_draw", "p_away"]].to_numpy()
+    y = []
+    for hg, ag in zip(df["home_goals"], df["away_goals"]):
+        if hg > ag: y.append(0)
+        elif hg == ag: y.append(1)
+        else: y.append(2)
+    y = np.array(y, dtype=int)
+
+    eps = 1e-12
+    logloss = float(np.mean(-np.log(P[np.arange(len(y)), y] + eps)))
+
+    Y = np.zeros_like(P)
+    Y[np.arange(len(y)), y] = 1.0
+    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
+
+    accuracy = float(np.mean(np.argmax(P, axis=1) == y))
+
+    con.execute(
+        "INSERT OR REPLACE INTO metrics(model_version, n_matches, logloss, brier, accuracy) VALUES (?, ?, ?, ?, ?)",
+        [MODEL_VERSION, int(len(y)), logloss, brier, accuracy]
+    )
+    return {"n": int(len(y)), "logloss": logloss, "brier": brier, "accuracy": accuracy}
+
+
+# ---------------------------------------------------------------------------
+# Prediction scoring — saves individual prediction outcomes so the model
+# can track its own performance over time and detect degradation.
+# ---------------------------------------------------------------------------
+
+def score_finished_predictions(verbose: bool = True) -> dict:
+    """Score all finished predictions that haven't been scored yet.
+
+    For each (match_id, model_version) pair where the match is FINISHED
+    but no row exists in prediction_scores, computes:
+      - outcome  (0=Home, 1=Draw, 2=Away)
+      - logloss  (-log of the probability assigned to the actual outcome)
+      - brier    (mean squared error across the probability vector)
+      - correct  (True if highest probability matched the outcome)
+    """
+    import math
+
+    con = connect()
+    rows = con.execute("""
+        SELECT m.match_id, m.home_goals, m.away_goals,
+               p.model_version, p.p_home, p.p_draw, p.p_away
+        FROM matches m
+        JOIN predictions p ON m.match_id = p.match_id
+        WHERE m.status = 'FINISHED'
+          AND m.home_goals IS NOT NULL
+          AND m.away_goals IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM prediction_scores ps
+              WHERE ps.match_id = m.match_id AND ps.model_version = p.model_version
+          )
+        ORDER BY m.utc_date ASC
+    """).fetchall()
+
+    if not rows:
+        if verbose:
+            print("[score] no new finished predictions to score", flush=True)
+        return {"scored": 0}
+
+    scored = 0
+    total_ll = 0.0
+    total_correct = 0
+
+    for match_id, hg, ag, model_version, ph, pd_, pa in rows:
+        outcome = 0 if hg > ag else (1 if hg == ag else 2)
+        probs = [float(ph), float(pd_), float(pa)]
+        outcome_prob = probs[outcome]
+        predicted = max(range(3), key=lambda i: probs[i])
+
+        ll = -math.log(max(outcome_prob, 1e-15))
+        brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2
+                     for i, p in enumerate(probs)) / 3.0
+        correct = predicted == outcome
+
+        con.execute("""
+            INSERT OR REPLACE INTO prediction_scores
+            (match_id, model_version, outcome, logloss, brier, correct)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, [match_id, model_version, outcome, ll, brier, correct])
+        scored += 1
+        total_ll += ll
+        total_correct += int(correct)
+
+    # Update aggregate metrics table
+    for mv in set(r[3] for r in rows):
+        agg = con.execute("""
+            SELECT COUNT(*), AVG(logloss), AVG(brier),
+                   SUM(CASE WHEN correct THEN 1 ELSE 0 END)
+            FROM prediction_scores WHERE model_version = ?
+        """, [mv]).fetchone()
+        if agg and agg[0] > 0:
+            n, avg_ll, avg_br, n_correct = agg
+            con.execute(
+                "INSERT OR REPLACE INTO metrics(model_version, n_matches, logloss, brier, accuracy) VALUES (?, ?, ?, ?, ?)",
+                [mv, int(n), float(avg_ll), float(avg_br), float(n_correct) / int(n)]
+            )
+
+    if verbose:
+        avg_ll = total_ll / scored if scored else 0
+        acc = total_correct / scored if scored else 0
+        print(f"[score] scored {scored} predictions — logloss={avg_ll:.4f} accuracy={acc:.1%}", flush=True)
+
+    return {"scored": scored, "logloss": total_ll / scored if scored else 0,
+            "accuracy": total_correct / scored if scored else 0}
+
+
+def ingest_news_for_teams(days_back: int = 2, max_records: int = 10) -> int:
+    con = connect()
+    s = settings()
+
+    teams = con.execute(
+        f"""SELECT DISTINCT home_team AS team FROM matches
+              WHERE status IN ('SCHEDULED','TIMED')
+                AND utc_date <= (CURRENT_TIMESTAMP + INTERVAL {s.lookahead_days} DAY)
+            UNION
+            SELECT DISTINCT away_team AS team FROM matches
+              WHERE status IN ('SCHEDULED','TIMED')
+                AND utc_date <= (CURRENT_TIMESTAMP + INTERVAL {s.lookahead_days} DAY)"""
+    ).fetchall()
+
+    teams = [t for (t,) in teams if t]
+    total = len(teams)
+    if total == 0:
+        print("No upcoming teams found. Run: footy update", flush=True)
+        return 0
+
+    def _parse_seendate(v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s2 = v.strip()
+            try:
+                return datetime.strptime(s2, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                try:
+                    return pd.to_datetime(s2, utc=True).to_pydatetime()
+                except Exception:
+                    return None
+        try:
+            return pd.to_datetime(v, utc=True).to_pydatetime()
+        except Exception:
+            return None
+
+    cooldown_hours = 12
+    now = datetime.now(timezone.utc)
+    max_teams_per_run = min(12, total)
+
+    n = 0
+    fetched = 0
+    for i, team in enumerate(teams, start=1):
+        last = con.execute("SELECT MAX(fetched_at) FROM news WHERE team=?", [team]).fetchone()[0]
+        if last is not None:
+            try:
+                last_dt = pd.to_datetime(last, utc=True).to_pydatetime()
+                if (now - last_dt).total_seconds() < cooldown_hours * 3600:
+                    continue
+            except Exception:
+                pass
+
+        print(f"[news] [{i}/{total}] Fetching: {team}", flush=True)
+
+        df = fetch_team_news(team, days_back=days_back, max_records=max_records)
+        if df is None or df.empty:
+            fetched += 1
+            if fetched >= max_teams_per_run:
+                break
+            continue
+
+        for _, r in df.iterrows():
+            sd = _parse_seendate(r.get("seendate"))
+            con.execute(
+                """INSERT OR IGNORE INTO news(team, seendate, title, url, domain, tone, source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [team, sd, r.get("title"), r.get("url"), r.get("domain"), None, "gdelt"]
+            )
+            n += 1
+
+        fetched += 1
+        if fetched >= max_teams_per_run:
+            break
+
+    return n
+
+def train_meta_model(days: int = 365, test_days: int = 28, verbose: bool = True) -> dict:
+    """
+    Train a multinomial logistic regression stacker (v2) WITHOUT mutating production Elo tables.
+    Robust chronological split:
+      - tries a "last test_days" split
+      - if train/test too small, falls back to an 80/20 chronological split with minimum sizes
+    """
+    con = connect()
+    df = con.execute(
+        f"""SELECT match_id, home_team, away_team, home_goals, away_goals, utc_date
+              FROM matches
+              WHERE status='FINISHED'
+                AND home_goals IS NOT NULL AND away_goals IS NOT NULL
+                AND utc_date >= (CURRENT_TIMESTAMP - INTERVAL {days} DAY)
+              ORDER BY utc_date ASC"""
+    ).df()
+
+    if df.empty or len(df) < 80:
+        return {"error": "Not enough finished matches. Ingest more history (later we’ll add football-data.co.uk history to fix this permanently)."}
+
+    df["utc_date"] = pd.to_datetime(df["utc_date"], utc=True)
+
+    min_train = 120
+    min_test = 40
+
+    # Attempt split by test_days
+    cutoff = df["utc_date"].max() - pd.Timedelta(days=test_days)
+    train = df[df["utc_date"] < cutoff].copy()
+    test = df[df["utc_date"] >= cutoff].copy()
+
+    # If too small, fall back to 80/20 split
+    if len(train) < min_train or len(test) < min_test:
+        split_idx = int(len(df) * 0.80)
+        split_idx = max(min_train, min(split_idx, len(df) - min_test))
+        train = df.iloc[:split_idx].copy()
+        test = df.iloc[split_idx:].copy()
+        cutoff = test["utc_date"].min()
+
+    if verbose:
+        print(f"[meta] total finished: {len(df)} | train: {len(train)} | test: {len(test)} | cutoff: {cutoff}", flush=True)
+
+    if len(train) < 50 or len(test) < 20:
+        return {"error": "Still not enough data after fallback split. Increase finished match history."}
+
+    # Fit Poisson on TRAIN only
+    poisson_state = fit_poisson(train)
+
+    # Elo simulated in-memory (dict) for proper sequential features
+    DEFAULT_R = 1500.0
+    ratings: dict[str, float] = {}
+
+    def features_from_dict(home: str, away: str):
+        pE = _elo_predict_dict(ratings, home, away)  # already defined below in pipeline.py
+        lam_h, lam_a = expected_goals(poisson_state, home, away)
+        pP = outcome_probs(lam_h, lam_a)
+        elo_diff = float(ratings.get(home, DEFAULT_R) - ratings.get(away, DEFAULT_R))
+        X = [
+            pE[0], pE[1], pE[2],
+            pP[0], pP[1], pP[2],
+            elo_diff,
+            float(lam_h), float(lam_a), float(lam_h - lam_a),
+        ]
+        return X
+
+    # Build TRAIN features sequentially
+    X_train, y_train = [], []
+    for i, r in enumerate(train.itertuples(index=False), start=1):
+        home = r.home_team; away = r.away_team
+        hg = int(r.home_goals); ag = int(r.away_goals)
+
+        X_train.append(features_from_dict(home, away))
+        if hg > ag: y_train.append(0)
+        elif hg == ag: y_train.append(1)
+        else: y_train.append(2)
+
+        _elo_update_dict(ratings, home, away, hg, ag)
+
+        if verbose and i % 100 == 0:
+            print(f"[meta] train features {i}/{len(train)}…", flush=True)
+
+    import numpy as np
+    X_train = np.array(X_train, dtype=float)
+    y_train = np.array(y_train, dtype=int)
+
+    model = make_meta_model()
+    model.fit(X_train, y_train)
+
+    # Evaluate on TEST sequentially (ratings continue rolling forward)
+    X_test, y_test = [], []
+    for i, r in enumerate(test.itertuples(index=False), start=1):
+        home = r.home_team; away = r.away_team
+        hg = int(r.home_goals); ag = int(r.away_goals)
+
+        X_test.append(features_from_dict(home, away))
+        if hg > ag: y_test.append(0)
+        elif hg == ag: y_test.append(1)
+        else: y_test.append(2)
+
+        _elo_update_dict(ratings, home, away, hg, ag)
+
+        if verbose and i % 50 == 0:
+            print(f"[meta] test features {i}/{len(test)}…", flush=True)
+
+    X_test = np.array(X_test, dtype=float)
+    y_test = np.array(y_test, dtype=int)
+
+    P = model.predict_proba(X_test)
+    eps = 1e-12
+    logloss = float(np.mean(-np.log(P[np.arange(len(y_test)), y_test] + eps)))
+
+    Y = np.zeros_like(P)
+    Y[np.arange(len(y_test)), y_test] = 1.0
+    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
+
+    accuracy = float(np.mean(np.argmax(P, axis=1) == y_test))
+
+    save_meta_model(model)
+
+    con.execute(
+        "INSERT OR REPLACE INTO metrics(model_version, n_matches, logloss, brier, accuracy) VALUES (?, ?, ?, ?, ?)",
+        [META_MODEL_VERSION, int(len(y_test)), logloss, brier, accuracy]
+    )
+
+    out = {"n": int(len(y_test)), "logloss": logloss, "brier": brier, "accuracy": accuracy}
+    if verbose:
+        print(f"[meta] saved {META_MODEL_VERSION} to data/models; result={out}", flush=True)
+    return out
+
+# --- Real test you can run immediately (time-split backtest) ---
+
+def _elo_expected(r_home: float, r_away: float) -> float:
+    return 1.0 / (1.0 + 10 ** (-(r_home - r_away) / 400.0))
+
+def _elo_predict_dict(ratings: dict, home: str, away: str) -> tuple[float, float, float]:
+    DEFAULT_R = 1500.0
+    HOME_ADV = 60.0
+    p_draw = 0.26
+
+    rh = ratings.get(home, DEFAULT_R) + HOME_ADV
+    ra = ratings.get(away, DEFAULT_R)
+
+    p_home = _elo_expected(rh, ra)
+    p_home_adj = p_home * (1.0 - p_draw)
+    p_away_adj = (1.0 - p_home) * (1.0 - p_draw)
+    s = p_home_adj + p_draw + p_away_adj
+    return (p_home_adj / s, p_draw / s, p_away_adj / s)
+
+def _elo_update_dict(ratings: dict, home: str, away: str, hg: int, ag: int):
+    DEFAULT_R = 1500.0
+    HOME_ADV = 60.0
+    K = 20.0
+
+    rh0 = ratings.get(home, DEFAULT_R)
+    ra0 = ratings.get(away, DEFAULT_R)
+    exp_home = _elo_expected(rh0 + HOME_ADV, ra0)
+
+    if hg > ag: s_home = 1.0
+    elif hg == ag: s_home = 0.5
+    else: s_home = 0.0
+
+    delta = K * (s_home - exp_home)
+    ratings[home] = rh0 + delta
+    ratings[away] = ra0 - delta
+
+def backtest_time_split(days: int = 180, test_days: int = 14, verbose: bool = True) -> dict:
+    """
+    Proper chronological backtest:
+    - train = older matches
+    - test = most recent `test_days` of finished matches
+    """
+    con = connect()
+    df = con.execute(
+        f"""SELECT home_team, away_team, home_goals, away_goals, utc_date
+            FROM matches
+            WHERE status='FINISHED'
+              AND home_goals IS NOT NULL AND away_goals IS NOT NULL
+              AND utc_date >= (CURRENT_TIMESTAMP - INTERVAL {days} DAY)
+            ORDER BY utc_date ASC"""
+    ).df()
+
+    if df.empty or len(df) < 50:
+        return {"error": "Not enough finished matches in DB yet. Ingest more history or wait for results."}
+
+    df["utc_date"] = pd.to_datetime(df["utc_date"], utc=True)
+    cutoff = df["utc_date"].max() - pd.Timedelta(days=test_days)
+
+    train = df[df["utc_date"] < cutoff].copy()
+    test = df[df["utc_date"] >= cutoff].copy()
+
+    if verbose:
+        print(f"[backtest] total finished in window: {len(df)}", flush=True)
+        print(f"[backtest] train: {len(train)} | test: {len(test)} | cutoff: {cutoff}", flush=True)
+
+    if len(train) < 30 or len(test) < 10:
+        return {"error": "Train/test split too small. Increase days or reduce test_days."}
+
+    # Fit Poisson only on TRAIN
+    poisson_state = fit_poisson(train)
+
+    # Build Elo sequentially over TRAIN only
+    ratings: dict[str, float] = {}
+    for _, r in train.iterrows():
+        _elo_update_dict(ratings, r["home_team"], r["away_team"], int(r["home_goals"]), int(r["away_goals"]))
+
+    # Predict TEST
+    P = []
+    y = []
+    for i, r in enumerate(test.itertuples(index=False), start=1):
+        home = r.home_team
+        away = r.away_team
+        hg = int(r.home_goals)
+        ag = int(r.away_goals)
+
+        pE = _elo_predict_dict(ratings, home, away)
+        lam_h, lam_a = expected_goals(poisson_state, home, away)
+        pP = outcome_probs(lam_h, lam_a)
+
+        p_home = 0.45 * pE[0] + 0.55 * pP[0]
+        p_draw = 0.45 * pE[1] + 0.55 * pP[1]
+        p_away = 0.45 * pE[2] + 0.55 * pP[2]
+        ssum = p_home + p_draw + p_away
+        p_home, p_draw, p_away = p_home / ssum, p_draw / ssum, p_away / ssum
+        P.append([p_home, p_draw, p_away])
+
+        if hg > ag: y.append(0)
+        elif hg == ag: y.append(1)
+        else: y.append(2)
+
+        if verbose and i % 25 == 0:
+            print(f"[backtest] predicted {i}/{len(test)}…", flush=True)
+
+        # Update Elo with the *observed* result as we roll forward (realistic sequential backtest)
+        _elo_update_dict(ratings, home, away, hg, ag)
+
+    P = np.array(P, dtype=float)
+    y = np.array(y, dtype=int)
+
+    eps = 1e-12
+    logloss = float(np.mean(-np.log(P[np.arange(len(y)), y] + eps)))
+
+    Y = np.zeros_like(P)
+    Y[np.arange(len(y)), y] = 1.0
+    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
+
+    accuracy = float(np.mean(np.argmax(P, axis=1) == y))
+
+    result = {"n": int(len(y)), "logloss": logloss, "brier": brier, "accuracy": accuracy}
+    if verbose:
+        print(f"[backtest] result: {result}", flush=True)
+    return result
