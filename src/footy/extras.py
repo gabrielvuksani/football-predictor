@@ -21,7 +21,11 @@ def _num(v):
             return None
         if isinstance(v, str) and v.strip() == "":
             return None
-        return float(v)
+        import math
+        result = float(v)
+        if math.isnan(result) or math.isinf(result):
+            return None
+        return result
     except Exception:
         return None
 

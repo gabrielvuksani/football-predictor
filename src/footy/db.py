@@ -258,7 +258,7 @@ def _migrate_columns(con):
         existing = {r[0].lower() for r in con.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name='prediction_scores'"
         ).fetchall()}
-        for col, typ in _EXTRAS_MIGRATIONS[21:]:  # prediction_scores columns
+        for col, typ in _EXTRAS_MIGRATIONS[23:]:  # prediction_scores columns
             if col not in existing:
                 try:
                     con.execute(f"ALTER TABLE prediction_scores ADD COLUMN {col} {typ}")
