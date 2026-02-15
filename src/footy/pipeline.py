@@ -29,11 +29,11 @@ def reset_states(verbose: bool = True) -> None:
     Does NOT delete matches/news.
     """
     con = connect()
-    con.execute("DELETE FROM predictions")
-    con.execute("DELETE FROM metrics")
-    con.execute("DELETE FROM elo_state")
-    con.execute("DELETE FROM elo_applied")
-    con.execute("DELETE FROM poisson_state")
+    for table in ["predictions", "metrics", "elo_state", "elo_applied", "poisson_state"]:
+        try:
+            con.execute(f"DELETE FROM {table}")
+        except Exception:
+            pass  # table may not exist yet on fresh DB
     if verbose:
         print("[reset] cleared predictions/metrics/elo_state/elo_applied/poisson_state", flush=True)
 

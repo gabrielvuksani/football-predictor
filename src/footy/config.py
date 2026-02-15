@@ -30,7 +30,7 @@ def settings() -> Settings:
     if not tok or not afk:
         raise RuntimeError("Missing FOOTBALL_DATA_ORG_TOKEN or API_FOOTBALL_KEY. Copy .env.example to .env and fill it.")
 
-    comps = (_get("TRACKED_COMPETITIONS", "PL,PD,SA,BL1") or "").split(",")
+    comps = (_get("TRACKED_COMPETITIONS", "PL,PD,SA,BL1,FL1") or "").split(",")
     comps = [c.strip() for c in comps if c.strip()]
 
     return Settings(

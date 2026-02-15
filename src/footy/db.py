@@ -245,7 +245,7 @@ def _migrate_columns(con):
         existing = {r[0].lower() for r in con.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name='match_extras'"
         ).fetchall()}
-        for col, typ in _EXTRAS_MIGRATIONS[:21]:  # match_extras columns
+        for col, typ in _EXTRAS_MIGRATIONS[:23]:  # match_extras columns (up to htag)
             if col not in existing:
                 try:
                     con.execute(f"ALTER TABLE match_extras ADD COLUMN {col} {typ}")

@@ -1056,7 +1056,6 @@ def _prepare_df(con, finished_only: bool = True, days: int = 3650) -> pd.DataFra
                e.b365_o25, e.b365_u25,
                e.avg_o25, e.avg_u25,
                e.max_o25, e.max_u25,
-               e.hthg, e.htag,
                e.hs, e.hst, e.hc, e.hy, e.hr,
                e.as_ AS as_, e.ast, e.ac, e.ay, e.ar
         FROM matches m
@@ -1329,8 +1328,19 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     hist["home_team"] = hist["home_team"].map(canonical_team_name)
     hist["away_team"] = hist["away_team"].map(canonical_team_name)
 
-    # dummy rows for upcoming
-    dummy = up[["utc_date", "home_team", "away_team", "b365h", "b365d", "b365a", "raw_json"]].copy()
+    # dummy rows for upcoming — copy all columns that exist in 'up'
+    _odds_cols = [
+        "b365h", "b365d", "b365a", "raw_json",
+        "b365ch", "b365cd", "b365ca",
+        "psh", "psd", "psa",
+        "avgh", "avgd", "avga",
+        "maxh", "maxd", "maxa",
+        "b365_o25", "b365_u25",
+        "avg_o25", "avg_u25",
+        "max_o25", "max_u25",
+    ]
+    keep = ["utc_date", "home_team", "away_team"] + [c for c in _odds_cols if c in up.columns]
+    dummy = up[keep].copy()
     dummy["home_goals"] = 0; dummy["away_goals"] = 0
     for c in ["hs", "hst", "hc", "hy", "hr", "as_", "ast", "ac", "ay", "ar"]:
         dummy[c] = 0
@@ -1528,6 +1538,13 @@ def get_expert_breakdown(con, match_id: int) -> dict | None:
     hist = con.execute("""
         SELECT m.utc_date, m.home_team, m.away_team, m.home_goals, m.away_goals,
                e.b365h, e.b365d, e.b365a, e.raw_json,
+               e.b365ch, e.b365cd, e.b365ca,
+               e.psh, e.psd, e.psa,
+               e.avgh, e.avgd, e.avga,
+               e.maxh, e.maxd, e.maxa,
+               e.b365_o25, e.b365_u25,
+               e.avg_o25, e.avg_u25,
+               e.max_o25, e.max_u25,
                e.hs, e.hst, e.hc, e.hy, e.hr,
                e.as_ AS as_, e.ast, e.ac, e.ay, e.ar
         FROM matches m
@@ -1546,7 +1563,15 @@ def get_expert_breakdown(con, match_id: int) -> dict | None:
 
     # Build dummy row for this match
     extras = con.execute(
-        "SELECT b365h, b365d, b365a, raw_json FROM match_extras WHERE match_id = ?",
+        """SELECT b365h, b365d, b365a, raw_json,
+                  b365ch, b365cd, b365ca,
+                  psh, psd, psa,
+                  avgh, avgd, avga,
+                  maxh, maxd, maxa,
+                  b365_o25, b365_u25,
+                  avg_o25, avg_u25,
+                  max_o25, max_u25
+           FROM match_extras WHERE match_id = ?""",
         [match_id]
     ).fetchone()
     dummy = pd.DataFrame([{
@@ -1558,6 +1583,24 @@ def get_expert_breakdown(con, match_id: int) -> dict | None:
         "b365d": extras[1] if extras else 0,
         "b365a": extras[2] if extras else 0,
         "raw_json": extras[3] if extras else None,
+        "b365ch": extras[4] if extras else None,
+        "b365cd": extras[5] if extras else None,
+        "b365ca": extras[6] if extras else None,
+        "psh": extras[7] if extras else None,
+        "psd": extras[8] if extras else None,
+        "psa": extras[9] if extras else None,
+        "avgh": extras[10] if extras else None,
+        "avgd": extras[11] if extras else None,
+        "avga": extras[12] if extras else None,
+        "maxh": extras[13] if extras else None,
+        "maxd": extras[14] if extras else None,
+        "maxa": extras[15] if extras else None,
+        "b365_o25": extras[16] if extras else None,
+        "b365_u25": extras[17] if extras else None,
+        "avg_o25": extras[18] if extras else None,
+        "avg_u25": extras[19] if extras else None,
+        "max_o25": extras[20] if extras else None,
+        "max_u25": extras[21] if extras else None,
         "hs": 0, "hst": 0, "hc": 0, "hy": 0, "hr": 0,
         "as_": 0, "ast": 0, "ac": 0, "ay": 0, "ar": 0,
     }])

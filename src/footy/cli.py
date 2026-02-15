@@ -177,7 +177,7 @@ def matchday():
         from rich.console import Console
         console = Console()
 
-        for code in ["PL", "PD", "SA", "BL1"]:
+        for code in ["PL", "PD", "SA", "BL1", "FL1"]:
             try:
                 summary = league_round_summary(code)
                 if summary.get("matches", 0) > 0:
@@ -203,13 +203,24 @@ def matchday():
 
 @app.command()
 def nuke():
-    """Nuclear option: reset all model states and rebuild from scratch.
+    """Nuclear option: delete the entire database and rebuild from scratch.
 
-    Clears Elo, Poisson, all predictions, then runs full `go` pipeline.
+    Removes the DB file completely, recreates fresh schema,
+    then runs full `go` pipeline.
     Use when something is fundamentally broken.
     """
+    import os
+    from footy.config import settings as get_settings
     t0 = time.perf_counter()
     print("[bold red]== NUKE: Full rebuild ==[/bold red]", flush=True)
+
+    # Delete the DB file entirely for a truly clean slate
+    s = get_settings()
+    db_path = s.db_path
+    for f in [db_path, db_path + ".wal"]:
+        if os.path.exists(f):
+            os.remove(f)
+            print(f"[red]Deleted {f}[/red]", flush=True)
 
     print("[red]Resetting all model states...[/red]", flush=True)
     pipeline.reset_states(verbose=True)
@@ -263,7 +274,7 @@ def ai_preview(match_id: int = None, league: str = None):
         ))
     else:
         # Default: show all leagues
-        for code in ["PL", "PD", "SA", "BL1"]:
+        for code in ["PL", "PD", "SA", "BL1", "FL1"]:
             summary = league_round_summary(code)
             if summary.get("matches", 0) > 0:
                 print(f"\n[bold cyan]{code}[/bold cyan] — {summary.get('summary','')}")
