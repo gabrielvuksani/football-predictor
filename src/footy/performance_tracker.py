@@ -111,8 +111,8 @@ class PerformanceTracker:
             FROM prediction_scores ps
             JOIN predictions p ON ps.match_id = p.match_id AND ps.model_version = p.model_version
             JOIN matches m ON ps.match_id = m.match_id
-            WHERE ps.model_version = ? AND ps.scored_at >= ?
-            ORDER BY ps.scored_at
+            WHERE ps.model_version = ? AND m.utc_date >= ?
+            ORDER BY m.utc_date
         """, [model_version, window_start]).fetchall()
         
         if not rows:
@@ -207,13 +207,14 @@ class PerformanceTracker:
         window_start = datetime.now(timezone.utc) - timedelta(days=days)
         
         rows = self.con.execute("""
-            SELECT DATE(ps.scored_at) as score_date, COUNT(*) as n_pred, 
+            SELECT DATE(m.utc_date) as match_date, COUNT(*) as n_pred, 
                    SUM(CASE WHEN ps.correct THEN 1 ELSE 0 END) as n_correct,
                    AVG(ps.logloss) as avg_logloss, AVG(ps.brier) as avg_brier
             FROM prediction_scores ps
-            WHERE ps.model_version = ? AND ps.scored_at >= ?
-            GROUP BY DATE(ps.scored_at)
-            ORDER BY score_date DESC
+            JOIN matches m ON ps.match_id = m.match_id
+            WHERE ps.model_version = ? AND m.utc_date >= ?
+            GROUP BY DATE(m.utc_date)
+            ORDER BY match_date DESC
         """, [model_version, window_start]).fetchall()
         
         daily = []
@@ -406,7 +407,8 @@ class PerformanceTracker:
         rows = self.con.execute("""
             SELECT DISTINCT ps.model_version
             FROM prediction_scores ps
-            WHERE ps.scored_at >= ?
+            JOIN matches m2 ON ps.match_id = m2.match_id
+            WHERE m2.utc_date >= ?
         """, [datetime.now(timezone.utc) - timedelta(days=days)]).fetchall()
         
         models = [r[0] for r in rows]
@@ -471,8 +473,8 @@ def analyze_prediction_errors(model_version: str = "v10_council",
         FROM prediction_scores ps
         JOIN predictions p ON ps.match_id = p.match_id AND ps.model_version = p.model_version
         JOIN matches m ON ps.match_id = m.match_id
-        WHERE ps.model_version = ? AND ps.scored_at >= ?
-        ORDER BY ps.scored_at
+        WHERE ps.model_version = ? AND m.utc_date >= ?
+        ORDER BY m.utc_date
     """, [model_version, window]).fetchall()
 
     if not rows:

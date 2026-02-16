@@ -359,7 +359,9 @@ def update():
     _pipeline().refit_poisson(verbose=True)
 
     console.print("[cyan]Step 3/4[/cyan] predict upcoming")
-    n_pred = _pipeline().predict_upcoming(verbose=True)
+    from footy.models.council import predict_upcoming as _predict
+    from footy.db import connect as _connect
+    n_pred = _predict(_connect(), verbose=True)
 
     console.print("[cyan]Step 4/4[/cyan] metrics (only counts matches that were predicted before finishing)")
     m = _pipeline().backtest_metrics()

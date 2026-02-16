@@ -233,12 +233,18 @@ footy cache-cleanup --full        # Clear entire cache
 | GET | `/api/matches/{id}/form` | Recent form (W/D/L + PPG) |
 | GET | `/api/matches/{id}/ai` | AI narrative |
 | GET | `/api/insights/value-bets` | Value bets + Kelly criterion |
+| GET | `/api/insights/btts-ou` | BTTS & Over/Under 2.5 analysis |
+| GET | `/api/insights/accumulators` | Auto-generated accumulator bets |
+| GET | `/api/insights/form-table/{comp}` | League form table |
+| GET | `/api/insights/accuracy` | Prediction accuracy dashboard |
+| GET | `/api/insights/round-preview/{comp}` | AI round preview |
+| GET | `/api/insights/post-match-review` | Post-match accuracy review |
+| GET | `/api/training/status` | Drift detection & retraining status |
 | GET | `/api/stats` | Database statistics |
 | GET | `/api/performance` | Model performance + calibration |
 | GET | `/api/matches/{id}/xg` | xG breakdown for match |
 | GET | `/api/matches/{id}/patterns` | Goal pattern analysis |
 | GET | `/api/league-table/{comp}` | Simulated league standings |
-| GET | `/api/competitions` | Available competitions |
 | GET | `/api/last-updated` | Last prediction timestamp |
 
 ## UI
@@ -251,79 +257,13 @@ footy cache-cleanup --full        # Clear entire cache
 - Value bets tab with Kelly criterion
 - Stats tab with model comparison + calibration chart
 - Responsive 2-column layout on desktop
+- 10-tab navigation: Matches, Insights, BTTS/O2.5, Accumulators, Form, Tables, Accuracy, Review, Stats, Training
 
-## Phase 5.2.2: Root Process Port Blocking Issue
+## Phase 5.2.2: Streamlit Removal
 
-**Problem**: Streamlit process running as root (PID 100830) is blocking port 8501 and cannot be killed without persistent sudo access.
+**Status**: ✅ COMPLETE (DELETED)
 
-**Root Cause**: 
-- Streamlit was previously started with `sudo streamlit run ...`
-- Process inherited root ownership
-- Interactive sudo password prompts don't work reliably in non-TTY environments
-- The stuck process survives normal kill attempts
-
-**Solutions** (in order of preference):
-
-### Option A: Reboot Machine (Nuclear Option)
-```bash
-sudo reboot
-# After reboot, always run: ./clear_port_8501.sh  
-# Then: streamlit run ui/app.py
-```
-**Time**: ~2 minutes
-**Success Rate**: 100%
-
-### Option B: Configure Passwordless Sudo (Recommended)
-This prevents future password prompts:
-
-```bash
-# Enable killall for current user without password prompt
-echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/killall" | sudo tee /etc/sudoers.d/streamlit-cleanup
-sudo chmod 0440 /etc/sudoers.d/streamlit-cleanup
-
-# Then run:
-./clear_port_8501.sh
-streamlit run ui/app.py
-```
-**Time**: 1 minute one-time setup
-**Success Rate**: 100%
-
-### Option C: Connect Over SSH with Sudo
-If terminal environment is causing password issues:
-
-```bash
-# In a new terminal:
-ssh $USER@localhost "sudo killall -9 streamlit; sleep 1; streamlit run ui/app.py"
-```
-**Time**: 2 minutes
-**Success Rate**: ~80%
-
-### Option D: Manual Port Changing
-Run Streamlit on a different port:
-
-```bash
-# Kill stuck process (try multiple times):
-sudo killall streamlit python3
-sudo killall -9 streamlit python3
-
-# Run on different port:
-streamlit run ui/app.py --server.port 8502
-# Then access via http://localhost:8502
-```
-**Time**: 30 seconds
-**Success Rate**: ~60%
-
-**Recommended Action for Now**:
-```bash
-# Try Option A (reboot) - most reliable
-sudo reboot
-
-# After reboot:
-cd ~/football-predictor
-./clear_port_8501.sh
-streamlit run ui/app.py
-```
-
+Streamlit UI (`ui/app.py`) has been fully replaced by the FastAPI + Alpine.js web app. All Streamlit-only features have been migrated to the consolidated web app. The `ui/` directory has been deleted.
 
 ## Phase 5.3: Complete Issue Audit & Fix
 

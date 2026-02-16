@@ -476,7 +476,7 @@ a { color: inherit; text-decoration: none; }
 .table-comp-pills { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .standings-table { overflow: hidden; }
 .standings-head {
-  display: grid; grid-template-columns: 36px 1fr repeat(5, 32px) 44px 44px;
+  display: grid; grid-template-columns: 36px 1fr repeat(4, 32px) 44px 44px;
   padding: 0.6rem 0.85rem;
   font-size: 0.65rem; font-weight: 700; color: var(--text-3);
   text-transform: uppercase; letter-spacing: 0.06em;
@@ -484,7 +484,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface-0);
 }
 .standings-row {
-  display: grid; grid-template-columns: 36px 1fr repeat(5, 32px) 44px 44px;
+  display: grid; grid-template-columns: 36px 1fr repeat(4, 32px) 44px 44px;
   padding: 0.55rem 0.85rem;
   font-size: 0.82rem;
   border-bottom: 1px solid var(--border);
@@ -598,14 +598,56 @@ a { color: inherit; text-decoration: none; }
 /* Focus */
 .match-card:focus-visible, .action-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* ═══════ BTTS & O/U ═══════ */
+.btts-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+.btts-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.btts-row:last-child { border-bottom: none; }
+.btts-match { flex: 1; font-size: 0.8rem; font-weight: 500; }
+.btts-prob { font-family: var(--mono); font-size: 0.8rem; font-weight: 700; min-width: 3rem; text-align: right; }
+.subsection-title { font-size: 0.85rem; font-weight: 700; margin-bottom: 0.5rem; }
+
+/* ═══════ ACCUMULATORS ═══════ */
+.acca-card { }
+.acca-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+.acca-meta { display: flex; gap: 0.75rem; font-family: var(--mono); font-size: 0.8rem; }
+.acca-prob { color: var(--text-2); }
+.acca-odds { color: var(--amber); font-weight: 600; }
+.acca-leg { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 0.8rem; }
+.acca-leg:last-child { border-bottom: none; }
+.acca-leg-match { flex: 1; font-weight: 500; }
+.acca-leg-pick { font-weight: 700; color: var(--green); min-width: 3rem; }
+.acca-leg-prob { min-width: 3rem; text-align: right; }
+.acca-leg-odds { color: var(--amber); min-width: 3rem; text-align: right; }
+
+/* ═══════ ACCURACY DASHBOARD ═══════ */
+.accuracy-tier-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; }
+.tier-label { min-width: 6rem; font-size: 0.8rem; font-weight: 500; }
+.tier-bar-container { flex: 1; height: 0.5rem; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
+.tier-bar { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.tier-stat { font-size: 0.75rem; min-width: 8rem; text-align: right; color: var(--text-2); }
+
+/* ═══════ TRAINING ═══════ */
+.training-drift-badge { display: inline-block; padding: 0.3rem 0.8rem; border-radius: 8px; font-size: 0.8rem; font-weight: 700; }
+.drift-ok { background: rgba(74,222,128,0.15); color: var(--green); }
+.drift-alert { background: rgba(251,113,133,0.15); color: var(--red); }
+.drift-unknown { background: rgba(255,255,255,0.08); color: var(--text-3); }
+.training-schedule-row { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.04); align-items: center; }
+.training-model { font-weight: 600; font-size: 0.85rem; min-width: 7rem; }
+.training-history-row { padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.training-history-header { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.2rem; }
+.training-deployed { background: var(--green); color: #000; font-size: 0.6rem; padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 700; }
+.training-history-meta { display: flex; gap: 0.75rem; }
+
 /* ═══════ RESPONSIVE ═══════ */
 @media (max-width: 768px) {
   .detail-grid { grid-template-columns: 1fr; }
   .hero-teams { gap: 0.5rem; }
   .hero-team-name { font-size: 1.05rem; }
   .hero-score { font-size: 1.8rem; }
-  .standings-head, .standings-row { grid-template-columns: 30px 1fr repeat(5, 28px) 38px 38px; font-size: 0.75rem; padding: 0.45rem 0.65rem; }
+  .standings-head, .standings-row { grid-template-columns: 30px 1fr repeat(4, 28px) 38px 38px; font-size: 0.75rem; padding: 0.45rem 0.65rem; }
   .st-team { font-size: 0.75rem; }
+  .btts-grid { grid-template-columns: 1fr; }
+  .nav-tabs { flex-wrap: wrap; gap: 0.2rem; }
 }
 @media (max-width: 640px) {
   .nav-right { gap: 0.5rem; }
@@ -616,4 +658,6 @@ a { color: inherit; text-decoration: none; }
   .hero-team-name { font-size: 0.9rem; }
   .hero-probs .pct { font-size: 1.4rem; }
   .container { padding: 0 0.75rem; }
+  .nav-tabs { gap: 0.15rem; }
+  .nav-tab { padding: 0.25rem 0.4rem; font-size: 0.65rem; }
 }

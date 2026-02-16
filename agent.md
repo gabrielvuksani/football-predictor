@@ -7,8 +7,9 @@
 ## Project Overview
 
 ML-powered football match prediction system covering 5 European leagues (PL, PD, SA,
-BL1, FL1) with 45,000+ historical matches. Uses an **8-expert council** architecture
-(v10_council) that feeds ~170 features into a HistGradientBoosting meta-learner.
+BL1, FL1) with 45,000+ historical matches. Uses an **11-expert council** architecture
+(v10_council) that feeds ~250+ features into a multi-model stacking meta-learner
+(HistGradientBoosting + RandomForest + LogisticRegression with Nelder-Mead learned weights).
 
 ## Tech Stack
 
@@ -19,16 +20,18 @@ BL1, FL1) with 45,000+ historical matches. Uses an **8-expert council** architec
 | ML | scikit-learn, numpy, scipy |
 | CLI | Typer (sub-apps in `src/footy/cli/`) |
 | Web API | FastAPI (`web/api.py`) |
-| Frontend | Alpine.js + vanilla CSS (no build step) |
+| Frontend | Alpine.js + vanilla CSS (no build step) — 10-tab SPA |
 | LLM | Ollama (local, optional) |
 | Console | Rich |
 | HTTP | httpx |
+| Static site | GitHub Pages (`docs/`) — manual fork of `web/` with `FOOTY_STATIC` flag |
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/footy/models/council.py` | Core model — 8 experts + meta-learner |
+| `src/footy/models/council.py` | Core model — 11 experts + multi-model meta-learner |
+| `src/footy/models/advanced_math.py` | Mathematical foundations (DC, Skellam, MC, Beta-Binom, etc.) |
 | `src/footy/pipeline.py` | Orchestrates the full `footy go` pipeline |
 | `src/footy/db.py` | Database schema bootstrap (all CREATE TABLE statements) |
 | `src/footy/config.py` | Settings from .env (pydantic-settings) |
@@ -36,33 +39,81 @@ BL1, FL1) with 45,000+ historical matches. Uses an **8-expert council** architec
 | `src/footy/team_mapping.py` | 290+ team name mappings, fuzzy match, provider hints |
 | `src/footy/h2h.py` | Head-to-head stats via SQL aggregation |
 | `src/footy/xg.py` | Expected goals with data-learned conversion rates |
-| `web/api.py` | All REST endpoints |
-| `web/templates/index.html` | SPA template (Alpine.js) |
-| `web/static/app.js` | Frontend routing & state |
+| `src/footy/llm/insights.py` | 14 LLM insight functions (BTTS/OU, accas, form, accuracy, review) |
+| `src/footy/continuous_training.py` | Auto-retraining pipeline (drift + deploy + rollback) |
+| `src/footy/performance_tracker.py` | Model performance tracking + error analysis |
+| `web/api.py` | All REST endpoints (~25 routes) |
+| `web/templates/index.html` | SPA template (Alpine.js, 10 tabs) |
+| `web/static/app.js` | Frontend routing & state (v5) |
 | `web/static/style.css` | Dark glassmorphism design system |
 
 ## Architecture: v10_council
 
 ```
-Layer 1 — EIGHT SPECIALIST EXPERTS
-┌──────────────┬──────────────┬──────────────┬──────────────┐
-│  EloExpert   │ MarketExpert │  FormExpert  │PoissonExpert │
-│ Rating dyn,  │ Multi-tier   │ OAF, venue-  │ Venue-split  │
-│ momentum,    │ odds, line   │ split PPG,   │ attack/def,  │
-│ home adv     │ movement     │ BTTS, CS     │ BTTS, O2.5   │
-├──────────────┼──────────────┼──────────────┼──────────────┤
-│  H2HExpert   │ContextExpert │GoalPattern   │ LeagueTable  │
-│ Bayesian     │ Rest days,   │ First-goal,  │ Position,    │
-│ Dirichlet,   │ congestion,  │ HT scoring,  │ PPG, points  │
-│ time decay   │ day-of-week  │ comebacks    │ gap to top   │
-└──────────────┴──────────────┴──────────────┴──────────────┘
+Layer 1 — ELEVEN SPECIALIST EXPERTS
+┌──────────────┬──────────────┬──────────────┐
+│  EloExpert   │ MarketExpert │  FormExpert  │
+│ Rating diff, │ Multi-tier   │ Bayesian     │
+│ tanh/log     │ odds, logit  │ shrinkage,   │
+│ transforms,  │ probs, Shan- │ schedule     │
+│ weighted     │ non entropy, │ difficulty,  │
+│ momentum     │ Pinnacle pin │ conversion   │
+├──────────────┼──────────────┼──────────────┤
+│PoissonExpert │  H2HExpert   │ContextExpert │
+│ DC-adjusted  │ Bayesian     │ Season stage,│
+│ score matrix,│ Dirichlet    │ congestion,  │
+│ Skellam GD,  │ prior, time  │ rest ratio,  │
+│ Monte Carlo  │ decay        │ day-of-week  │
+│ (2000 sims)  │              │              │
+├──────────────┼──────────────┼──────────────┤
+│GoalPattern   │ LeagueTable  │  Momentum    │
+│ Scoring &    │ Simulated    │ EMA cross-   │
+│ conceding    │ standings,   │ overs, slope │
+│ streaks,     │ position     │ regression,  │
+│ burst &      │ delta, pts   │ volatility,  │
+│ drought      │ per game     │ burst detect │
+├──────────────┼──────────────┼──────────────┤
+│ Bayesian     │   Injury     │              │
+│ Rate Expert  │ Availability │              │
+│ Beta-Binom   │ FPL injuries │              │
+│ shrinkage    │ fixture      │              │
+│ (18 feats)   │ difficulty   │              │
+└──────────────┴──────────────┴──────────────┘
                          ↓
-Layer 2 — CONFLICT & CONSENSUS (9 pairwise features)
+Layer 2 — CONFLICT & CONSENSUS
+  Expert variance, pairwise agreements (55 pairs),
+  winner vote concentration, per-expert entropy,
+  KL divergence per expert vs ensemble mean,
+  cross-domain interactions, one-hot competition
                          ↓
-Layer 3 — META-LEARNER (HistGradientBoosting + Isotonic calibration)
-           + Dixon-Coles pseudo-expert
-           → P(Home, Draw, Away)
+Layer 3 — MULTI-MODEL STACK (META-LEARNER)
+  HistGradientBoosting + RandomForest + LogisticRegression
+  Weights learned via Nelder-Mead on validation logloss
+  Each wrapped in isotonic calibration (cv=5)
+  → ~250+ features → P(Home, Draw, Away)
+                         ↓
+Layer 4 — WALK-FORWARD VALIDATION
+  4-fold expanding-window temporal CV
 ```
+
+## Web UI — 10-Tab SPA
+
+The frontend is a single-page app (Alpine.js, no build step) with 10 tabs:
+
+| Tab | Route | API Source |
+|-----|-------|-----------|
+| Matches | `/` | `/api/matches` |
+| Insights | `/insights` | `/api/insights/value-bets` |
+| BTTS/O2.5 | `/btts` | `/api/insights/btts-ou` |
+| Accumulators | `/accas` | `/api/insights/accumulators` |
+| Form | `/form` | `/api/insights/form-table/{comp}` |
+| Tables | `/table` | `/api/league-table/{comp}` |
+| Accuracy | `/accuracy` | `/api/insights/accuracy` |
+| Review | `/review` | `/api/insights/round-preview/{comp}`, `/api/insights/post-match-review` |
+| Stats | `/stats` | `/api/stats`, `/api/performance` |
+| Training | `/training` | `/api/training/status` |
+
+**GitHub Pages:** `docs/` is a manual fork of `web/` with `window.FOOTY_STATIC = true` flag. Static mode uses `_staticUrl()` to transform API paths to local JSON files.
 
 ## Database Tables (DuckDB)
 
@@ -79,6 +130,10 @@ Key tables — all in `data/footy.duckdb`:
 - `opta_predictions` — Scraped Opta win probabilities
 - `team_mappings` — Canonical team name mapping
 - `metrics` — Aggregated model performance
+- `expert_cache` — Cached expert council breakdowns
+- `llm_insights` — LLM-generated match narratives
+- `scheduled_jobs` / `job_runs` — Background scheduler
+- `model_training_records` / `model_deployments` / `retraining_schedules` — Continuous training
 
 ## CLI Structure
 
@@ -91,8 +146,8 @@ footy model {train, predict, retrain, drift-check, ...}
 footy ai {preview, value, review, explain-match, ...}
 footy scheduler {start, stop, add, list, ...}
 footy perf {summary, ranking, trend, daily, health, ...}
-footy stats {understat-team, fbref-shooting, ...}
 footy opta {fetch, show}
+footy pages {export}
 ```
 
 ## Conventions
@@ -103,12 +158,15 @@ footy opta {fetch, show}
 - Use `logging` module for operational logs; Rich console for user-facing output
 - SQL queries use parameterized `?` placeholders — never f-strings for user input
 - Team names go through `canonical_team_name()` from `footy.normalize`
+- Use `datetime.now(timezone.utc)` — never `datetime.utcnow()` (deprecated)
 
 ### Model Versions
 - Current production: `v10_council`
 - Model file: `data/models/v10_council.joblib`
 - All predictions write `model_version = 'v10_council'`
 - Old models (v2–v5) exist as base layers within the council
+- `footy model train-meta` now trains the v10 council (not legacy v2 stacker)
+- `footy model predict` now uses council.predict_upcoming (not the removed pipeline.predict_upcoming)
 
 ### Data Flow
 ```
@@ -119,8 +177,9 @@ train council → predict → score predictions → H2H → xG
 ### Web Routing
 - SPA at `/` with Alpine.js handling client-side routing
 - Match detail pages at `/match/{id}` (served by same SPA template)
-- All API endpoints at `/api/*`
+- All API endpoints at `/api/*` (~25 routes)
 - DB connections are short-lived read-only (write-lock only held by CLI pipeline)
+- Streamlit UI has been deleted — web app is the sole frontend
 
 ## Stubs / Not Yet Implemented
 
@@ -133,7 +192,6 @@ train council → predict → score predictions → H2H → xG
 ```bash
 footy self-test           # Full suite
 pytest tests/ -v          # Direct pytest
-pytest tests/test_upgrades.py -v  # v8 upgrade tests
 ```
 
 Test fixtures use in-memory DuckDB connections. Some tests require the model
@@ -163,8 +221,9 @@ Optional:
 
 ### Adding a new API endpoint
 1. Add route in `web/api.py`
-2. Follow pattern: `con()` for DB, try/except for IOException
+2. Follow pattern: `con()` for DB, try/except with JSONResponse error handling
 3. Add corresponding UI section in `index.html` + state in `app.js`
+4. Sync changes to `docs/` for GitHub Pages (app.js, index.html, style.css)
 
 ### Adding a new provider
 1. Create module in `src/footy/providers/`

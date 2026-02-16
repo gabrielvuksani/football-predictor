@@ -12,7 +12,7 @@ Features:
 - Full audit trail: every train/deploy/rollback is logged with metrics
 """
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 import json
@@ -44,7 +44,7 @@ class ModelTrainingRecord:
         self.n_matches_used = n_matches_used
         self.metrics = metrics or {}
         self.test_metrics = test_metrics or {}
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
 
 
 class ContinuousTrainingManager:
@@ -254,7 +254,7 @@ class ContinuousTrainingManager:
         
         Returns dict with 'drifted' bool and accuracy numbers.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         recent_start = now - timedelta(days=recent_window)
         baseline_start = now - timedelta(days=baseline_window)
 
@@ -463,7 +463,7 @@ class ContinuousTrainingManager:
             model_version, model_type, training_window_days, n_matches_used, n_matches_test,
             json.dumps(metrics), json.dumps(test_metrics or {}),
             prev_version, improvement_pct,
-            f"Training started {datetime.utcnow().isoformat()}"
+            f"Training started {datetime.now(timezone.utc).isoformat()}"
         ])
         
         # Update retraining schedule

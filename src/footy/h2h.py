@@ -67,20 +67,6 @@ def ensure_h2h_tables(con: duckdb.DuckDBPyConnection) -> None:
             PRIMARY KEY(home_team, away_team)
         );
     """)
-    
-    # Recent matches for trend analysis (last N matches per pair)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS h2h_recent (
-            match_id BIGINT PRIMARY KEY,
-            team_a VARCHAR NOT NULL,
-            team_b VARCHAR NOT NULL,
-            utc_date TIMESTAMP,
-            a_goals INT,
-            b_goals INT,
-            outcome VARCHAR,  -- 'a_win', 'b_win', 'draw'
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
 
 def recompute_h2h_stats(con: duckdb.DuckDBPyConnection, verbose: bool = False) -> dict:
     """

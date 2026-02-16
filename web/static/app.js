@@ -1,5 +1,6 @@
 /**
- * Footy Predictor v4 — Full-page match detail + League tables
+ * Footy Predictor v5 — Consolidated UI
+ * Migrated all Streamlit features into FastAPI + Alpine.js SPA
  * URL-driven routing · Auto-loading · Performance dashboard
  */
 document.addEventListener('alpine:init', () => {
@@ -29,6 +30,37 @@ document.addEventListener('alpine:init', () => {
     tableCompetitions: ['PL', 'PD', 'SA', 'BL1', 'FL1'],
     leagueTable: [],
     loadingTable: false,
+
+    // ── BTTS & O/U state ──
+    bttsOu: null,
+    loadingBtts: false,
+
+    // ── Accumulators state ──
+    accumulators: [],
+    loadingAccas: false,
+
+    // ── League Form Table state ──
+    formTableComp: 'PL',
+    formTable: [],
+    loadingFormTable: false,
+
+    // ── Accuracy Dashboard state ──
+    accuracyStats: null,
+    loadingAccuracy: false,
+    accuracyDays: 30,
+
+    // ── Round Preview state ──
+    roundPreview: null,
+    loadingRoundPreview: false,
+    roundPreviewComp: 'PL',
+
+    // ── Post-Match Review state ──
+    postMatchReview: null,
+    loadingReview: false,
+
+    // ── Training state ──
+    trainingStatus: null,
+    loadingTraining: false,
 
     // ── match detail state ──
     md: null,           // match detail data
@@ -186,6 +218,64 @@ document.addEventListener('alpine:init', () => {
       this.loadingBets = false;
     },
 
+    async fetchBttsOu() {
+      this.loadingBtts = true;
+      try { this.bttsOu = await this._fetch('/api/insights/btts-ou'); } catch(e) { console.error(e); }
+      this.loadingBtts = false;
+    },
+
+    async fetchAccumulators() {
+      this.loadingAccas = true;
+      try {
+        const d = await this._fetch('/api/insights/accumulators');
+        this.accumulators = d.accumulators || [];
+      } catch(e) { console.error(e); }
+      this.loadingAccas = false;
+    },
+
+    async fetchFormTable() {
+      this.loadingFormTable = true;
+      try {
+        const d = await this._fetch(`/api/insights/form-table/${this.formTableComp}`);
+        this.formTable = d.table || [];
+      } catch(e) { console.error(e); this.formTable = []; }
+      this.loadingFormTable = false;
+    },
+
+    selectFormTableComp(c) {
+      this.formTableComp = c;
+      this.fetchFormTable();
+    },
+
+    async fetchAccuracy() {
+      this.loadingAccuracy = true;
+      try { this.accuracyStats = await this._fetch(`/api/insights/accuracy?days_back=${this.accuracyDays}`); } catch(e) { console.error(e); }
+      this.loadingAccuracy = false;
+    },
+
+    async fetchRoundPreview() {
+      this.loadingRoundPreview = true;
+      try { this.roundPreview = await this._fetch(`/api/insights/round-preview/${this.roundPreviewComp}`); } catch(e) { console.error(e); }
+      this.loadingRoundPreview = false;
+    },
+
+    selectRoundPreviewComp(c) {
+      this.roundPreviewComp = c;
+      this.fetchRoundPreview();
+    },
+
+    async fetchPostMatchReview() {
+      this.loadingReview = true;
+      try { this.postMatchReview = await this._fetch('/api/insights/post-match-review?days_back=7'); } catch(e) { console.error(e); }
+      this.loadingReview = false;
+    },
+
+    async fetchTrainingStatus() {
+      this.loadingTraining = true;
+      try { this.trainingStatus = await this._fetch('/api/training/status'); } catch(e) { console.error(e); }
+      this.loadingTraining = false;
+    },
+
     async fetchStats() {
       this.loadingStats = true;
       try { this.stats = await this._fetch('/api/stats'); } catch(e) { console.error(e); }
@@ -215,8 +305,14 @@ document.addEventListener('alpine:init', () => {
     switchTab(t) {
       this.tab = t;
       if (t === 'insights' && !this.valueBets.length) this.fetchValueBets();
+      if (t === 'btts' && !this.bttsOu) this.fetchBttsOu();
+      if (t === 'accas' && !this.accumulators.length) this.fetchAccumulators();
+      if (t === 'form' && !this.formTable.length) this.fetchFormTable();
+      if (t === 'accuracy' && !this.accuracyStats) this.fetchAccuracy();
+      if (t === 'review' && !this.postMatchReview) { this.fetchPostMatchReview(); this.fetchRoundPreview(); }
       if (t === 'stats' && !this.stats) { this.fetchStats(); this.fetchPerformance(); }
       if (t === 'table' && !this.leagueTable.length) this.fetchLeagueTable();
+      if (t === 'training' && !this.trainingStatus) this.fetchTrainingStatus();
     },
 
     // ═══════ COMPUTED ═══════
@@ -374,6 +470,12 @@ document.addEventListener('alpine:init', () => {
       if (ll < 1.05) return 'Good';
       if (ll < 1.10) return 'Fair';
       return 'Needs work';
+    },
+
+    driftStatus(drift) {
+      if (!drift) return { text: 'Unknown', cls: 'drift-unknown' };
+      if (drift.drifted) return { text: 'Drift Detected', cls: 'drift-alert' };
+      return { text: 'Stable', cls: 'drift-ok' };
     },
   }));
 });

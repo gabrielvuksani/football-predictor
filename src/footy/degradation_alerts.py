@@ -15,7 +15,7 @@ Features:
 - Performance comparison against baseline
 """
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable
 from enum import Enum
 import json
@@ -60,7 +60,7 @@ class DegradationAlert:
         self.metric = metric
         self.metric_value = metric_value
         self.threshold = threshold
-        self.created_at = created_at or datetime.utcnow()
+        self.created_at = created_at or datetime.now(timezone.utc)
         self.status = AlertStatus.ACTIVE
         self.acknowledged_at = None
         self.resolved_at = None
@@ -228,7 +228,7 @@ class DegradationMonitor:
         
         # Check accuracy
         if metrics["accuracy"] < acc_thresh:
-            alert_id = f"{model_version}_accuracy_{datetime.utcnow().timestamp()}"
+            alert_id = f"{model_version}_accuracy_{datetime.now(timezone.utc).timestamp()}"
             alert = DegradationAlert(
                 alert_id=alert_id,
                 model_version=model_version,
@@ -243,7 +243,7 @@ class DegradationMonitor:
         
         # Check logloss
         if metrics["logloss"] > loss_thresh:
-            alert_id = f"{model_version}_logloss_{datetime.utcnow().timestamp()}"
+            alert_id = f"{model_version}_logloss_{datetime.now(timezone.utc).timestamp()}"
             alert = DegradationAlert(
                 alert_id=alert_id,
                 model_version=model_version,
@@ -258,7 +258,7 @@ class DegradationMonitor:
         
         # Check brier
         if metrics["brier"] > brier_thresh:
-            alert_id = f"{model_version}_brier_{datetime.utcnow().timestamp()}"
+            alert_id = f"{model_version}_brier_{datetime.now(timezone.utc).timestamp()}"
             alert = DegradationAlert(
                 alert_id=alert_id,
                 model_version=model_version,
@@ -277,7 +277,7 @@ class DegradationMonitor:
         )
         
         if trend and trend["trend_slope"] < trend_thresh:
-            alert_id = f"{model_version}_trend_{datetime.utcnow().timestamp()}"
+            alert_id = f"{model_version}_trend_{datetime.now(timezone.utc).timestamp()}"
             alert = DegradationAlert(
                 alert_id=alert_id,
                 model_version=model_version,
@@ -300,7 +300,7 @@ class DegradationMonitor:
             WHERE model_version = ? AND metric = ? AND status = 'active'
             AND created_at > ?
         """, [alert.model_version, alert.metric, 
-              datetime.utcnow() - timedelta(hours=1)]).fetchone()
+              datetime.now(timezone.utc) - timedelta(hours=1)]).fetchone()
         
         if existing:
             # Don't duplicate alerts within 1 hour
@@ -351,7 +351,7 @@ class DegradationMonitor:
     
     def snooze_alert(self, alert_id: str, hours: int = 24) -> dict:
         """Snooze an alert for specified hours"""
-        snooze_until = datetime.utcnow() + timedelta(hours=hours)
+        snooze_until = datetime.now(timezone.utc) + timedelta(hours=hours)
         
         self.con.execute("""
             UPDATE degradation_alerts

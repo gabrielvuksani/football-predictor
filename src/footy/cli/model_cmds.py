@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import typer
 
-from footy.cli._shared import console, _pipeline
+from footy.cli._shared import console, _pipeline, _council
 
 app = typer.Typer(help="Model training, prediction, and retraining commands.")
 
@@ -22,9 +22,11 @@ def train():
 
 @app.command()
 def predict():
-    """Generate predictions for upcoming matches."""
+    """Generate predictions for upcoming matches using the v10 council."""
     t0 = time.perf_counter()
-    n = _pipeline().predict_upcoming(verbose=True)
+    _, predict_upcoming = _council()
+    from footy.db import connect
+    n = predict_upcoming(connect(), verbose=True)
     dt = time.perf_counter() - t0
     console.print(f"[green]Predictions written[/green] {n} upcoming matches in {dt:.1f}s")
 
@@ -45,8 +47,10 @@ def backtest(days: int = 180, test_days: int = 14):
 
 @app.command()
 def train_meta(days: int = 365, test_days: int = 28):
-    """Train the meta-learner stacking model."""
-    r = _pipeline().train_meta_model(days=days, test_days=test_days, verbose=True)
+    """Train the v10 council model (supersedes old meta-learner)."""
+    train_and_save, _ = _council()
+    from footy.db import connect
+    r = train_and_save(connect(), days=days, verbose=True)
     console.print(r)
 
 

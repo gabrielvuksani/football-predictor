@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from enum import Enum
 import math
@@ -62,7 +62,7 @@ class ScheduledJob:
         self.cron_schedule = cron_schedule
         self.enabled = enabled
         self.params = params or {}
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
         self.last_run_at = None
         self.next_run_at = None
         self.last_status = JobStatus.PENDING
@@ -220,7 +220,7 @@ class TrainingScheduler:
     
     def _run_job_wrapper(self, job_id: str, job_func, params: dict):
         """Wrapper that executes a job and logs the result"""
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         status = JobStatus.RUNNING
         error_message = None
         result = None
@@ -233,7 +233,7 @@ class TrainingScheduler:
             error_message = str(e)
             log.error("Job %s failed: %s", job_id, error_message)
         finally:
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             duration = (completed_at - started_at).total_seconds()
             
             # Log to database

@@ -1,6 +1,6 @@
 /**
- * Footy Predictor v4 — Full-page match detail + League tables
- * URL-driven routing · Auto-loading · Performance dashboard
+ * Footy Predictor v5 — Consolidated UI (GitHub Pages static version)
+ * Mirrors web/static/app.js with static JSON file support
  */
 document.addEventListener('alpine:init', () => {
 
@@ -30,6 +30,37 @@ document.addEventListener('alpine:init', () => {
     leagueTable: [],
     loadingTable: false,
 
+    // ── BTTS & O/U state ──
+    bttsOu: null,
+    loadingBtts: false,
+
+    // ── Accumulators state ──
+    accumulators: [],
+    loadingAccas: false,
+
+    // ── League Form Table state ──
+    formTableComp: 'PL',
+    formTable: [],
+    loadingFormTable: false,
+
+    // ── Accuracy Dashboard state ──
+    accuracyStats: null,
+    loadingAccuracy: false,
+    accuracyDays: 30,
+
+    // ── Round Preview state ──
+    roundPreview: null,
+    loadingRoundPreview: false,
+    roundPreviewComp: 'PL',
+
+    // ── Post-Match Review state ──
+    postMatchReview: null,
+    loadingReview: false,
+
+    // ── Training state ──
+    trainingStatus: null,
+    loadingTraining: false,
+
     // ── match detail state ──
     md: null,           // match detail data
     loadingDetail: false,
@@ -40,24 +71,20 @@ document.addEventListener('alpine:init', () => {
     matchForm: null,
     matchNarrative: null,
     loadingAI: false,
+    matchXG: null,
+    loadingXG: false,
+    matchPatterns: null,
+    loadingPatterns: false,
 
     // ── helpers ──
     _static: !!window.FOOTY_STATIC,
     _base: window.FOOTY_BASE || '/',
 
     _staticUrl(url) {
-      // Transform API URL to static JSON path (relative — resolved by <base>):
-      //   /api/matches?days=14&model=...  → api/matches.json
-      //   /api/matches/123                → api/matches/123.json
-      //   /api/matches/123/experts        → api/matches/123/experts.json
-      //   /api/insights/value-bets?...    → api/value-bets.json
-      //   /api/league-table/PL            → api/league-table/PL.json
-      //   /api/last-updated               → api/last-updated.json
-      let path = url.split('?')[0];                    // strip query params
-      if (path.startsWith('/')) path = path.slice(1);  // strip leading /
-      // Special case: /api/insights/value-bets → api/value-bets
+      let path = url.split('?')[0];
+      if (path.startsWith('/')) path = path.slice(1);
       path = path.replace('api/insights/', 'api/');
-      return path + '.json';  // <base> tag ensures correct resolution
+      return path + '.json';
     },
 
     async _fetch(url) {
@@ -72,14 +99,12 @@ document.addEventListener('alpine:init', () => {
 
     // ── lifecycle ──
     init() {
-      // GitHub Pages SPA redirect: 404.html stores the original path
       const redirect = sessionStorage.getItem('ghpages_redirect');
       if (redirect) {
         sessionStorage.removeItem('ghpages_redirect');
         history.replaceState(null, '', redirect);
       }
 
-      // Detect URL for routing (strip base path for matching)
       let path = window.location.pathname;
       if (this._base !== '/' && path.startsWith(this._base)) {
         path = '/' + path.slice(this._base.length);
@@ -119,10 +144,14 @@ document.addEventListener('alpine:init', () => {
       this.matchH2H = null;
       this.matchForm = null;
       this.matchNarrative = null;
+      this.matchXG = null;
+      this.matchPatterns = null;
       this.loadingDetail = true;
       this.loadingExperts = false;
       this.loadingH2H = false;
       this.loadingAI = false;
+      this.loadingXG = false;
+      this.loadingPatterns = false;
 
       if (pushState) {
         history.pushState({ view: 'match', matchId }, '', `${this._base}match/${matchId}`);
@@ -139,6 +168,8 @@ document.addEventListener('alpine:init', () => {
       this._loadMatchExperts(matchId);
       this._loadMatchH2H(matchId);
       this._loadMatchForm(matchId);
+      this._loadMatchXG(matchId);
+      this._loadMatchPatterns(matchId);
     },
 
     async _loadMatchExperts(matchId) {
@@ -155,6 +186,18 @@ document.addEventListener('alpine:init', () => {
 
     async _loadMatchForm(matchId) {
       try { this.matchForm = await this._fetch(`/api/matches/${matchId}/form`); } catch(e) { console.error(e); }
+    },
+
+    async _loadMatchXG(matchId) {
+      this.loadingXG = true;
+      try { this.matchXG = await this._fetch(`/api/matches/${matchId}/xg`); } catch(e) { console.error(e); }
+      this.loadingXG = false;
+    },
+
+    async _loadMatchPatterns(matchId) {
+      this.loadingPatterns = true;
+      try { this.matchPatterns = await this._fetch(`/api/matches/${matchId}/patterns`); } catch(e) { console.error(e); }
+      this.loadingPatterns = false;
     },
 
     async loadAI() {
@@ -193,6 +236,64 @@ document.addEventListener('alpine:init', () => {
       this.loadingBets = false;
     },
 
+    async fetchBttsOu() {
+      this.loadingBtts = true;
+      try { this.bttsOu = await this._fetch('/api/insights/btts-ou'); } catch(e) { console.error(e); }
+      this.loadingBtts = false;
+    },
+
+    async fetchAccumulators() {
+      this.loadingAccas = true;
+      try {
+        const d = await this._fetch('/api/insights/accumulators');
+        this.accumulators = d.accumulators || [];
+      } catch(e) { console.error(e); }
+      this.loadingAccas = false;
+    },
+
+    async fetchFormTable() {
+      this.loadingFormTable = true;
+      try {
+        const d = await this._fetch(`/api/insights/form-table/${this.formTableComp}`);
+        this.formTable = d.table || [];
+      } catch(e) { console.error(e); this.formTable = []; }
+      this.loadingFormTable = false;
+    },
+
+    selectFormTableComp(c) {
+      this.formTableComp = c;
+      this.fetchFormTable();
+    },
+
+    async fetchAccuracy() {
+      this.loadingAccuracy = true;
+      try { this.accuracyStats = await this._fetch(`/api/insights/accuracy?days_back=${this.accuracyDays}`); } catch(e) { console.error(e); }
+      this.loadingAccuracy = false;
+    },
+
+    async fetchRoundPreview() {
+      this.loadingRoundPreview = true;
+      try { this.roundPreview = await this._fetch(`/api/insights/round-preview/${this.roundPreviewComp}`); } catch(e) { console.error(e); }
+      this.loadingRoundPreview = false;
+    },
+
+    selectRoundPreviewComp(c) {
+      this.roundPreviewComp = c;
+      this.fetchRoundPreview();
+    },
+
+    async fetchPostMatchReview() {
+      this.loadingReview = true;
+      try { this.postMatchReview = await this._fetch('/api/insights/post-match-review?days_back=7'); } catch(e) { console.error(e); }
+      this.loadingReview = false;
+    },
+
+    async fetchTrainingStatus() {
+      this.loadingTraining = true;
+      try { this.trainingStatus = await this._fetch('/api/training/status'); } catch(e) { console.error(e); }
+      this.loadingTraining = false;
+    },
+
     async fetchStats() {
       this.loadingStats = true;
       try { this.stats = await this._fetch('/api/stats'); } catch(e) { console.error(e); }
@@ -222,8 +323,14 @@ document.addEventListener('alpine:init', () => {
     switchTab(t) {
       this.tab = t;
       if (t === 'insights' && !this.valueBets.length) this.fetchValueBets();
+      if (t === 'btts' && !this.bttsOu) this.fetchBttsOu();
+      if (t === 'accas' && !this.accumulators.length) this.fetchAccumulators();
+      if (t === 'form' && !this.formTable.length) this.fetchFormTable();
+      if (t === 'accuracy' && !this.accuracyStats) this.fetchAccuracy();
+      if (t === 'review' && !this.postMatchReview) { this.fetchPostMatchReview(); this.fetchRoundPreview(); }
       if (t === 'stats' && !this.stats) { this.fetchStats(); this.fetchPerformance(); }
       if (t === 'table' && !this.leagueTable.length) this.fetchLeagueTable();
+      if (t === 'training' && !this.trainingStatus) this.fetchTrainingStatus();
     },
 
     // ═══════ COMPUTED ═══════
@@ -381,6 +488,12 @@ document.addEventListener('alpine:init', () => {
       if (ll < 1.05) return 'Good';
       if (ll < 1.10) return 'Fair';
       return 'Needs work';
+    },
+
+    driftStatus(drift) {
+      if (!drift) return { text: 'Unknown', cls: 'drift-unknown' };
+      if (drift.drifted) return { text: 'Drift Detected', cls: 'drift-alert' };
+      return { text: 'Stable', cls: 'drift-ok' };
     },
   }));
 });

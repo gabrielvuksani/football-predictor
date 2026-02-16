@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -757,7 +757,7 @@ def post_match_review(days_back: int = 3, competition_code: str | None = None) -
         }
     """
     con = connect()
-    cutoff = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
 
     params = [cutoff]
     comp_filter = ""
@@ -1102,7 +1102,7 @@ def prediction_accuracy_stats(days_back: int = 30) -> dict:
     Calculate detailed accuracy stats for the accuracy dashboard.
     """
     con = connect()
-    cutoff = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
 
     rows = con.execute("""
         SELECT m.match_id, m.competition,

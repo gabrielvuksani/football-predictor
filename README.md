@@ -126,7 +126,7 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 | `footy model predict` | Generate predictions for upcoming matches |
 | `footy model metrics` | Backtest accuracy metrics |
 | `footy model backtest` | Walk-forward time-split backtest |
-| `footy model train-meta` | Train the meta-learner stacking model |
+| `footy model train-meta` | Train the v10 council model |
 | `footy model retrain` | Auto-retrain council: check → train → validate → deploy/rollback |
 | `footy model drift-check` | Check for prediction accuracy drift |
 | `footy model setup` | Configure continuous retraining (threshold + improvement gate) |
@@ -279,10 +279,16 @@ The FastAPI backend serves at `http://localhost:8000`:
 | GET | `/api/matches/{id}/patterns` | Goal pattern analysis |
 | GET | `/api/matches/{id}/ai` | AI narrative (requires Ollama) |
 | GET | `/api/insights/value-bets` | Value bets with Kelly criterion |
+| GET | `/api/insights/btts-ou` | BTTS & Over/Under 2.5 analysis |
+| GET | `/api/insights/accumulators` | Auto-generated accumulator bets |
+| GET | `/api/insights/form-table/{comp}` | League form table (PPG, BTTS%, O2.5%) |
+| GET | `/api/insights/accuracy` | Prediction accuracy dashboard |
+| GET | `/api/insights/round-preview/{comp}` | AI round preview |
+| GET | `/api/insights/post-match-review` | Post-match accuracy review |
+| GET | `/api/training/status` | Drift detection & retraining status |
 | GET | `/api/stats` | Database statistics |
 | GET | `/api/performance` | Model performance + calibration |
 | GET | `/api/league-table/{comp}` | Simulated league standings |
-| GET | `/api/competitions` | Available competitions |
 | GET | `/api/last-updated` | Last prediction timestamp |
 
 ## Data Sources
@@ -336,7 +342,6 @@ DuckDB at `data/footy.duckdb`:
 | poisson\_state | Fitted Poisson parameters |
 | h2h\_stats | Head-to-head stats (any venue) |
 | h2h\_venue\_stats | Head-to-head stats (specific venue) |
-| h2h\_recent | Recent head-to-head form |
 | news | Team news headlines |
 | expert\_cache | Cached expert council breakdowns |
 | llm\_insights | LLM-generated match narratives |
@@ -451,19 +456,17 @@ football-predictor/
 │   └── templates/
 │       └── index.html         # SPA template
 ├── docs/                      # GitHub Pages static export
-├── tests/                     # 286 tests (pytest)
-│   ├── conftest.py            # Shared fixtures (in-memory DuckDB, sample data)
-│   ├── test_advanced_math.py  # 38 tests — all 10 mathematical modules
-│   ├── test_v10_council.py    # 29 tests — new experts, upgraded features, meta-learner
-│   ├── test_scheduler.py      # 24 tests — scheduler CRUD, execution, lifecycle
-│   ├── test_continuous_training.py  # 21 tests — training records, drift, deploy, rollback
-│   ├── test_models_council.py # Council training + prediction unit tests
-│   ├── test_walkforward.py    # Walk-forward CV tests
-│   ├── test_api.py            # FastAPI endpoint tests
-│   ├── test_db.py             # Database schema + query tests
-│   └── ...                    # Elo, Poisson, Dixon-Coles, H2H, xG, etc.
-└── ui/
-    └── app.py                 # Streamlit admin dashboard
+└── tests/                     # 286 tests (pytest)
+    ├── conftest.py            # Shared fixtures (in-memory DuckDB, sample data)
+    ├── test_advanced_math.py  # 38 tests — all 10 mathematical modules
+    ├── test_v10_council.py    # 29 tests — new experts, upgraded features, meta-learner
+    ├── test_scheduler.py      # 24 tests — scheduler CRUD, execution, lifecycle
+    ├── test_continuous_training.py  # 21 tests — training records, drift, deploy, rollback
+    ├── test_models_council.py # Council training + prediction unit tests
+    ├── test_walkforward.py    # Walk-forward CV tests
+    ├── test_api.py            # FastAPI endpoint tests
+    ├── test_db.py             # Database schema + query tests
+    └── ...                    # Elo, Poisson, Dixon-Coles, H2H, xG, etc.
 ```
 
 ## Testing

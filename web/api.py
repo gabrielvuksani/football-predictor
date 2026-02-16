@@ -23,7 +23,7 @@ import duckdb
 
 from footy.normalize import canonical_team_name
 from footy.config import settings as get_settings
-from footy.xg import compute_xg_advanced, learn_conversion_rates, ensure_xg_table
+from footy.xg import compute_xg_advanced, learn_conversion_rates
 
 settings = get_settings()
 
@@ -830,45 +830,160 @@ async def api_performance(model: str = "v10_council"):
 
 
 # ---------------------------------------------------------------------------
-# API — Competitions
+# API — BTTS & Over/Under Insights
 # ---------------------------------------------------------------------------
-@app.get("/api/competitions")
-async def api_competitions():
-    """List all competitions with metadata."""
+@app.get("/api/insights/btts-ou")
+async def api_btts_ou():
+    """BTTS and Over/Under 2.5 insights for upcoming matches."""
+    try:
+        from footy.llm.insights import btts_ou_insights
+        return btts_ou_insights()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+# ---------------------------------------------------------------------------
+# API — Accumulators
+# ---------------------------------------------------------------------------
+@app.get("/api/insights/accumulators")
+async def api_accumulators(min_prob: float = 0.55):
+    """Accumulator suggestions from upcoming predictions."""
+    try:
+        from footy.llm.insights import build_accumulators
+        return {"accumulators": build_accumulators(min_prob=min_prob)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+# ---------------------------------------------------------------------------
+# API — League Form Table
+# ---------------------------------------------------------------------------
+@app.get("/api/insights/form-table/{competition}")
+async def api_form_table(competition: str, last_n: int = 6):
+    """League form table with PPG, BTTS%, O2.5% over last N matches."""
+    try:
+        from footy.llm.insights import league_form_table
+        table = league_form_table(competition, last_n=last_n)
+        return {"competition": competition, "last_n": last_n, "table": table}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+# ---------------------------------------------------------------------------
+# API — Accuracy Dashboard
+# ---------------------------------------------------------------------------
+@app.get("/api/insights/accuracy")
+async def api_accuracy(days_back: int = 30):
+    """Prediction accuracy stats by confidence tier and competition."""
+    try:
+        from footy.llm.insights import prediction_accuracy_stats
+        return prediction_accuracy_stats(days_back=days_back)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+# ---------------------------------------------------------------------------
+# API — Round Preview
+# ---------------------------------------------------------------------------
+@app.get("/api/insights/round-preview/{competition}")
+async def api_round_preview(competition: str):
+    """AI-powered round preview for a competition."""
+    try:
+        from footy.llm.insights import league_round_summary
+        return league_round_summary(competition_code=competition)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+# ---------------------------------------------------------------------------
+# API — Post-Match Review
+# ---------------------------------------------------------------------------
+@app.get("/api/insights/post-match-review")
+async def api_post_match_review(days_back: int = 3, competition: str = None):
+    """Post-match review with AI analysis of prediction accuracy."""
+    try:
+        from footy.llm.insights import post_match_review
+        return post_match_review(days_back=days_back, competition_code=competition)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+# ---------------------------------------------------------------------------
+# API — Training Status
+# ---------------------------------------------------------------------------
+@app.get("/api/training/status")
+async def api_training_status():
+    """Training status: drift detection, retraining schedules, history."""
     try:
         db = con()
     except duckdb.IOException:
         return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
-    rows = db.execute("""
-        SELECT m.competition,
-               COUNT(*) AS match_count,
-               COUNT(DISTINCT m.home_team) AS team_count,
-               MAX(me.season_code) AS current_season
-        FROM matches m
-        LEFT JOIN match_extras me ON me.match_id = m.match_id
-        GROUP BY m.competition
-        ORDER BY match_count DESC
-    """).fetchall()
 
-    # Competition name mapping (common codes)
-    _NAMES = {
-        "PL": "Premier League", "BL1": "Bundesliga", "SA": "Serie A",
-        "PD": "La Liga", "FL1": "Ligue 1", "ELC": "Championship",
-        "DED": "Eredivisie", "PPL": "Primeira Liga", "CL": "Champions League",
-        "EC": "European Championship", "WC": "World Cup",
+    # Drift detection
+    drift = None
+    try:
+        from footy.continuous_training import ContinuousTrainingManager
+        mgr = ContinuousTrainingManager(db)
+        drift = mgr.detect_drift("v10_council")
+    except Exception:
+        pass
+
+    # Retraining schedules
+    schedules = []
+    try:
+        rows = db.execute("""
+            SELECT model_type, retrain_interval_days, min_new_matches,
+                   last_trained, last_retrain_matches
+            FROM retraining_schedules
+            ORDER BY model_type
+        """).fetchall()
+        for r in rows:
+            schedules.append({
+                "model_type": r[0],
+                "interval_days": r[1],
+                "min_new_matches": r[2],
+                "last_trained": str(r[3])[:19] if r[3] else None,
+                "pending_matches": r[4],
+            })
+    except Exception:
+        pass
+
+    # Training history
+    history = []
+    try:
+        rows = db.execute("""
+            SELECT model_version, model_type, training_window_days,
+                   n_matches_used, n_matches_test, metrics_json,
+                   deployed, created_at, improvement_pct
+            FROM model_training_runs
+            ORDER BY created_at DESC
+            LIMIT 20
+        """).fetchall()
+        for r in rows:
+            metrics = {}
+            try:
+                metrics = json.loads(r[5]) if r[5] else {}
+            except Exception:
+                pass
+            history.append({
+                "model_version": r[0],
+                "model_type": r[1],
+                "window_days": r[2],
+                "n_train": r[3],
+                "n_test": r[4],
+                "metrics": metrics,
+                "deployed": bool(r[6]),
+                "created_at": str(r[7])[:19] if r[7] else None,
+                "improvement_pct": round(float(r[8]), 2) if r[8] else None,
+            })
+    except Exception:
+        pass
+
+    return {
+        "drift": drift,
+        "schedules": schedules,
+        "history": history,
     }
-
-    competitions = []
-    for r in rows:
-        code = r[0]
-        competitions.append({
-            "code": code,
-            "name": _NAMES.get(code, code),
-            "match_count": r[1],
-            "team_count": r[2],
-            "current_season": r[3],
-        })
-    return {"competitions": competitions}
 
 
 @app.get("/api/last-updated")

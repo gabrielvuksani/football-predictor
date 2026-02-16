@@ -17,6 +17,7 @@
         if (seg) b = '/' + seg + '/';
       }
       window.FOOTY_BASE = b;
+      window.FOOTY_STATIC = true;
       // Set <base> so relative fetch() URLs always resolve from the site root
       var base = document.createElement('base');
       base.href = b;
@@ -39,10 +40,22 @@
                   @click="switchTab('matches')">Matches</button>
           <button class="nav-tab" :class="{ active: tab === 'insights' }"
                   @click="switchTab('insights')">Insights</button>
+          <button class="nav-tab" :class="{ active: tab === 'btts' }"
+                  @click="switchTab('btts')">BTTS/O2.5</button>
+          <button class="nav-tab" :class="{ active: tab === 'accas' }"
+                  @click="switchTab('accas')">Accas</button>
+          <button class="nav-tab" :class="{ active: tab === 'form' }"
+                  @click="switchTab('form')">Form</button>
           <button class="nav-tab" :class="{ active: tab === 'table' }"
                   @click="switchTab('table')">Tables</button>
+          <button class="nav-tab" :class="{ active: tab === 'accuracy' }"
+                  @click="switchTab('accuracy')">Accuracy</button>
+          <button class="nav-tab" :class="{ active: tab === 'review' }"
+                  @click="switchTab('review')">Review</button>
           <button class="nav-tab" :class="{ active: tab === 'stats' }"
                   @click="switchTab('stats')">Stats</button>
+          <button class="nav-tab" :class="{ active: tab === 'training' }"
+                  @click="switchTab('training')">Training</button>
         </div>
         <template x-if="view === 'match'">
           <button class="back-btn" @click="goHome()">← Back</button>
@@ -171,6 +184,414 @@
               <div class="bet-odds" x-text="b.odds.toFixed(2)"></div>
               <div class="bet-edge-tag" x-text="'+' + (b.edge * 100).toFixed(1) + '%'"></div>
             </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ BTTS & OVER/UNDER TAB ══════════ -->
+      <div x-show="tab === 'btts'" class="tab-content" x-cloak>
+        <h2 class="section-title">⚽ BTTS &amp; Over/Under 2.5</h2>
+
+        <template x-if="loadingBtts">
+          <div class="loading"><div class="spinner"></div></div>
+        </template>
+
+        <template x-if="bttsOu">
+          <div class="btts-grid">
+            <!-- BTTS Likely -->
+            <div class="glass" style="padding:1rem;">
+              <h3 class="subsection-title" style="color:var(--green)">✓ BTTS Likely (&gt;55%)</h3>
+              <template x-if="bttsOu.btts_likely?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.btts_likely || []" :key="m.match_id + 'bl'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--green)" x-text="pct(m.btts_prob)"></span>
+                </div>
+              </template>
+            </div>
+
+            <!-- BTTS Unlikely -->
+            <div class="glass" style="padding:1rem;">
+              <h3 class="subsection-title" style="color:var(--red)">✗ BTTS Unlikely (&lt;35%)</h3>
+              <template x-if="bttsOu.btts_unlikely?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.btts_unlikely || []" :key="m.match_id + 'bu'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--red)" x-text="pct(m.btts_prob)"></span>
+                </div>
+              </template>
+            </div>
+
+            <!-- Over 2.5 -->
+            <div class="glass" style="padding:1rem;">
+              <h3 class="subsection-title" style="color:var(--green)">⬆ Over 2.5 (&gt;55%)</h3>
+              <template x-if="bttsOu.over25?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.over25 || []" :key="m.match_id + 'o25'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--green)" x-text="pct(m.o25_prob)"></span>
+                </div>
+              </template>
+            </div>
+
+            <!-- Under 2.5 -->
+            <div class="glass" style="padding:1rem;">
+              <h3 class="subsection-title" style="color:var(--red)">⬇ Under 2.5 (&lt;35%)</h3>
+              <template x-if="bttsOu.under25?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.under25 || []" :key="m.match_id + 'u25'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--red)" x-text="pct(m.o25_prob)"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ ACCUMULATORS TAB ══════════ -->
+      <div x-show="tab === 'accas'" class="tab-content" x-cloak>
+        <h2 class="section-title">🎰 Accumulator Builder</h2>
+
+        <template x-if="loadingAccas">
+          <div class="loading"><div class="spinner"></div></div>
+        </template>
+
+        <template x-if="!loadingAccas && accumulators.length === 0">
+          <div class="empty">
+            <div class="empty-icon">🎰</div>
+            <p>No accumulators available</p>
+            <p class="text-3" style="margin-top:0.3rem">Predictions needed for accumulator building</p>
+          </div>
+        </template>
+
+        <template x-for="(acca, ai) in accumulators" :key="'acca'+ai">
+          <div class="glass acca-card" style="margin-bottom:1rem; padding:1rem;">
+            <div class="acca-header">
+              <h3 class="subsection-title" x-text="acca.type"></h3>
+              <div class="acca-meta">
+                <span class="acca-prob" x-text="'Prob: ' + pct(acca.combined_prob)"></span>
+                <template x-if="acca.combined_odds">
+                  <span class="acca-odds" x-text="'@ ' + acca.combined_odds.toFixed(2)"></span>
+                </template>
+              </div>
+            </div>
+            <template x-for="(leg, li) in acca.legs" :key="'leg'+ai+'-'+li">
+              <div class="acca-leg">
+                <span class="acca-leg-match" x-text="leg.home_team + ' vs ' + leg.away_team"></span>
+                <span :class="badgeClass(leg.competition)" x-text="leg.competition" style="font-size:0.6rem;"></span>
+                <span class="acca-leg-pick" x-text="leg.pick"></span>
+                <span class="acca-leg-prob mono" x-text="pct(leg.prob)"></span>
+                <template x-if="leg.odds">
+                  <span class="acca-leg-odds mono" x-text="'@ ' + leg.odds.toFixed(2)"></span>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ FORM TABLE TAB ══════════ -->
+      <div x-show="tab === 'form'" class="tab-content" x-cloak>
+        <div class="table-header">
+          <h2 class="section-title">📈 League Form Table</h2>
+          <div class="table-comp-pills">
+            <template x-for="c in tableCompetitions" :key="'ft'+c">
+              <button class="filter-pill" :class="{ active: formTableComp === c }"
+                      @click="selectFormTableComp(c)" x-text="c"></button>
+            </template>
+          </div>
+        </div>
+
+        <template x-if="loadingFormTable">
+          <div class="loading"><div class="spinner"></div></div>
+        </template>
+
+        <template x-if="!loadingFormTable && formTable.length > 0">
+          <div class="glass standings-table">
+            <div class="standings-head">
+              <span class="st-pos">#</span>
+              <span class="st-team">Team</span>
+              <span class="st-stat">P</span>
+              <span class="st-stat">W</span>
+              <span class="st-stat">D</span>
+              <span class="st-stat">L</span>
+              <span class="st-stat st-gd" title="Points per game">PPG</span>
+              <span class="st-stat" title="BTTS %">BTTS</span>
+              <span class="st-stat" title="Over 2.5 %">O2.5</span>
+            </div>
+            <template x-for="(t, i) in formTable" :key="'form'+t.team">
+              <div class="standings-row" :class="{ 'st-top': i < 4 }">
+                <span class="st-pos" x-text="i + 1"></span>
+                <span class="st-team" x-text="t.team"></span>
+                <span class="st-stat" x-text="t.played"></span>
+                <span class="st-stat" x-text="t.w"></span>
+                <span class="st-stat" x-text="t.d"></span>
+                <span class="st-stat" x-text="t.l"></span>
+                <span class="st-stat st-gd mono" x-text="t.ppg.toFixed(2)"></span>
+                <span class="st-stat" x-text="t.btts_pct + '%'" :style="'color:' + (t.btts_pct >= 60 ? 'var(--green)' : t.btts_pct <= 30 ? 'var(--red)' : 'var(--text-2)')"></span>
+                <span class="st-stat" x-text="t.o25_pct + '%'" :style="'color:' + (t.o25_pct >= 60 ? 'var(--green)' : t.o25_pct <= 30 ? 'var(--red)' : 'var(--text-2)')"></span>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <template x-if="!loadingFormTable && formTable.length === 0">
+          <div class="empty">
+            <div class="empty-icon">📈</div>
+            <p>No form data available</p>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ ACCURACY DASHBOARD TAB ══════════ -->
+      <div x-show="tab === 'accuracy'" class="tab-content" x-cloak>
+        <div class="insights-header">
+          <h2 class="section-title">🎯 Accuracy Dashboard</h2>
+          <div class="table-comp-pills">
+            <template x-for="d in [7, 14, 30, 90]" :key="'ad'+d">
+              <button class="filter-pill" :class="{ active: accuracyDays === d }"
+                      @click="accuracyDays = d; fetchAccuracy()" x-text="d + 'd'"></button>
+            </template>
+          </div>
+        </div>
+
+        <template x-if="loadingAccuracy">
+          <div class="loading"><div class="spinner"></div></div>
+        </template>
+
+        <template x-if="accuracyStats && accuracyStats.total > 0">
+          <div>
+            <!-- Overall Stats -->
+            <div class="stat-grid" style="margin-bottom:1rem;">
+              <div class="glass stat-card">
+                <div class="stat-val" :style="'color:' + perfAccuracyColor(accuracyStats.accuracy)" x-text="pct(accuracyStats.accuracy)"></div>
+                <div class="stat-lbl">Accuracy</div>
+              </div>
+              <div class="glass stat-card">
+                <div class="stat-val" x-text="accuracyStats.total"></div>
+                <div class="stat-lbl">Matches Scored</div>
+              </div>
+              <div class="glass stat-card">
+                <div class="stat-val" x-text="accuracyStats.correct"></div>
+                <div class="stat-lbl">Correct</div>
+              </div>
+              <div class="glass stat-card">
+                <div class="stat-val" x-text="accuracyStats.brier_score?.toFixed(4) || '—'"></div>
+                <div class="stat-lbl">Brier Score</div>
+              </div>
+            </div>
+
+            <!-- By Confidence Tier -->
+            <div class="glass" style="padding:1rem; margin-bottom:1rem;">
+              <h3 class="subsection-title">By Confidence Tier</h3>
+              <template x-for="[tier, data] in Object.entries(accuracyStats.by_confidence || {})" :key="'ct'+tier">
+                <div class="accuracy-tier-row">
+                  <span class="tier-label" x-text="tier.charAt(0).toUpperCase() + tier.slice(1)"></span>
+                  <div class="tier-bar-container">
+                    <div class="tier-bar" :style="'width:' + (data.accuracy * 100) + '%; background:' + perfAccuracyColor(data.accuracy)"></div>
+                  </div>
+                  <span class="tier-stat mono" x-text="pct(data.accuracy) + ' (' + data.correct + '/' + data.total + ')'"></span>
+                </div>
+              </template>
+            </div>
+
+            <!-- By Competition -->
+            <div class="glass" style="padding:1rem;">
+              <h3 class="subsection-title">By Competition</h3>
+              <template x-for="[comp, data] in Object.entries(accuracyStats.by_competition || {})" :key="'cc'+comp">
+                <div class="accuracy-tier-row">
+                  <span class="tier-label" x-text="leagueName(comp)"></span>
+                  <div class="tier-bar-container">
+                    <div class="tier-bar" :style="'width:' + (data.accuracy * 100) + '%; background:' + perfAccuracyColor(data.accuracy)"></div>
+                  </div>
+                  <span class="tier-stat mono" x-text="pct(data.accuracy) + ' (' + data.correct + '/' + data.total + ')'"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <template x-if="accuracyStats && accuracyStats.total === 0">
+          <div class="empty">
+            <div class="empty-icon">🎯</div>
+            <p>No scored predictions in this window</p>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ REVIEW TAB (Round Preview & Post-Match) ══════════ -->
+      <div x-show="tab === 'review'" class="tab-content" x-cloak>
+
+        <!-- Round Preview -->
+        <div class="insights-header">
+          <h2 class="section-title">🔮 Round Preview</h2>
+          <div class="table-comp-pills">
+            <template x-for="c in tableCompetitions" :key="'rp'+c">
+              <button class="filter-pill" :class="{ active: roundPreviewComp === c }"
+                      @click="selectRoundPreviewComp(c)" x-text="c"></button>
+            </template>
+          </div>
+        </div>
+
+        <template x-if="loadingRoundPreview">
+          <div class="loading"><div class="spinner"></div></div>
+        </template>
+
+        <template x-if="roundPreview">
+          <div class="glass" style="padding:1rem; margin-bottom:1.5rem;">
+            <div class="ai-narrative" x-text="roundPreview.summary"></div>
+            <template x-if="roundPreview.headline_pick">
+              <div class="text-3" style="margin-top:0.5rem; color:var(--amber);">
+                Headline: <strong x-text="roundPreview.headline_pick"></strong>
+              </div>
+            </template>
+            <div style="margin-top:0.6rem;">
+              <template x-for="p in roundPreview.predictions || []" :key="p.match_id">
+                <div class="btts-row" @click="openMatch(p.match_id)" style="cursor:pointer;">
+                  <span class="btts-match" x-text="p.home + ' vs ' + p.away"></span>
+                  <span class="text-3" x-text="p.pred"></span>
+                  <span class="mono text-3" x-text="p.probs"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <!-- Post-Match Review -->
+        <h2 class="section-title" style="margin-top:1rem;">📋 Post-Match Review</h2>
+
+        <template x-if="loadingReview">
+          <div class="loading"><div class="spinner"></div></div>
+        </template>
+
+        <template x-if="postMatchReview">
+          <div class="glass" style="padding:1rem;">
+            <div class="stat-grid" style="margin-bottom:0.75rem;">
+              <div class="glass stat-card">
+                <div class="stat-val" :style="'color:' + perfAccuracyColor(postMatchReview.accuracy)" x-text="pct(postMatchReview.accuracy)"></div>
+                <div class="stat-lbl">Accuracy</div>
+              </div>
+              <div class="glass stat-card">
+                <div class="stat-val" x-text="postMatchReview.correct + '/' + postMatchReview.matches_reviewed"></div>
+                <div class="stat-lbl">Correct</div>
+              </div>
+            </div>
+            <div class="ai-narrative" x-text="postMatchReview.review"></div>
+            <template x-if="postMatchReview.misses?.length > 0">
+              <div style="margin-top:0.75rem;">
+                <div class="text-3" style="color:var(--red); font-weight:600; margin-bottom:0.3rem;">Biggest Misses</div>
+                <template x-for="(miss, mi) in postMatchReview.misses" :key="'miss'+mi">
+                  <div class="btts-row">
+                    <span class="btts-match" x-text="miss.match"></span>
+                    <span class="text-3" x-text="miss.score"></span>
+                    <span class="text-3" style="color:var(--red)" x-text="'Predicted: ' + miss.predicted + ' → Actual: ' + miss.actual"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ TRAINING TAB ══════════ -->
+      <div x-show="tab === 'training'" class="tab-content" x-cloak>
+        <h2 class="section-title">🔧 Training &amp; Model Health</h2>
+
+        <template x-if="loadingTraining">
+          <div class="loading"><div class="spinner"></div></div>
+        </template>
+
+        <template x-if="trainingStatus">
+          <div>
+            <!-- Drift Detection -->
+            <div class="glass" style="padding:1rem; margin-bottom:1rem;">
+              <h3 class="subsection-title">Drift Detection</h3>
+              <template x-if="trainingStatus.drift">
+                <div>
+                  <div class="training-drift-badge" :class="driftStatus(trainingStatus.drift).cls"
+                       x-text="driftStatus(trainingStatus.drift).text"></div>
+                  <template x-if="trainingStatus.drift.recent_accuracy != null">
+                    <div class="stat-grid" style="margin-top:0.5rem;">
+                      <div class="stat-card">
+                        <div class="stat-val" x-text="pct(trainingStatus.drift.recent_accuracy)"></div>
+                        <div class="stat-lbl">Recent Accuracy</div>
+                      </div>
+                      <div class="stat-card">
+                        <div class="stat-val" x-text="pct(trainingStatus.drift.baseline_accuracy)"></div>
+                        <div class="stat-lbl">Baseline Accuracy</div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <template x-if="!trainingStatus.drift">
+                <p class="text-3">Drift detection unavailable</p>
+              </template>
+            </div>
+
+            <!-- Retraining Schedules -->
+            <template x-if="trainingStatus.schedules?.length > 0">
+              <div class="glass" style="padding:1rem; margin-bottom:1rem;">
+                <h3 class="subsection-title">Retraining Schedules</h3>
+                <template x-for="s in trainingStatus.schedules" :key="s.model_type">
+                  <div class="training-schedule-row">
+                    <span class="training-model" x-text="s.model_type"></span>
+                    <span class="text-3" x-text="'Every ' + s.interval_days + ' days'"></span>
+                    <span class="text-3" x-text="'Min ' + s.min_new_matches + ' matches'"></span>
+                    <span class="text-3" x-text="s.last_trained ? 'Last: ' + s.last_trained : 'Never trained'"></span>
+                    <span class="text-3" x-text="'Pending: ' + (s.pending_matches || 0) + ' matches'"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- Training History -->
+            <template x-if="trainingStatus.history?.length > 0">
+              <div class="glass" style="padding:1rem;">
+                <h3 class="subsection-title">Training History</h3>
+                <template x-for="h in trainingStatus.history" :key="h.model_version + h.created_at">
+                  <div class="training-history-row">
+                    <div class="training-history-header">
+                      <span class="training-model" x-text="h.model_version"></span>
+                      <template x-if="h.deployed">
+                        <span class="training-deployed">DEPLOYED</span>
+                      </template>
+                      <span class="text-3" x-text="h.created_at"></span>
+                    </div>
+                    <div class="training-history-meta">
+                      <span class="text-3" x-text="'Train: ' + h.n_train + ' | Test: ' + h.n_test"></span>
+                      <template x-if="h.metrics?.accuracy != null">
+                        <span class="text-3" x-text="'Acc: ' + pct(h.metrics.accuracy)"></span>
+                      </template>
+                      <template x-if="h.improvement_pct != null">
+                        <span class="text-3" :style="'color:' + (h.improvement_pct > 0 ? 'var(--green)' : 'var(--red)')"
+                              x-text="(h.improvement_pct > 0 ? '+' : '') + h.improvement_pct + '%'"></span>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <template x-if="!loadingTraining && !trainingStatus">
+          <div class="empty">
+            <div class="empty-icon">🔧</div>
+            <p>Training status unavailable</p>
           </div>
         </template>
       </div>
@@ -474,7 +895,7 @@
                   <div class="section-label"><span class="icon">🎯</span> Poisson Analysis</div>
                   <div class="glass poisson-grid">
                     <div class="poisson-cell">
-                      <div class="poisson-val" x-text="md.poisson.predicted_score || '—'"></div>
+                      <div class="poisson-val" x-text="Array.isArray(md.poisson.predicted_score) ? md.poisson.predicted_score.join(' - ') : (md.poisson.predicted_score || '—')"></div>
                       <div class="poisson-lbl">Predicted Score</div>
                     </div>
                     <div class="poisson-cell">
@@ -490,6 +911,44 @@
                     <span x-text="'λ Home: ' + (md.poisson.lambda_home?.toFixed(2) || '—')"></span> ·
                     <span x-text="'λ Away: ' + (md.poisson.lambda_away?.toFixed(2) || '—')"></span>
                   </div>
+
+                  <!-- v10: Dixon-Coles adjusted probabilities -->
+                  <template x-if="md.poisson.dc_home != null">
+                    <div style="margin-top:0.6rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top:0.5rem;">
+                      <div class="text-3" style="color:var(--text-2); margin-bottom:0.3rem; font-weight:600;">Dixon-Coles Adjusted</div>
+                      <div class="poisson-grid" style="gap:0.5rem;">
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_home)"></div>
+                          <div class="poisson-lbl">DC Home</div>
+                        </div>
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_draw)"></div>
+                          <div class="poisson-lbl">DC Draw</div>
+                        </div>
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_away)"></div>
+                          <div class="poisson-lbl">DC Away</div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- v10: Monte Carlo simulation -->
+                  <template x-if="md.poisson.mc_btts != null">
+                    <div style="margin-top:0.4rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top:0.5rem;">
+                      <div class="text-3" style="color:var(--text-2); margin-bottom:0.3rem; font-weight:600;">Monte Carlo (2000 sims)</div>
+                      <div class="poisson-grid" style="gap:0.5rem;">
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" :class="md.poisson.mc_btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_btts)"></div>
+                          <div class="poisson-lbl">MC BTTS</div>
+                        </div>
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" :class="md.poisson.mc_o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_o25)"></div>
+                          <div class="poisson-lbl">MC O2.5</div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
                 </div>
               </template>
 
@@ -559,6 +1018,55 @@
                       </div>
                       <div><div class="elo-val" x-text="md.elo.away || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
                     </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- xG Analysis -->
+              <template x-if="matchXG && matchXG.home_xg != null">
+                <div class="section">
+                  <div class="section-label"><span class="icon">⚡</span> Expected Goals (xG)</div>
+                  <div class="glass" style="padding: 0.75rem 1rem;">
+                    <div class="elo-grid">
+                      <div><div class="elo-val" x-text="matchXG.home_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.home_team"></div></div>
+                      <div style="text-align:center">
+                        <div class="text-3" style="color:var(--text-2);">xG</div>
+                        <div class="text-4" x-text="matchXG.method || 'model'" style="color:var(--text-3);"></div>
+                      </div>
+                      <div><div class="elo-val" x-text="matchXG.away_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Goal Patterns -->
+              <template x-if="matchPatterns && (matchPatterns.home || matchPatterns.away)">
+                <div class="section">
+                  <div class="section-label"><span class="icon">📈</span> Goal Patterns</div>
+                  <div class="glass" style="padding: 0.75rem 1rem;">
+                    <template x-for="[side, team, data] in [[matchPatterns.home, md.home_team, matchPatterns.home], [matchPatterns.away, md.away_team, matchPatterns.away]].filter(x => x[0])" :key="team">
+                      <div style="margin-bottom:0.5rem;">
+                        <div class="text-3" style="font-weight:600; color:var(--text-2); margin-bottom:0.3rem;" x-text="team"></div>
+                        <div class="poisson-grid" style="gap:0.4rem;">
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="pct(data.first_goal_rate)"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">Score 1st</div>
+                          </div>
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="pct(data.comeback_rate)"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">Comeback</div>
+                          </div>
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="pct(data.btts_rate)"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">BTTS</div>
+                          </div>
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="data.avg_goals_scored?.toFixed(1) || '—'"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">Avg GF</div>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
                   </div>
                 </div>
               </template>
@@ -677,7 +1185,6 @@
 
   <!-- Alpine.js -->
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
-  <script>window.FOOTY_STATIC = true; /* base path set in <head> */</script>
   <script src="app.js"></script>
 
 </body>
