@@ -1,1 +1,1 @@
-{"home": {"team": "Manchester City", "results": ["W", "W", "W", "W", "D"], "ppg": 2.6}, "away": {"team": "Newcastle United", "results": ["W", "W", "L", "L", "L"], "ppg": 1.2}}
+{"home_form": ["W", "W", "W", "W", "D", "D"], "home_ppg": 2.33, "away_form": ["W", "W", "L", "L", "L", "L"], "away_ppg": 1.0}

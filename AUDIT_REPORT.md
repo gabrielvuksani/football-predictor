@@ -220,7 +220,7 @@
 
 ### Dead Code
 
-8. **Can I delete `v5.py` (907 lines) and `v3.py` (406 lines)?** Both have zero callers and no model files on disk. They're legacy model versions superseded by v8_council.
+8. **Can I delete `v5.py` (907 lines) and `v3.py` (406 lines)?** Both have zero callers and no model files on disk. They're legacy model versions superseded by v10_council.
 
 9. **What about `understat.py` and `fbref.py`?** Both are stubs that always return None. Options: (a) delete, (b) implement (requires scraping infrastructure), (c) leave as placeholders for future work.
 

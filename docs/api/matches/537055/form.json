@@ -1,1 +1,1 @@
-{"home": {"team": "Cagliari", "results": ["L", "L", "W", "W", "W"], "ppg": 1.8}, "away": {"team": "Lecce", "results": ["W", "W", "L", "L", "D"], "ppg": 1.4}}
+{"home_form": ["L", "L", "W", "W", "W", "W"], "home_ppg": 2.0, "away_form": ["W", "W", "L", "L", "D", "D"], "away_ppg": 1.33}

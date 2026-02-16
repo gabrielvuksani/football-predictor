@@ -8,7 +8,7 @@
 
 ML-powered football match prediction system covering 5 European leagues (PL, PD, SA,
 BL1, FL1) with 45,000+ historical matches. Uses an **8-expert council** architecture
-(v8_council) that feeds ~170 features into a HistGradientBoosting meta-learner.
+(v10_council) that feeds ~170 features into a HistGradientBoosting meta-learner.
 
 ## Tech Stack
 
@@ -41,7 +41,7 @@ BL1, FL1) with 45,000+ historical matches. Uses an **8-expert council** architec
 | `web/static/app.js` | Frontend routing & state |
 | `web/static/style.css` | Dark glassmorphism design system |
 
-## Architecture: v8_council
+## Architecture: v10_council
 
 ```
 Layer 1 — EIGHT SPECIALIST EXPERTS
@@ -105,9 +105,9 @@ footy opta {fetch, show}
 - Team names go through `canonical_team_name()` from `footy.normalize`
 
 ### Model Versions
-- Current production: `v8_council`
-- Model file: `data/models/v8_council.joblib`
-- All predictions write `model_version = 'v8_council'`
+- Current production: `v10_council`
+- Model file: `data/models/v10_council.joblib`
+- All predictions write `model_version = 'v10_council'`
 - Old models (v2–v5) exist as base layers within the council
 
 ### Data Flow
@@ -137,7 +137,7 @@ pytest tests/test_upgrades.py -v  # v8 upgrade tests
 ```
 
 Test fixtures use in-memory DuckDB connections. Some tests require the model
-joblib file to exist (`data/models/v8_council.joblib`).
+joblib file to exist (`data/models/v10_council.joblib`).
 
 ## Environment Variables
 

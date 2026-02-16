@@ -1,1 +1,1 @@
-{"home": {"team": "Genoa", "results": ["D", "L", "L", "L", "L"], "ppg": 0.2}, "away": {"team": "Torino", "results": ["L", "D", "D", "W", "W"], "ppg": 1.6}}
+{"home_form": ["D", "D", "L", "L", "L", "L"], "home_ppg": 0.33, "away_form": ["L", "L", "D", "D", "W", "W"], "away_ppg": 1.33}

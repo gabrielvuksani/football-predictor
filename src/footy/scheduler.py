@@ -7,7 +7,7 @@ Uses APScheduler for job scheduling with persistent storage in DuckDB.
 Scheduled Jobs:
 - ingest: Fetch upcoming fixtures and finished match results
 - train_base: Train Elo + Poisson models
-- train_council: Train council model (v8) with 6 experts + meta-learner
+- train_council: Train council model (v10) with 11 experts + meta-learner
 - predict: Generate predictions for upcoming matches
 - score: Score finished predictions and update metrics
 
@@ -260,7 +260,7 @@ class TrainingScheduler:
         return {"elo_updates": n_elo, "poisson_teams": len(state.get("teams", []))}
     
     def _job_train_council(self, eval_days: int = 365) -> dict:
-        """Train council model (v8)."""
+        """Train council model (v10)."""
         con = connect()
         result = council_train_and_save(con, eval_days=eval_days, verbose=False)
         return result
@@ -492,8 +492,8 @@ class TrainingScheduler:
         """Get scheduler statistics"""
         rows = self.con.execute("""
             SELECT sj.job_type, COUNT(*) as total_runs, 
-                   SUM(CASE WHEN jr.status = 'SUCCESS' THEN 1 ELSE 0 END) as successful,
-                   SUM(CASE WHEN jr.status = 'FAILED' THEN 1 ELSE 0 END) as failed,
+                   SUM(CASE WHEN jr.status = 'success' THEN 1 ELSE 0 END) as successful,
+                   SUM(CASE WHEN jr.status = 'failed' THEN 1 ELSE 0 END) as failed,
                    AVG(CASE WHEN jr.duration_seconds IS NOT NULL THEN jr.duration_seconds ELSE 0 END) as avg_duration_seconds
             FROM job_runs jr
             JOIN scheduled_jobs sj ON jr.job_id = sj.job_id

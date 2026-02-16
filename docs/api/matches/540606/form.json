@@ -1,1 +1,1 @@
-{"home": {"team": "RB Leipzig", "results": ["D", "W", "W", "L", "L"], "ppg": 1.4}, "away": {"team": "Borussia Dortmund", "results": ["W", "W", "W", "W", "W"], "ppg": 3.0}}
+{"home_form": ["D", "D", "W", "W", "L", "L"], "home_ppg": 1.33, "away_form": ["W", "W", "W", "W", "W", "W"], "away_ppg": 3.0}

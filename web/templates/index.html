@@ -354,7 +354,7 @@
             <div class="section-label" style="margin-top:1.25rem;"><span class="icon">🤖</span> Models</div>
             <template x-for="m in stats.models" :key="m.version">
               <div class="model-row">
-                <span class="model-ver" :class="{ current: m.version === 'v8_council' }" x-text="m.version"></span>
+                <span class="model-ver" :class="{ current: m.version === 'v10_council' }" x-text="m.version"></span>
                 <span class="model-count" x-text="m.predictions + ' predictions'"></span>
               </div>
             </template>
@@ -475,6 +475,44 @@
                     <span x-text="'λ Home: ' + (md.poisson.lambda_home?.toFixed(2) || '—')"></span> ·
                     <span x-text="'λ Away: ' + (md.poisson.lambda_away?.toFixed(2) || '—')"></span>
                   </div>
+
+                  <!-- v10: Dixon-Coles adjusted probabilities -->
+                  <template x-if="md.poisson.dc_home != null">
+                    <div style="margin-top:0.6rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top:0.5rem;">
+                      <div class="text-3" style="color:var(--text-2); margin-bottom:0.3rem; font-weight:600;">Dixon-Coles Adjusted</div>
+                      <div class="poisson-grid" style="gap:0.5rem;">
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_home)"></div>
+                          <div class="poisson-lbl">DC Home</div>
+                        </div>
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_draw)"></div>
+                          <div class="poisson-lbl">DC Draw</div>
+                        </div>
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_away)"></div>
+                          <div class="poisson-lbl">DC Away</div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- v10: Monte Carlo simulation -->
+                  <template x-if="md.poisson.mc_btts != null">
+                    <div style="margin-top:0.4rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top:0.5rem;">
+                      <div class="text-3" style="color:var(--text-2); margin-bottom:0.3rem; font-weight:600;">Monte Carlo (2000 sims)</div>
+                      <div class="poisson-grid" style="gap:0.5rem;">
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" :class="md.poisson.mc_btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_btts)"></div>
+                          <div class="poisson-lbl">MC BTTS</div>
+                        </div>
+                        <div class="poisson-cell">
+                          <div class="poisson-val text-2" :class="md.poisson.mc_o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_o25)"></div>
+                          <div class="poisson-lbl">MC O2.5</div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
                 </div>
               </template>
 
@@ -544,6 +582,55 @@
                       </div>
                       <div><div class="elo-val" x-text="md.elo.away || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
                     </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- xG Analysis -->
+              <template x-if="matchXG && matchXG.home_xg != null">
+                <div class="section">
+                  <div class="section-label"><span class="icon">⚡</span> Expected Goals (xG)</div>
+                  <div class="glass" style="padding: 0.75rem 1rem;">
+                    <div class="elo-grid">
+                      <div><div class="elo-val" x-text="matchXG.home_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.home_team"></div></div>
+                      <div style="text-align:center">
+                        <div class="text-3" style="color:var(--text-2);">xG</div>
+                        <div class="text-4" x-text="matchXG.method || 'model'" style="color:var(--text-3);"></div>
+                      </div>
+                      <div><div class="elo-val" x-text="matchXG.away_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Goal Patterns -->
+              <template x-if="matchPatterns && (matchPatterns.home || matchPatterns.away)">
+                <div class="section">
+                  <div class="section-label"><span class="icon">📈</span> Goal Patterns</div>
+                  <div class="glass" style="padding: 0.75rem 1rem;">
+                    <template x-for="[side, team, data] in [[matchPatterns.home, md.home_team, matchPatterns.home], [matchPatterns.away, md.away_team, matchPatterns.away]].filter(x => x[0])" :key="team">
+                      <div style="margin-bottom:0.5rem;">
+                        <div class="text-3" style="font-weight:600; color:var(--text-2); margin-bottom:0.3rem;" x-text="team"></div>
+                        <div class="poisson-grid" style="gap:0.4rem;">
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="pct(data.first_goal_rate)"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">Score 1st</div>
+                          </div>
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="pct(data.comeback_rate)"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">Comeback</div>
+                          </div>
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="pct(data.btts_rate)"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">BTTS</div>
+                          </div>
+                          <div class="poisson-cell" style="padding:0.3rem;">
+                            <div class="poisson-val text-3" x-text="data.avg_goals_scored?.toFixed(1) || '—'"></div>
+                            <div class="poisson-lbl" style="font-size:0.55rem;">Avg GF</div>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
                   </div>
                 </div>
               </template>

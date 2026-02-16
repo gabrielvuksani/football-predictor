@@ -43,7 +43,7 @@ class TestSchema:
     def test_predictions_composite_pk(self, con):
         con.execute(
             "INSERT INTO predictions(match_id, model_version, p_home, p_draw, p_away) "
-            "VALUES (1, 'v8_council', 0.5, 0.3, 0.2)"
+            "VALUES (1, 'v10_council', 0.5, 0.3, 0.2)"
         )
         # Same match, different model → OK
         con.execute(

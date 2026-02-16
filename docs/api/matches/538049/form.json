@@ -1,1 +1,1 @@
-{"home": {"team": "Chelsea", "results": ["D", "D", "W", "W", "W"], "ppg": 2.2}, "away": {"team": "Burnley", "results": ["W", "W", "L", "L", "L"], "ppg": 1.2}}
+{"home_form": ["D", "D", "W", "W", "W", "W"], "home_ppg": 2.33, "away_form": ["W", "W", "L", "L", "L", "L"], "away_ppg": 1.0}

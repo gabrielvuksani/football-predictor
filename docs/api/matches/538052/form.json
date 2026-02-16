@@ -1,1 +1,1 @@
-{"home": {"team": "Nottingham Forest", "results": ["D", "D", "L", "L", "D"], "ppg": 0.6}, "away": {"team": "Liverpool", "results": ["W", "W", "L", "L", "W"], "ppg": 1.8}}
+{"home_form": ["D", "D", "L", "L", "D", "D"], "home_ppg": 0.67, "away_form": ["W", "W", "L", "L", "W", "W"], "away_ppg": 2.0}

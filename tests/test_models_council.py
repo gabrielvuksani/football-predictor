@@ -1,4 +1,4 @@
-"""Unit tests — Expert Council model (v8)."""
+"""Unit tests — Expert Council model (v10)."""
 import numpy as np
 import pytest
 
@@ -89,7 +89,7 @@ class TestExpertResult:
 class TestModelPath:
     def test_model_version_constant(self):
         from footy.models.council import MODEL_VERSION
-        assert MODEL_VERSION == "v8_council"
+        assert MODEL_VERSION == "v10_council"
 
     def test_model_path_extension(self):
         from footy.models.council import MODEL_PATH

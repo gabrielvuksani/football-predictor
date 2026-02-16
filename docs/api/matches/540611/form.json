@@ -1,1 +1,1 @@
-{"home": {"team": "FC Koln", "results": ["L", "L", "L", "W", "W"], "ppg": 1.2}, "away": {"team": "Hoffenheim", "results": ["W", "L", "L", "W", "W"], "ppg": 1.8}}
+{"home_form": ["L", "L", "L", "L", "W", "W"], "home_ppg": 1.0, "away_form": ["W", "W", "L", "L", "W", "W"], "away_ppg": 2.0}

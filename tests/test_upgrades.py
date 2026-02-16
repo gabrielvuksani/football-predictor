@@ -1,4 +1,4 @@
-"""Tests for v8/v9 upgrade features."""
+"""Tests for v8/v9/v10 upgrade features."""
 import pytest
 
 
@@ -12,7 +12,7 @@ class TestGoalPatternExpert:
 
     def test_expert_count(self):
         from footy.models.council import ALL_EXPERTS
-        assert len(ALL_EXPERTS) == 9  # 9 experts: +MomentumExpert in v9
+        assert len(ALL_EXPERTS) == 11  # 11 experts: +BayesianRate+Injury in v10
 
 
 class TestLeagueTableExpert:
@@ -139,9 +139,9 @@ class TestSchedulerJobTypes:
 
 
 class TestModelVersion:
-    def test_model_version_v8(self):
+    def test_model_version_v10(self):
         from footy.models.council import MODEL_VERSION
-        assert MODEL_VERSION == "v8_council"
+        assert MODEL_VERSION == "v10_council"
 
 
 class TestTeamMapping:

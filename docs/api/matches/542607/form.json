@@ -1,1 +1,1 @@
-{"home": {"team": "Nice", "results": ["L", "D", "D", "D", "D"], "ppg": 0.8}, "away": {"team": "Lorient", "results": ["W", "L", "L", "W", "W"], "ppg": 1.8}}
+{"home_form": ["L", "L", "D", "D", "D", "D"], "home_ppg": 0.67, "away_form": ["W", "W", "L", "L", "W", "W"], "away_ppg": 2.0}

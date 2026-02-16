@@ -99,7 +99,7 @@ async def match_page(request: Request, match_id: int):
 # API — Matches
 # ---------------------------------------------------------------------------
 @app.get("/api/matches")
-async def api_matches(days: int = 7, model: str = "v8_council"):
+async def api_matches(days: int = 7, model: str = "v10_council"):
     """Upcoming matches with predictions."""
     try:
         db = con()
@@ -132,7 +132,7 @@ async def api_matches(days: int = 7, model: str = "v8_council"):
 
 
 @app.get("/api/matches/{match_id}")
-async def api_match_detail(match_id: int, model: str = "v8_council"):
+async def api_match_detail(match_id: int, model: str = "v10_council"):
     """Detailed match data."""
     try:
         db = con()
@@ -172,6 +172,13 @@ async def api_match_detail(match_id: int, model: str = "v8_council"):
                     "predicted_score": notes.get("predicted_score"),
                     "lambda_home": notes.get("lambda_home"),
                     "lambda_away": notes.get("lambda_away"),
+                    # v10: Dixon-Coles adjusted probabilities
+                    "dc_home": notes.get("dc_home"),
+                    "dc_draw": notes.get("dc_draw"),
+                    "dc_away": notes.get("dc_away"),
+                    # v10: Monte Carlo simulation
+                    "mc_btts": notes.get("mc_btts"),
+                    "mc_o25": notes.get("mc_o25"),
                 }
         except (json.JSONDecodeError, TypeError):
             pass
@@ -510,7 +517,7 @@ async def api_ai_narrative(match_id: int):
         # Get the council's final prediction
         pred = con().execute(
             "SELECT p_home, p_draw, p_away FROM predictions "
-            "WHERE match_id=? AND model_version='v8_council'",
+            "WHERE match_id=? AND model_version='v10_council'",
             [match_id]
         ).fetchone()
         final = ""
@@ -551,7 +558,7 @@ async def api_value_bets(min_edge: float = 0.05):
                p.p_home, p.p_draw, p.p_away,
                e.b365h, e.b365d, e.b365a
         FROM matches m
-        JOIN predictions p ON p.match_id = m.match_id AND p.model_version = 'v8_council'
+        JOIN predictions p ON p.match_id = m.match_id AND p.model_version = 'v10_council'
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE m.status IN ('SCHEDULED','TIMED')
         ORDER BY m.utc_date
@@ -713,7 +720,7 @@ async def api_stats():
 # API — Performance tracking
 # ---------------------------------------------------------------------------
 @app.get("/api/performance")
-async def api_performance(model: str = "v8_council"):
+async def api_performance(model: str = "v10_council"):
     """Model performance metrics — accuracy, logloss, brier, calibration."""
     try:
         db = con()
@@ -872,6 +879,6 @@ async def api_last_updated():
     except duckdb.IOException:
         return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
     row = db.execute(
-        "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v8_council'"
+        "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v10_council'"
     ).fetchone()
     return {"last_updated": str(row[0])[:19] if row and row[0] else None}

@@ -1,1 +1,1 @@
-{"home": {"team": "Heidenheim", "results": ["L", "L", "L", "L", "L"], "ppg": 0.0}, "away": {"team": "Stuttgart", "results": ["W", "L", "L", "W", "W"], "ppg": 1.8}}
+{"home_form": ["L", "L", "L", "L", "L", "L"], "home_ppg": 0.0, "away_form": ["W", "W", "L", "L", "W", "W"], "away_ppg": 2.0}

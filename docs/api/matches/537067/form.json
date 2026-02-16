@@ -1,1 +1,1 @@
-{"home": {"team": "Roma", "results": ["D", "W", "W", "L", "L"], "ppg": 1.4}, "away": {"team": "Cremonese", "results": ["D", "L", "L", "L", "L"], "ppg": 0.2}}
+{"home_form": ["D", "D", "W", "W", "L", "L"], "home_ppg": 1.33, "away_form": ["D", "D", "L", "L", "L", "L"], "away_ppg": 0.33}

@@ -271,7 +271,7 @@ def explain_match(
     home_pred: float,
     draw_pred: float,
     away_pred: float,
-    model_version: str = "v8_council"
+    model_version: str = "v10_council"
 ) -> dict:
     """
     Generate detailed LLM explanation for why a match has given probabilities.
@@ -404,7 +404,7 @@ Return JSON:
 
 def explain_matches_batch(
     matches: list[dict],
-    model_version: str = "v8_council"
+    model_version: str = "v10_council"
 ) -> list[dict]:
     """
     Generate explanations for multiple matches.

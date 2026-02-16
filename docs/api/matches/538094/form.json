@@ -1,1 +1,1 @@
-{"home": {"team": "Wolverhampton Wanderers", "results": ["D", "D", "L", "L", "L"], "ppg": 0.4}, "away": {"team": "Arsenal", "results": ["D", "D", "W", "W", "W"], "ppg": 2.2}}
+{"home_form": ["D", "D", "L", "L", "L", "L"], "home_ppg": 0.33, "away_form": ["D", "D", "W", "W", "W", "W"], "away_ppg": 2.33}

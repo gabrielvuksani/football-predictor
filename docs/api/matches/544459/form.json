@@ -1,1 +1,1 @@
-{"home": {"team": "Villarreal", "results": ["L", "W", "W", "D", "D"], "ppg": 1.6}, "away": {"team": "Valencia", "results": ["W", "L", "L", "L", "L"], "ppg": 0.6}}
+{"home_form": ["L", "L", "W", "W", "D", "D"], "home_ppg": 1.33, "away_form": ["W", "W", "L", "L", "L", "L"], "away_ppg": 1.0}

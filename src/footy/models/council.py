@@ -2,38 +2,41 @@
 Expert Council Model — Multi-expert ensemble for football match prediction.
 
 Architecture:
-    Layer 1 — Nine specialist experts, each computing domain-specific features
+    Layer 1 — Eleven specialist experts, each computing domain-specific features
               and analytical probability estimates:
-              1. EloExpert          – Rating dynamics, team-specific home advantage
-              2. MarketExpert       – Odds intelligence, line movement, sharp money
-              3. FormExpert         – Opposition-adjusted rolling form
-              4. PoissonExpert      – Attack / defence + venue-split + score matrix
-              5. H2HExpert          – Bayesian head-to-head with time decay
+              1. EloExpert          – Rating dynamics, nonlinear transforms, momentum
+              2. MarketExpert       – Odds intelligence, logit-space, Pinnacle sharp line
+              3. FormExpert         – Opposition-adjusted form, Bayesian shrinkage, EWMA
+              4. PoissonExpert      – Dixon-Coles + Skellam + Monte Carlo simulation
+              5. H2HExpert         – Bayesian head-to-head with time decay
               6. ContextExpert      – Rest / congestion / calendar / season stage
               7. GoalPatternExpert  – First-goal advantage, comeback rate, HT patterns
               8. LeagueTableExpert  – League position, points gap, table dynamics
               9. MomentumExpert     – EMA crossovers, scoring slopes, form volatility
-    Layer 2 — Conflict, consensus & interaction signals across experts
-    Layer 3 — Multi-model stack (HistGBM + RandomForest + LogReg) + isotonic calibration
+             10. BayesianRateExpert – Beta-Binomial shrinkage for all team rates
+             11. InjuryAvailabilityExpert – Player availability from FPL/API-Football
+    Layer 2 — Conflict, consensus, KL divergence & interaction signals across experts
+    Layer 3 — Multi-model stack (HistGBM + RF + LR) with LEARNED weights + isotonic cal
     Layer 4 — Walk-forward cross-validation for honest performance estimation
     Layer 5 — Ollama interpreter (optional) for narrative match analysis
 
-v9 Innovations:
-    • MomentumExpert: EMA crossovers (fast vs slow PPG), goal scoring/conceding
-      regression slopes, form volatility, scoring burst/drought detection,
-      defensive tightening signals, regression-to-mean tracking
-    • Multi-model stacking: HistGBM (60%) + RandomForest (25%) + LogisticRegression (15%)
-      with calibrated isotonic probabilities from each base model
-    • Enhanced feature engineering: per-expert entropy, cross-domain interaction
-      features (Elo×Form, Market×Poisson, Momentum×Form, BurstAttack×DefLeak)
-    • Walk-forward cross-validation diagnostic: expanding-window temporal CV with
-      per-fold logloss, brier, accuracy, ECE aggregation
-    • MarketExpert P1-6 fix: opening odds baseline features +
-      using_closing flag so model can learn closing-odds bias
-    • 11 pairwise agreement signals (was 9), including momentum cross-expert
-    • Extended feature matrix: ~200+ columns across 9+1 experts
+v10 Innovations:
+    • Dixon-Coles τ correction in PoissonExpert for accurate low-score modelling
+    • Skellam distribution features for goal-difference analysis
+    • Monte Carlo simulation (2000 DC-correlated draws) for robust probabilities
+    • Beta-Binomial empirical Bayes shrinkage for all rate features
+    • League-specific priors (PL/PD/SA/BL1/FL1 calibrated)
+    • Logit-space odds features in MarketExpert + Pinnacle sharp line
+    • Nonlinear Elo transforms (tanh, signed log, weighted momentum)
+    • KL divergence per expert vs ensemble mean
+    • One-hot competition encoding (5 columns, not ordinal)
+    • Learned stacking weights via Nelder-Mead optimization on validation logloss
+    • Schedule difficulty + shot conversion features in FormExpert
+    • BayesianRateExpert: systematic shrinkage for win/CS/BTTS/O2.5 rates
+    • InjuryAvailabilityExpert: FPL + API-Football injury data integration
+    • Extended feature matrix: ~300+ columns across 11+1 experts
 
-v8 Innovations (retained):
+Prior innovations (retained from v8/v9):
     • GoalPatternExpert: First-goal advantage, comeback rate, half-time
       scoring patterns, multi-goal/nil rates, lead-holding ability
     • LeagueTableExpert: Simulated live league table, position differential,
@@ -75,12 +78,20 @@ from sklearn.linear_model import LogisticRegression, RidgeClassifierCV
 from sklearn.preprocessing import StandardScaler
 
 from footy.models.elo_core import elo_expected as _elo_exp, elo_draw_prob as _elo_dp, dynamic_k as _dk
+from footy.models.advanced_math import (
+    beta_binomial_shrink, league_specific_prior,
+    dixon_coles_tau, build_dc_score_matrix,
+    skellam_probs, monte_carlo_simulate,
+    logit, logit_space_delta, remove_overround, odds_entropy, odds_dispersion,
+    adaptive_ewma, tanh_transform, log_transform,
+    kl_divergence, schedule_difficulty,
+)
 
 from footy.config import settings
 from footy.normalize import canonical_team_name
 from footy.models.dixon_coles import fit_dc, predict_1x2, DCModel
 
-MODEL_VERSION = "v8_council"
+MODEL_VERSION = "v10_council"
 MODEL_PATH = Path("data/models") / f"{MODEL_VERSION}.joblib"
 
 # ---------------------------------------------------------------------------
@@ -274,6 +285,12 @@ class EloExpert(Expert):
             elo_history.setdefault(h, []).append(ratings[h])
             elo_history.setdefault(a, []).append(ratings[a])
 
+        # Derived features using advanced math
+        out_tanh_diff = np.array([tanh_transform(d, 400.0) for d in out_diff])
+        out_log_diff = np.array([log_transform(d) for d in out_diff])
+        out_elo_form_h = out_momentum_h * out_conf  # momentum weighted by confidence
+        out_elo_form_a = out_momentum_a * out_conf
+
         return ExpertResult(
             probs=np.column_stack([out_ph, out_pd, out_pa]),
             confidence=out_conf,
@@ -282,6 +299,11 @@ class EloExpert(Expert):
                 "elo_home_adv": out_home_adv,
                 "elo_momentum_h": out_momentum_h, "elo_momentum_a": out_momentum_a,
                 "elo_volatility_h": out_volatility_h, "elo_volatility_a": out_volatility_a,
+                # v10: nonlinear transforms + form signals
+                "elo_tanh_diff": out_tanh_diff,
+                "elo_log_diff": out_log_diff,
+                "elo_weighted_mom_h": out_elo_form_h,
+                "elo_weighted_mom_a": out_elo_form_a,
             },
         )
 
@@ -310,6 +332,11 @@ class MarketExpert(Expert):
         # Opening odds features (always use opening for primary signal to avoid train/serve skew)
         open_ph = np.zeros(n); open_pd = np.zeros(n); open_pa = np.zeros(n)
         has_open = np.zeros(n)
+        # v10: logit-space features, entropy, pinnacle-specific
+        logit_h = np.zeros(n); logit_d = np.zeros(n); logit_a = np.zeros(n)
+        mkt_entropy = np.zeros(n)
+        pin_ph = np.zeros(n); pin_pd = np.zeros(n); pin_pa = np.zeros(n)
+        has_pin = np.zeros(n)
         conf = np.zeros(n)
 
         for i, r in enumerate(df.itertuples(index=False)):
@@ -391,6 +418,19 @@ class MarketExpert(Expert):
             c = 0.3 * has_odds[i] + 0.3 * min(1.0, src_quality[i] / 3.0) + 0.2 * has_move[i] + 0.2 * has_ou[i]
             conf[i] = c
 
+            # v10: logit-space features
+            if has_odds[i]:
+                logit_h[i] = logit(max(0.01, ph[i]))
+                logit_d[i] = logit(max(0.01, pd_[i]))
+                logit_a[i] = logit(max(0.01, pa[i]))
+                mkt_entropy[i] = odds_entropy([ph[i], pd_[i], pa[i]])
+
+            # v10: Pinnacle odds (sharpest bookmaker, least overround)
+            imp_pin = _implied(psh_v, psd_v, psa_v)
+            if imp_pin[0] > 0:
+                pin_ph[i], pin_pd[i], pin_pa[i] = imp_pin[0], imp_pin[1], imp_pin[2]
+                has_pin[i] = 1.0
+
         return ExpertResult(
             probs=np.column_stack([ph, pd_, pa]),
             confidence=conf,
@@ -404,6 +444,11 @@ class MarketExpert(Expert):
                 # Opening odds baseline (always available, no train/serve skew)
                 "mkt_open_ph": open_ph, "mkt_open_pd": open_pd, "mkt_open_pa": open_pa,
                 "mkt_has_open": has_open,
+                # v10: logit-space + entropy + Pinnacle
+                "mkt_logit_h": logit_h, "mkt_logit_d": logit_d, "mkt_logit_a": logit_a,
+                "mkt_entropy": mkt_entropy,
+                "mkt_pin_ph": pin_ph, "mkt_pin_pd": pin_pd, "mkt_pin_pa": pin_pa,
+                "mkt_has_pin": has_pin,
             },
         )
 
@@ -446,6 +491,12 @@ class FormExpert(Expert):
         strk_h = np.zeros(n); strk_a = np.zeros(n)
         gsup_h = np.zeros(n); gsup_a = np.zeros(n)
         sotr_h = np.zeros(n); sotr_a = np.zeros(n)
+        # v10: Bayesian shrinkage rates, schedule difficulty, shot conversion
+        shrunk_wr_h = np.zeros(n); shrunk_wr_a = np.zeros(n)
+        shrunk_cs_h = np.zeros(n); shrunk_cs_a = np.zeros(n)
+        shrunk_btts_h = np.zeros(n); shrunk_btts_a = np.zeros(n)
+        sched_diff_h = np.zeros(n); sched_diff_a = np.zeros(n)
+        conversion_h = np.zeros(n); conversion_a = np.zeros(n)
         probs = np.full((n, 3), 1 / 3)
         conf = np.zeros(n)
 
@@ -519,6 +570,39 @@ class FormExpert(Expert):
             sotr_h[i] = sv_sot_h / max(sv_h, 0.1)
             sotr_a[i] = sv_sot_a / max(sv_a, 0.1)
 
+            # v10: Bayesian shrinkage for noisy rates
+            h_recs = roll.get(h, [])
+            a_recs = roll.get(a, [])
+            n_h_recs = len(h_recs)
+            n_a_recs = len(a_recs)
+            # Win rate shrinkage
+            h_wins = sum(1 for d in h_recs if d["pts"] == 3)
+            a_wins = sum(1 for d in a_recs if d["pts"] == 3)
+            shrunk_wr_h[i] = beta_binomial_shrink(h_wins, n_h_recs, 4.5, 5.5)
+            shrunk_wr_a[i] = beta_binomial_shrink(a_wins, n_a_recs, 4.5, 5.5)
+            # CS rate shrinkage
+            h_cs = sum(1 for d in h_recs if d.get("cs", 0) > 0)
+            a_cs = sum(1 for d in a_recs if d.get("cs", 0) > 0)
+            shrunk_cs_h[i] = beta_binomial_shrink(h_cs, n_h_recs, 3.5, 6.5)
+            shrunk_cs_a[i] = beta_binomial_shrink(a_cs, n_a_recs, 3.5, 6.5)
+            # BTTS rate shrinkage
+            h_btts = sum(1 for d in h_recs if d.get("btts", 0) > 0)
+            a_btts = sum(1 for d in a_recs if d.get("btts", 0) > 0)
+            shrunk_btts_h[i] = beta_binomial_shrink(h_btts, n_h_recs, 5.0, 5.0)
+            shrunk_btts_a[i] = beta_binomial_shrink(a_btts, n_a_recs, 5.0, 5.0)
+            # Schedule difficulty
+            h_opp_elos = [d.get("opp_elo", 1500) for d in h_recs[-5:]]
+            a_opp_elos = [d.get("opp_elo", 1500) for d in a_recs[-5:]]
+            sched_diff_h[i] = schedule_difficulty(h_opp_elos) if h_opp_elos else 1500.0
+            sched_diff_a[i] = schedule_difficulty(a_opp_elos) if a_opp_elos else 1500.0
+            # Shot conversion (goals per shot on target)
+            h_total_sot = sum(d.get("sot", 0) for d in h_recs[-10:])
+            h_total_gf = sum(d.get("gf", 0) for d in h_recs[-10:])
+            a_total_sot = sum(d.get("sot", 0) for d in a_recs[-10:])
+            a_total_gf = sum(d.get("gf", 0) for d in a_recs[-10:])
+            conversion_h[i] = h_total_gf / max(h_total_sot, 1)
+            conversion_a[i] = a_total_gf / max(a_total_sot, 1)
+
             # form-based probs (OAF comparison)
             oaf_diff = oaf_h[i] - oaf_a[i]
             p_h = 1 / (1 + math.exp(-0.8 * oaf_diff))
@@ -582,6 +666,12 @@ class FormExpert(Expert):
                 "form_streak_h": strk_h, "form_streak_a": strk_a,
                 "form_gsup_h": gsup_h, "form_gsup_a": gsup_a,
                 "form_sotr_h": sotr_h, "form_sotr_a": sotr_a,
+                # v10: Bayesian shrinkage + schedule difficulty + shot conversion
+                "form_shrunk_wr_h": shrunk_wr_h, "form_shrunk_wr_a": shrunk_wr_a,
+                "form_shrunk_cs_h": shrunk_cs_h, "form_shrunk_cs_a": shrunk_cs_a,
+                "form_shrunk_btts_h": shrunk_btts_h, "form_shrunk_btts_a": shrunk_btts_a,
+                "form_sched_diff_h": sched_diff_h, "form_sched_diff_a": sched_diff_a,
+                "form_conversion_h": conversion_h, "form_conversion_a": conversion_a,
             },
         )
 
@@ -626,6 +716,24 @@ class PoissonExpert(Expert):
         pois_zero_h = np.zeros(n)      # P(home scores 0)
         pois_zero_a = np.zeros(n)      # P(away scores 0)
         pois_skew = np.zeros(n)        # skewness of goal diff distribution
+        # v10: Dixon-Coles adjusted features
+        dc_adj_ph = np.zeros(n)        # DC-adjusted P(home)
+        dc_adj_pd = np.zeros(n)        # DC-adjusted P(draw)
+        dc_adj_pa = np.zeros(n)        # DC-adjusted P(away)
+        dc_cs00 = np.zeros(n)          # DC-adjusted P(0-0)
+        dc_btts = np.zeros(n)          # DC-adjusted P(BTTS)
+        # v10: Skellam distribution features
+        sk_mean_gd = np.zeros(n)       # expected goal difference
+        sk_var_gd = np.zeros(n)        # variance of goal difference
+        sk_skew = np.zeros(n)          # skellam skewness
+        # v10: Monte Carlo features (DC-correlated simulation)
+        mc_ph = np.zeros(n)            # MC P(home)
+        mc_pd = np.zeros(n)            # MC P(draw)
+        mc_pa = np.zeros(n)            # MC P(away)
+        mc_btts = np.zeros(n)          # MC P(BTTS)
+        mc_o25 = np.zeros(n)           # MC P(O2.5)
+        mc_o35 = np.zeros(n)           # MC P(O3.5)
+        mc_var_total = np.zeros(n)     # MC variance of total goals
 
         def _a(t): return attack.get(t, self.AVG)
         def _d(t): return defense.get(t, self.AVG * 0.9)
@@ -695,6 +803,32 @@ class PoissonExpert(Expert):
             std = max(np.sqrt(var), 1e-6)
             pois_skew[i] = float(np.sum(gd_probs * ((gd_range - mu) / std) ** 3))
 
+            # v10: Dixon-Coles adjusted score matrix
+            dc_mx = build_dc_score_matrix(l_h, l_a, rho=-0.13, max_goals=self.MAX_GOALS)
+            dc_ph = float(np.sum(np.tril(dc_mx, -1)))
+            dc_pd_v = float(np.sum(np.diag(dc_mx)))
+            dc_pa_v = float(np.sum(np.triu(dc_mx, 1)))
+            dc_ph, dc_pd_v, dc_pa_v = _norm3(dc_ph, dc_pd_v, dc_pa_v)
+            dc_adj_ph[i] = dc_ph; dc_adj_pd[i] = dc_pd_v; dc_adj_pa[i] = dc_pa_v
+            dc_cs00[i] = float(dc_mx[0, 0])
+            dc_btts[i] = float(1.0 - dc_mx[0, :].sum() - dc_mx[:, 0].sum() + dc_mx[0, 0])
+
+            # v10: Skellam distribution features
+            sk_res = skellam_probs(l_h, l_a)
+            sk_mean_gd[i] = sk_res["mean_diff"]
+            sk_var_gd[i] = sk_res["var_diff"]
+            sk_skew[i] = sk_res["skewness"]
+
+            # v10: Monte Carlo (DC-correlated, 2000 sims for speed)
+            mc_res = monte_carlo_simulate(l_h, l_a, rho=-0.13, n_sims=2000)
+            mc_ph[i] = mc_res["mc_p_home"]
+            mc_pd[i] = mc_res["mc_p_draw"]
+            mc_pa[i] = mc_res["mc_p_away"]
+            mc_btts[i] = mc_res["mc_btts"]
+            mc_o25[i] = mc_res["mc_o25"]
+            mc_o35[i] = mc_res["mc_o35"]
+            mc_var_total[i] = mc_res["mc_var_total"]
+
             # confidence — increases with number of known teams
             gc_h = game_count.get(h, 0)
             gc_a = game_count.get(a, 0)
@@ -744,6 +878,16 @@ class PoissonExpert(Expert):
                 "pois_zero_h": pois_zero_h, "pois_zero_a": pois_zero_a,
                 "pois_ml_hg": pois_ml_hg, "pois_ml_ag": pois_ml_ag,
                 "pois_skew": pois_skew,
+                # v10: Dixon-Coles adjusted
+                "pois_dc_ph": dc_adj_ph, "pois_dc_pd": dc_adj_pd, "pois_dc_pa": dc_adj_pa,
+                "pois_dc_cs00": dc_cs00, "pois_dc_btts": dc_btts,
+                # v10: Skellam distribution
+                "pois_sk_mean_gd": sk_mean_gd, "pois_sk_var_gd": sk_var_gd,
+                "pois_sk_skew": sk_skew,
+                # v10: Monte Carlo simulation
+                "pois_mc_ph": mc_ph, "pois_mc_pd": mc_pd, "pois_mc_pa": mc_pa,
+                "pois_mc_btts": mc_btts, "pois_mc_o25": mc_o25,
+                "pois_mc_o35": mc_o35, "pois_mc_var_total": mc_var_total,
             },
         )
 
@@ -1455,12 +1599,217 @@ class MomentumExpert(Expert):
 
 
 # ===================================================================
+# 10. BAYESIAN RATE EXPERT
+# ===================================================================
+class BayesianRateExpert(Expert):
+    """
+    Systematic Beta-Binomial shrinkage for all team rates.
+
+    For each team, computes shrunk estimates of:
+    - Win rate (overall + home/away venue split)
+    - Clean sheet rate
+    - BTTS rate (both teams to score)
+    - Over 2.5 goals rate
+    - Scoring first rate
+    - Goals per match (Gamma-Poisson shrinkage approximation)
+
+    Uses league-specific priors so that (e.g.) Bundesliga's higher scoring
+    rate doesn't contaminate La Liga estimates.
+    """
+    name = "bayesian_rate"
+
+    WINDOW = 20  # matches to consider for rate estimation
+
+    def compute(self, df: pd.DataFrame) -> ExpertResult:
+        n = len(df)
+
+        # Track per-team match history
+        team_history: dict[str, list[dict]] = {}  # team -> list of match dicts
+
+        # Output arrays
+        bayes_wr_h = np.zeros(n);  bayes_wr_a = np.zeros(n)
+        bayes_cs_h = np.zeros(n);  bayes_cs_a = np.zeros(n)
+        bayes_btts_h = np.zeros(n); bayes_btts_a = np.zeros(n)
+        bayes_o25_h = np.zeros(n);  bayes_o25_a = np.zeros(n)
+        bayes_sf_h = np.zeros(n);   bayes_sf_a = np.zeros(n)   # scoring first
+        bayes_gpm_h = np.zeros(n);  bayes_gpm_a = np.zeros(n)  # goals per match
+        bayes_home_wr = np.zeros(n)  # home team's home-only win rate
+        bayes_away_wr = np.zeros(n)  # away team's away-only win rate
+        conf = np.zeros(n)
+        probs = np.full((n, 3), 1 / 3)
+
+        for i, r in enumerate(df.itertuples(index=False)):
+            ht, at = r.home_team, r.away_team
+            comp = getattr(r, "competition", "PL")
+
+            for team, is_home, out_wr, out_cs, out_btts, out_o25, out_sf, out_gpm in [
+                (ht, True, bayes_wr_h, bayes_cs_h, bayes_btts_h, bayes_o25_h, bayes_sf_h, bayes_gpm_h),
+                (at, False, bayes_wr_a, bayes_cs_a, bayes_btts_a, bayes_o25_a, bayes_sf_a, bayes_gpm_a),
+            ]:
+                hist = team_history.get(team, [])[-self.WINDOW:]
+                n_matches = len(hist)
+
+                if n_matches >= 3:
+                    wins = sum(1 for m in hist if m["pts"] == 3)
+                    cs = sum(1 for m in hist if m["ga"] == 0)
+                    btts = sum(1 for m in hist if m["gf"] > 0 and m["ga"] > 0)
+                    o25 = sum(1 for m in hist if m["gf"] + m["ga"] > 2)
+                    sf = sum(1 for m in hist if m["gf"] > 0)
+                    total_goals = sum(m["gf"] for m in hist)
+
+                    # League-specific priors
+                    wr_prior = league_specific_prior(comp, "home_win")
+                    cs_prior = league_specific_prior(comp, "cs")
+                    btts_prior = league_specific_prior(comp, "btts")
+                    o25_prior = league_specific_prior(comp, "o25")
+
+                    out_wr[i] = beta_binomial_shrink(wins, n_matches, *wr_prior)
+                    out_cs[i] = beta_binomial_shrink(cs, n_matches, *cs_prior)
+                    out_btts[i] = beta_binomial_shrink(btts, n_matches, *btts_prior)
+                    out_o25[i] = beta_binomial_shrink(o25, n_matches, *o25_prior)
+                    out_sf[i] = beta_binomial_shrink(sf, n_matches, 5.0, 5.0)
+                    # Gamma-Poisson-ish shrinkage for goals per match
+                    out_gpm[i] = (total_goals + 1.35 * 3) / (n_matches + 3)
+                else:
+                    # fallback to prior means
+                    out_wr[i] = 0.45
+                    out_cs[i] = 0.35
+                    out_btts[i] = 0.50
+                    out_o25[i] = 0.48
+                    out_sf[i] = 0.50
+                    out_gpm[i] = 1.35
+
+                # Venue-specific win rate
+                if is_home:
+                    home_hist = [m for m in hist if m.get("venue") == "home"]
+                    if len(home_hist) >= 3:
+                        hw = sum(1 for m in home_hist if m["pts"] == 3)
+                        bayes_home_wr[i] = beta_binomial_shrink(hw, len(home_hist), 4.6, 5.4)
+                    else:
+                        bayes_home_wr[i] = 0.46
+                else:
+                    away_hist = [m for m in hist if m.get("venue") == "away"]
+                    if len(away_hist) >= 3:
+                        aw = sum(1 for m in away_hist if m["pts"] == 3)
+                        bayes_away_wr[i] = beta_binomial_shrink(aw, len(away_hist), 3.2, 6.8)
+                    else:
+                        bayes_away_wr[i] = 0.30
+
+            # Bayesian probabilities from rates
+            p_h = bayes_home_wr[i] * 0.6 + bayes_wr_h[i] * 0.4
+            p_a = bayes_away_wr[i] * 0.6 + bayes_wr_a[i] * 0.4
+            p_d = max(0.15, 1.0 - p_h - p_a)
+            p_h, p_d, p_a = _norm3(p_h, p_d, p_a)
+            probs[i] = [p_h, p_d, p_a]
+
+            # Confidence based on data availability
+            n_h = len(team_history.get(ht, []))
+            n_a = len(team_history.get(at, []))
+            conf[i] = min(1.0, (n_h + n_a) / 30.0)
+
+            # --- update history ---
+            hg_val = int(r.home_goals)
+            ag_val = int(r.away_goals)
+            team_history.setdefault(ht, []).append({
+                "gf": hg_val, "ga": ag_val,
+                "pts": _pts(hg_val, ag_val), "venue": "home",
+            })
+            team_history.setdefault(at, []).append({
+                "gf": ag_val, "ga": hg_val,
+                "pts": _pts(ag_val, hg_val), "venue": "away",
+            })
+
+        return ExpertResult(
+            probs=probs,
+            confidence=conf,
+            features={
+                "bayes_wr_h": bayes_wr_h, "bayes_wr_a": bayes_wr_a,
+                "bayes_cs_h": bayes_cs_h, "bayes_cs_a": bayes_cs_a,
+                "bayes_btts_h": bayes_btts_h, "bayes_btts_a": bayes_btts_a,
+                "bayes_o25_h": bayes_o25_h, "bayes_o25_a": bayes_o25_a,
+                "bayes_sf_h": bayes_sf_h, "bayes_sf_a": bayes_sf_a,
+                "bayes_gpm_h": bayes_gpm_h, "bayes_gpm_a": bayes_gpm_a,
+                "bayes_home_wr": bayes_home_wr, "bayes_away_wr": bayes_away_wr,
+                "bayes_wr_diff": bayes_wr_h - bayes_wr_a,
+                "bayes_cs_diff": bayes_cs_h - bayes_cs_a,
+                "bayes_gpm_diff": bayes_gpm_h - bayes_gpm_a,
+                "bayes_gpm_sum": bayes_gpm_h + bayes_gpm_a,
+            },
+        )
+
+
+# ===================================================================
+# 11. INJURY / AVAILABILITY EXPERT
+# ===================================================================
+class InjuryAvailabilityExpert(Expert):
+    """
+    Incorporates player availability information from FPL and API-Football.
+
+    Features:
+    - Number of key players unavailable
+    - Weighted availability index (minutes_share × importance)
+    - FPL fixture difficulty rating (PL only)
+    - Injury count differential
+    """
+    name = "injury"
+
+    def compute(self, df: pd.DataFrame) -> ExpertResult:
+        n = len(df)
+        probs = np.full((n, 3), 1 / 3)
+        conf = np.zeros(n)
+
+        inj_count_h = np.zeros(n)
+        inj_count_a = np.zeros(n)
+        inj_diff = np.zeros(n)
+        fpl_fdr_h = np.zeros(n)  # FPL fixture difficulty rating
+        fpl_fdr_a = np.zeros(n)
+
+        for i, r in enumerate(df.itertuples(index=False)):
+            raw = _raw(getattr(r, "raw_json", None))
+            fpl_raw = _raw(getattr(r, "fpl_json", None))
+
+            # Extract injury counts from API-Football or raw data
+            h_inj = _f(raw.get("home_injuries", 0))
+            a_inj = _f(raw.get("away_injuries", 0))
+            inj_count_h[i] = h_inj
+            inj_count_a[i] = a_inj
+            inj_diff[i] = h_inj - a_inj
+
+            # FPL fixture difficulty (1-5 scale, PL only)
+            fpl_fdr_h[i] = _f(fpl_raw.get("fdr_h", 3.0))
+            fpl_fdr_a[i] = _f(fpl_raw.get("fdr_a", 3.0))
+
+            # Slight probability adjustment based on injury differential
+            inj_delta = (a_inj - h_inj) * 0.01  # more away injuries → slight home boost
+            p_h = 0.333 + inj_delta
+            p_a = 0.333 - inj_delta
+            p_d = 1.0 - p_h - p_a
+            probs[i] = list(_norm3(p_h, p_d, p_a))
+
+            # Low confidence — this is supplementary data
+            has_data = 1.0 if (h_inj > 0 or a_inj > 0) else 0.0
+            conf[i] = has_data * 0.3
+
+        return ExpertResult(
+            probs=probs,
+            confidence=conf,
+            features={
+                "inj_count_h": inj_count_h, "inj_count_a": inj_count_a,
+                "inj_diff": inj_diff,
+                "fpl_fdr_h": fpl_fdr_h, "fpl_fdr_a": fpl_fdr_a,
+                "fpl_fdr_diff": fpl_fdr_h - fpl_fdr_a,
+            },
+        )
+
+
+# ===================================================================
 # COUNCIL — META-LEARNER
 # ===================================================================
 ALL_EXPERTS: list[Expert] = [
     EloExpert(), MarketExpert(), FormExpert(),
     PoissonExpert(), H2HExpert(), ContextExpert(),
     GoalPatternExpert(), LeagueTableExpert(), MomentumExpert(),
+    BayesianRateExpert(), InjuryAvailabilityExpert(),
 ]
 
 
@@ -1530,7 +1879,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     ])
 
     # 4. cross-expert interaction features (pairwise)
-    n_exp = min(9, len(results))  # 9 base experts now (including Momentum)
+    n_exp = len(results)  # 11 experts in v10
     # elo-market agreement
     elo_mkt_agree = 1.0 - np.abs(results[0].probs[:, 0] - results[1].probs[:, 0])
     # form-h2h agreement
@@ -1549,7 +1898,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     lt_elo_agree = np.zeros(n)
     if n_exp > 7:
         lt_elo_agree = 1.0 - np.abs(results[7].probs[:, 0] - results[0].probs[:, 0])
-    # momentum-form agreement (new: how aligned momentum is with form)
+    # momentum-form agreement
     mom_form_agree = np.zeros(n)
     if n_exp > 8:
         mom_form_agree = 1.0 - np.abs(results[8].probs[:, 0] - results[2].probs[:, 0])
@@ -1557,6 +1906,14 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     mom_elo_agree = np.zeros(n)
     if n_exp > 8:
         mom_elo_agree = 1.0 - np.abs(results[8].probs[:, 0] - results[0].probs[:, 0])
+    # v10: bayesian-poisson agreement
+    bayes_pois_agree = np.zeros(n)
+    if n_exp > 9:
+        bayes_pois_agree = 1.0 - np.abs(results[9].probs[:, 0] - results[3].probs[:, 0])
+    # v10: bayesian-market agreement
+    bayes_mkt_agree = np.zeros(n)
+    if n_exp > 9:
+        bayes_mkt_agree = 1.0 - np.abs(results[9].probs[:, 0] - results[1].probs[:, 0])
     # max disagreement across any pair of experts (for home win)
     max_disagree = np.zeros(n)
     for ei in range(n_exp):
@@ -1577,12 +1934,21 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
         lt_elo_agree[:, None], mom_form_agree[:, None],
         mom_elo_agree[:, None], max_disagree[:, None],
         winner_votes[:, None],
+        bayes_pois_agree[:, None], bayes_mkt_agree[:, None],
     ])
 
     # 5. Per-expert entropy (how uncertain each expert is)
     for res in results[:n_exp]:
         expert_ent = np.array([_entropy3(p) for p in res.probs])
         blocks.append(expert_ent[:, None])
+
+    # 5b. v10: Per-expert KL divergence from ensemble mean
+    for res in results[:n_exp]:
+        kl_arr = np.array([
+            kl_divergence(res.probs[ii], mean_probs[ii])
+            for ii in range(n)
+        ])
+        blocks.append(kl_arr[:, None])
 
     # 6. Feature interactions (cross-domain signal combinations)
     # These capture nonlinear relationships the tree model might miss
@@ -1605,11 +1971,32 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
         ga_slope_a = results[8].features.get("mom_ga_slope_a", np.zeros(n))
         blocks.append((burst_h * ga_slope_a)[:, None])  # Attack surge × defensive leak
 
-    # 7. Competition encoding (ordinal league ID)
+    # 6b. v10: Additional cross-domain interactions
+    # tanh(elo_diff) — nonlinear bounded elo signal
+    elo_tanh = np.array([tanh_transform(float(d), 400.0) for d in elo_diff])
+    blocks.append(elo_tanh[:, None])
+    # log(form_diff) — signed log of form difference
+    form_log = np.array([log_transform(float(d)) for d in form_diff])
+    blocks.append(form_log[:, None])
+    # Bayesian × Poisson agreement interaction
+    if n_exp > 9:
+        bayes_wr_diff = results[9].features.get("bayes_wr_diff", np.zeros(n))
+        pois_lam_diff = results[3].features.get("pois_lambda_diff", np.zeros(n))
+        blocks.append((bayes_wr_diff * pois_lam_diff)[:, None])
+    # DC-adjusted Poisson × Market (sharper probability estimates)
+    dc_ph = results[3].features.get("pois_dc_ph", np.zeros(n))
+    blocks.append((dc_ph * mkt_ph)[:, None])  # DC-Poisson × Market
+    # Monte Carlo P(home) × Market P(home)
+    mc_ph_arr = results[3].features.get("pois_mc_ph", np.zeros(n))
+    blocks.append((mc_ph_arr * mkt_ph)[:, None])  # MC × Market
+
+    # 7. Competition encoding — v10: one-hot (5 leagues) instead of ordinal
     if competitions is not None:
-        _COMP_MAP = {"PL": 1, "PD": 2, "SA": 3, "BL1": 4, "FL1": 5}
-        comp_ids = np.array([_COMP_MAP.get(str(c), 0) for c in competitions], dtype=float)
-        blocks.append(comp_ids[:, None])
+        _COMP_LIST = ["PL", "PD", "SA", "BL1", "FL1"]
+        comp_onehot = np.zeros((n, len(_COMP_LIST)), dtype=float)
+        for j, comp in enumerate(_COMP_LIST):
+            comp_onehot[:, j] = np.array([1.0 if str(c) == comp else 0.0 for c in competitions])
+        blocks.append(comp_onehot)
 
     X = np.hstack(blocks)
     return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1801,21 +2188,38 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
         if verbose:
             print(f"[council] LR base failed: {e}", flush=True)
 
-    # Stacked ensemble: weighted blend of base models
-    # Weights: GBM gets 60%, RF 25%, LR 15% (GBM is strongest on tabular)
+    # Stacked ensemble: LEARNED weights via Nelder-Mead on validation logloss
     P = P_gbm.copy()
-    if P_rf is not None and P_lr is not None:
-        P = 0.60 * P_gbm + 0.25 * P_rf + 0.15 * P_lr
+    learned_weights = (1.0,)
+    available_models = [("GBM", P_gbm)]
+    if P_rf is not None:
+        available_models.append(("RF", P_rf))
+    if P_lr is not None:
+        available_models.append(("LR", P_lr))
+
+    if len(available_models) >= 2:
+        from scipy.optimize import minimize
+
+        def _stack_logloss(w_raw):
+            """Compute logloss for a weighted blend of base model predictions."""
+            w = np.exp(w_raw) / np.exp(w_raw).sum()  # softmax to enforce sum=1
+            P_blend = sum(wi * Pi for wi, (_, Pi) in zip(w, available_models))
+            row_sums = P_blend.sum(axis=1, keepdims=True)
+            P_blend = P_blend / np.maximum(row_sums, 1e-12)
+            ll = -np.mean(np.log(P_blend[np.arange(len(yte)), yte] + 1e-12))
+            return ll
+
+        # Optimize weights
+        w0 = np.zeros(len(available_models))  # start with equal weights in log-space
+        res_opt = minimize(_stack_logloss, w0, method="Nelder-Mead",
+                          options={"maxiter": 500, "xatol": 1e-5, "fatol": 1e-6})
+        opt_w = np.exp(res_opt.x) / np.exp(res_opt.x).sum()
+        learned_weights = tuple(round(float(wi), 4) for wi in opt_w)
+
+        P = sum(wi * Pi for wi, (_, Pi) in zip(opt_w, available_models))
         if verbose:
-            print("[council] using 3-model stack (GBM=0.60, RF=0.25, LR=0.15)", flush=True)
-    elif P_rf is not None:
-        P = 0.75 * P_gbm + 0.25 * P_rf
-        if verbose:
-            print("[council] using 2-model stack (GBM=0.75, RF=0.25)", flush=True)
-    elif P_lr is not None:
-        P = 0.80 * P_gbm + 0.20 * P_lr
-        if verbose:
-            print("[council] using 2-model stack (GBM=0.80, LR=0.20)", flush=True)
+            model_names = [name for name, _ in available_models]
+            print(f"[council] learned stack weights: {dict(zip(model_names, learned_weights))}", flush=True)
     else:
         if verbose:
             print("[council] using single GBM model", flush=True)
@@ -1907,10 +2311,7 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
         "dc_by_comp": dc_by_comp,
         "btts_model": btts_model,
         "ou25_model": ou25_model,
-        "stack_weights": (0.60, 0.25, 0.15) if (rf_model and lr_model)
-                    else (0.75, 0.25) if rf_model
-                    else (0.80, 0.20) if lr_model
-                    else (1.0,),
+        "stack_weights": learned_weights,
     }, MODEL_PATH)
 
     # ================================================================
@@ -2149,6 +2550,13 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         lam_h_val = float(pois_res.features.get("pois_lambda_h", np.zeros(tail))[j])
         lam_a_val = float(pois_res.features.get("pois_lambda_a", np.zeros(tail))[j])
 
+        # v10: DC-adjusted and MC probabilities
+        dc_ph_val = float(pois_res.features.get("pois_dc_ph", np.zeros(tail))[j])
+        dc_pd_val = float(pois_res.features.get("pois_dc_pd", np.zeros(tail))[j])
+        dc_pa_val = float(pois_res.features.get("pois_dc_pa", np.zeros(tail))[j])
+        mc_btts_val = float(pois_res.features.get("pois_mc_btts", np.zeros(tail))[j])
+        mc_o25_val = float(pois_res.features.get("pois_mc_o25", np.zeros(tail))[j])
+
         # Use trained model heads if available, else fall back to Poisson
         btts_val = float(P_btts[j, 1]) if P_btts is not None else btts_pois
         o25_val = float(P_ou25[j, 1]) if P_ou25 is not None else o25_pois
@@ -2162,6 +2570,13 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             "predicted_score": [ml_hg, ml_ag],
             "lambda_home": round(lam_h_val, 2),
             "lambda_away": round(lam_a_val, 2),
+            # v10: Dixon-Coles adjusted probabilities
+            "dc_home": round(dc_ph_val, 3),
+            "dc_draw": round(dc_pd_val, 3),
+            "dc_away": round(dc_pa_val, 3),
+            # v10: Monte Carlo simulation results
+            "mc_btts": round(mc_btts_val, 3),
+            "mc_o25": round(mc_o25_val, 3),
         }
 
         con.execute(

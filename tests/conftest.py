@@ -171,7 +171,7 @@ def seeded_con(con):
             """INSERT OR REPLACE INTO predictions(match_id, model_version,
                p_home, p_draw, p_away, eg_home, eg_away)
                VALUES (?,?,?,?,?,?,?)""",
-            [m["match_id"], "v8_council",
+            [m["match_id"], "v10_council",
              float(probs[0]), float(probs[1]), float(probs[2]),
              round(float(rng.exponential(1.4)), 2),
              round(float(rng.exponential(1.1)), 2)],

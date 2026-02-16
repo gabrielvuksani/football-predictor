@@ -54,7 +54,7 @@ def go(skip_history: bool = False):
           train (9-expert council + multi-model stack) → predict → score →
           compute-h2h + xG → export pages
 
-    v9 council: 9 experts + HistGBM/RF/LR multi-model stack.
+    v10 council: 11 experts + HistGBM/RF/LR multi-model stack with learned weights.
     """
     from footy.db import connect
     t0 = time.perf_counter()
@@ -111,7 +111,7 @@ def go(skip_history: bool = False):
     state = _pipeline().refit_poisson(verbose=True)
     console.print(f"  Elo: {n_elo} matches | Poisson: {len(state.get('teams', []))} teams")
 
-    step(5, "Training council model (9 experts + multi-model stack)...")
+    step(5, "Training council model (11 experts + multi-model stack)...")
     con = connect()
     rc = _council()[0](con, eval_days=365, verbose=True)
     console.print(f"  council: {rc}")
@@ -185,7 +185,7 @@ def refresh():
     _pipeline().refit_poisson(verbose=True)
     console.print(f"  Elo: {n_elo} matches")
 
-    console.print("[cyan]Step 5/9[/cyan] Retrain council (9 experts + multi-model stack)...")
+    console.print("[cyan]Step 5/9[/cyan] Retrain council (11 experts + multi-model stack)...")
     con = connect()
     rc = _council()[0](con, eval_days=365, verbose=True)
     console.print(f"  council: {rc}")

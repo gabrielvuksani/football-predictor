@@ -445,7 +445,7 @@ def get_performance_tracker() -> PerformanceTracker:
 # SELF-IMPROVEMENT: Error Analysis & Feedback Loop
 # ===================================================================
 
-def analyze_prediction_errors(model_version: str = "v8_council",
+def analyze_prediction_errors(model_version: str = "v10_council",
                                days: int = 180) -> dict:
     """
     Deep error analysis — identifies systematic weaknesses in predictions.
@@ -654,7 +654,7 @@ def analyze_prediction_errors(model_version: str = "v8_council",
     }
 
 
-def generate_improvement_report(model_version: str = "v8_council",
+def generate_improvement_report(model_version: str = "v10_council",
                                  days: int = 180) -> str:
     """
     Generate a human-readable self-improvement report.

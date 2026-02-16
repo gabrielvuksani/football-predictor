@@ -1,1 +1,1 @@
-{"home": {"team": "Atletico Madrid", "results": ["L", "L", "L", "D", "D"], "ppg": 0.4}, "away": {"team": "Espanol", "results": ["D", "L", "L", "L", "L"], "ppg": 0.2}}
+{"home_form": ["L", "L", "L", "L", "D", "D"], "home_ppg": 0.33, "away_form": ["D", "D", "L", "L", "L", "L"], "away_ppg": 0.33}

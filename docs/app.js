@@ -22,7 +22,7 @@ document.addEventListener('alpine:init', () => {
     loadingPerf: false,
     lastUpdated: null,
     days: 14,
-    model: 'v8_council',
+    model: 'v10_council',
 
     // ── league table state ──
     tableComp: 'PL',

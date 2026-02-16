@@ -1,1 +1,1 @@
-{"home": {"team": "Athletic Bilbao", "results": ["W", "W", "W", "D", "D"], "ppg": 2.2}, "away": {"team": "Elche", "results": ["D", "L", "L", "L", "L"], "ppg": 0.2}}
+{"home_form": ["W", "W", "W", "W", "D", "D"], "home_ppg": 2.33, "away_form": ["D", "D", "L", "L", "L", "L"], "away_ppg": 0.33}

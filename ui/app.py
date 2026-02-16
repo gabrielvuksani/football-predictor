@@ -174,10 +174,10 @@ with st.sidebar:
     st.markdown("### Settings")
     try:
         mv_df = con.execute("SELECT DISTINCT model_version FROM predictions ORDER BY model_version").df()
-        versions = mv_df["model_version"].tolist() if not mv_df.empty else ["v8_council"]
+        versions = mv_df["model_version"].tolist() if not mv_df.empty else ["v10_council"]
     except Exception:
-        versions = ["v8_council"]
-    default = "v8_council" if "v8_council" in versions else versions[-1]
+        versions = ["v10_council"]
+    default = "v10_council" if "v10_council" in versions else versions[-1]
     model_version = st.selectbox("Model", versions, index=versions.index(default) if default in versions else 0)
     lookahead = st.slider("Lookahead (days)", 1, 21, 7)
     st.caption("DB: footy.duckdb")
@@ -855,7 +855,7 @@ with tab_training:
         try:
             from footy.continuous_training import get_training_manager
             mgr = get_training_manager()
-            drift = mgr.detect_drift("v8_council")
+            drift = mgr.detect_drift("v10_council")
             if drift.get("reason") == "insufficient_data":
                 st.info(f"Not enough data (baseline: {drift.get('baseline_n',0)}, recent: {drift.get('recent_n',0)})")
             elif drift.get("drifted"):
@@ -886,7 +886,7 @@ with tab_training:
                         f"Last trained: {info.get('last_trained', 'Never')}"
                     )
             else:
-                st.info("No models configured. Run `footy retraining-setup v8_council`")
+                st.info("No models configured. Run `footy retraining-setup v10_council`")
         except Exception as e:
             st.warning(f"Status error: {e}")
 
@@ -934,7 +934,7 @@ with tab_training:
                 from footy.continuous_training import get_training_manager
                 mgr = get_training_manager()
                 try:
-                    mgr.setup_continuous_training("v8_council", 20, 0.005)
+                    mgr.setup_continuous_training("v10_council", 20, 0.005)
                 except Exception:
                     pass
                 result = mgr.auto_retrain(force=True, verbose=True)
@@ -1014,4 +1014,4 @@ with tab_db:
 
 # ---------------------------------------------------------------------------
 st.divider()
-st.caption("⚽ Footy Predictor · ML-powered football predictions · v8_council")
+st.caption("⚽ Footy Predictor · ML-powered football predictions · v10_council")

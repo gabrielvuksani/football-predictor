@@ -1,1 +1,1 @@
-{"home": {"team": "Nantes", "results": ["L", "L", "L", "L", "L"], "ppg": 0.0}, "away": {"team": "Le Havre", "results": ["D", "W", "W", "L", "L"], "ppg": 1.4}}
+{"home_form": ["L", "L", "L", "L", "L", "L"], "home_ppg": 0.0, "away_form": ["W", "W", "W", "W", "L", "L"], "away_ppg": 2.0}

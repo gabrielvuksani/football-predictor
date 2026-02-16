@@ -1,1 +1,1 @@
-{"home": {"team": "Sassuolo", "results": ["D", "L", "L", "W", "W"], "ppg": 1.4}, "away": {"team": "Verona", "results": ["L", "D", "D", "L", "L"], "ppg": 0.4}}
+{"home_form": ["W", "W", "L", "L", "W", "W"], "home_ppg": 2.0, "away_form": ["L", "L", "D", "D", "L", "L"], "away_ppg": 0.33}

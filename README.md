@@ -1,8 +1,21 @@
 # Footy Predictor
 
-ML-powered football match prediction system with a **9-expert AI council**, multi-model stacking, walk-forward validation, FastAPI backend, and dark-mode frontend.
+ML-powered football match prediction system with an **11-expert AI council**, research-backed mathematical models, multi-model stacking with learned weights, walk-forward validation, continuous retraining, FastAPI backend, and dark-mode frontend.
 
-Current Version: v0.0.2b3 (untested)
+Current Version: **v10\_council** (v0.0.2b4 - Untested)
+
+## Highlights — v10 Council
+
+- **11 specialist experts** (was 9): added BayesianRateExpert + InjuryAvailabilityExpert
+- **Dixon-Coles τ correction** for low-scoring match bias
+- **Monte Carlo simulation** (2 000 DC-correlated draws) for BTTS / O2.5 / scoreline distributions
+- **Skellam distribution** for exact goal-difference probabilities
+- **Beta-Binomial Bayesian shrinkage** for noisy rate estimates (win rate, CS, BTTS)
+- **Learned stacking weights** via Nelder-Mead optimisation on validation logloss (replaces fixed 60/25/15)
+- **KL divergence** per expert vs ensemble mean for disagreement signalling
+- **Logit-space market analysis**, Shannon entropy, Pinnacle-specific features
+- **Schedule difficulty** and **shot conversion** in FormExpert
+- **286 unit/integration tests** passing (scheduler, training manager, math, experts, API)
 
 ## Leagues Tracked
 
@@ -36,7 +49,7 @@ footy go
 footy serve                   # http://localhost:8000
 ```
 
-### Manual Setup (if you prefer)
+### Manual Setup
 
 ```bash
 cp .env.example .env          # Fill in API keys
@@ -79,9 +92,9 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 
 | Command | What It Does |
 |---------|-------------|
-| `footy go` | Full pipeline: 25-season history → new APIs → train Elo/Poisson → train 9-expert council → predict → H2H → xG → export pages |
+| `footy go` | Full pipeline: 25-season history → new APIs → train Elo/Poisson → train 11-expert council → predict → H2H → xG → export pages |
 | `footy go --skip-history` | Same but skips history download (fast daily use) |
-| `footy refresh` | Quick update: ingest recent → new APIs → retrain 9-expert council → predict → export pages |
+| `footy refresh` | Quick update: ingest recent → new APIs → retrain council → predict → export pages |
 | `footy matchday` | Refresh + AI preview for all leagues (requires Ollama) |
 | `footy update` | Lightweight ingest → train → predict → metrics |
 | `footy serve` | Start web UI on port 8000 |
@@ -114,11 +127,14 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 | `footy model metrics` | Backtest accuracy metrics |
 | `footy model backtest` | Walk-forward time-split backtest |
 | `footy model train-meta` | Train the meta-learner stacking model |
-| `footy model retrain` | Auto-retrain council: check → train → validate → deploy |
+| `footy model retrain` | Auto-retrain council: check → train → validate → deploy/rollback |
 | `footy model drift-check` | Check for prediction accuracy drift |
+| `footy model setup` | Configure continuous retraining (threshold + improvement gate) |
 | `footy model deploy` | Deploy a trained model version to production |
 | `footy model rollback` | Rollback to previous model version |
 | `footy model status` | Retraining status for all models |
+| `footy model record` | Record a manual training run |
+| `footy model history` | Show training history for a model type |
 | `footy model deployments` | Show current model deployments |
 
 ### `footy ai` — AI / Ollama (optional)
@@ -137,11 +153,15 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 
 | Command | Description |
 |---------|-------------|
-| `footy scheduler add` | Create a scheduled job (cron syntax). Types: ingest, train_base, train_council, predict, score, retrain, full_refresh |
+| `footy scheduler add` | Create a scheduled job (cron syntax). Types: ingest, train\_base, train\_council, predict, score, retrain, full\_refresh |
 | `footy scheduler start` | Start the background scheduler |
 | `footy scheduler stop` | Stop the scheduler |
 | `footy scheduler list` | List all jobs |
+| `footy scheduler enable` | Enable a disabled job |
+| `footy scheduler disable` | Disable a job (keeps config) |
+| `footy scheduler remove` | Remove a job (use --confirm) |
 | `footy scheduler history` | Execution history for a job |
+| `footy scheduler stats` | Aggregate stats by job type |
 
 ### `footy perf` — Performance & Alerts
 
@@ -153,6 +173,8 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 | `footy perf daily` | Daily breakdown |
 | `footy perf health` | Health check against thresholds |
 | `footy perf compare` | Side-by-side model comparison |
+| `footy perf improvement` | Deep error analysis with actionable recommendations |
+| `footy perf errors` | Detailed error breakdown |
 | `footy perf alerts-check` | Check all models for degradation |
 | `footy perf alerts-list` | List active alerts |
 
@@ -164,51 +186,82 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 | `footy opta fetch --league PL` | Single league |
 | `footy opta show` | Display cached Opta predictions |
 
+### `footy pages` — Static Site Export
+
+| Command | Description |
+|---------|-------------|
+| `footy pages export` | Export predictions to static JSON for GitHub Pages |
+
 ## Architecture
 
-### Expert Council (v9) — Primary Model
+### Expert Council (v10) — Primary Model
 
 ```
-Layer 1 — NINE SPECIALIST EXPERTS
+Layer 1 — ELEVEN SPECIALIST EXPERTS
 ┌──────────────┬──────────────┬──────────────┐
 │  EloExpert   │ MarketExpert │  FormExpert  │
-│ Rating       │ Multi-tier   │ Opposition-  │
-│ dynamics,    │ odds, line   │ adjusted PPG,│
-│ momentum,    │ movement,    │ BTTS, CS,    │
-│ home adv     │ open+close   │ streaks      │
+│ Rating diff, │ Multi-tier   │ Bayesian     │
+│ tanh/log     │ odds, logit  │ shrinkage,   │
+│ transforms,  │ probs, Shan- │ schedule     │
+│ weighted     │ non entropy, │ difficulty,  │
+│ momentum     │ Pinnacle pin │ conversion   │
 ├──────────────┼──────────────┼──────────────┤
 │PoissonExpert │  H2HExpert   │ContextExpert │
-│ Venue-split  │ Bayesian     │ Season stage,│
-│ attack/def,  │ Dirichlet    │ congestion,  │
-│ BTTS, O2.5,  │ prior, time  │ rest ratio,  │
-│ score matrix │ decay        │ day-of-week  │
+│ DC-adjusted  │ Bayesian     │ Season stage,│
+│ score matrix,│ Dirichlet    │ congestion,  │
+│ Skellam GD,  │ prior, time  │ rest ratio,  │
+│ Monte Carlo  │ decay        │ day-of-week  │
+│ (2000 sims)  │              │              │
 ├──────────────┼──────────────┼──────────────┤
 │GoalPattern   │ LeagueTable  │  Momentum    │
-│ Scoring/     │ Simulated    │ EMA cross-   │
+│ Scoring &    │ Simulated    │ EMA cross-   │
 │ conceding    │ standings,   │ overs, slope │
 │ streaks,     │ position     │ regression,  │
-│ burst/       │ delta, pts   │ volatility,  │
+│ burst &      │ delta, pts   │ volatility,  │
 │ drought      │ per game     │ burst detect │
+├──────────────┼──────────────┼──────────────┤
+│ Bayesian     │   Injury     │              │
+│ Rate Expert  │ Availability │              │
+│ Beta-Binom   │ FPL injuries │              │
+│ shrinkage    │ fixture      │              │
+│ (18 feats)   │ difficulty   │              │
 └──────────────┴──────────────┴──────────────┘
                      ↓
 Layer 2 — CONFLICT & CONSENSUS SIGNALS
-  Expert variance, pairwise agreements (11 pairs),
+  Expert variance, pairwise agreements (55 pairs),
   winner vote concentration, per-expert entropy,
+  KL divergence per expert vs ensemble mean,
   cross-domain interactions (Elo×Form, Market×Poisson,
-  Momentum×Form, BurstAttack×DefLeak)
+  Momentum×Form, DC_ph×Market_ph, MC_ph×Market_ph,
+  BayesWR×PoissonLam), one-hot competition encoding
                      ↓
 Layer 3 — MULTI-MODEL STACK (META-LEARNER)
-  HistGradientBoosting (60%) + RandomForest (25%)
-  + LogisticRegression (15%)
+  HistGradientBoosting + RandomForest + LogisticRegression
+  Weights learned via Nelder-Mead on validation logloss
   Each wrapped in isotonic calibration (cv=5)
-  + Dixon-Coles pseudo-expert (per-league)
-  → ~200+ features → P(Home, Draw, Away)
+  → ~250+ features → P(Home, Draw, Away)
                      ↓
 Layer 4 — WALK-FORWARD VALIDATION
   4-fold expanding-window temporal CV
   Per-fold: logloss, brier, accuracy, ECE
   Feature importance stability analysis
 ```
+
+### Mathematical Methods (v10)
+
+| Method | Module | Usage |
+|--------|--------|-------|
+| Beta-Binomial shrinkage | `advanced_math.py` | Noisy rate estimation (win rate, CS, BTTS, O2.5) |
+| Dixon-Coles τ correction | `advanced_math.py` | Low-score joint probability adjustment |
+| Skellam distribution | `advanced_math.py` | Goal-difference probabilities from Poisson rates |
+| Monte Carlo simulation | `advanced_math.py` | 2000 DC-correlated draws → P(BTTS), P(O2.5), etc. |
+| Logit-space operations | `advanced_math.py` | Market probability analysis in log-odds space |
+| Adaptive EWMA | `advanced_math.py` | Time-weighted exponential moving averages |
+| KL divergence | `advanced_math.py` | Expert disagreement quantification |
+| Shannon entropy | `advanced_math.py` | Market uncertainty measurement |
+| Nelder-Mead optimisation | `council.py` | Stacking weight learning on validation set |
+| Isotonic calibration | `council.py` | Probability calibration per base model |
+| Walk-forward CV | `walkforward.py` | Temporal cross-validation (no future leakage) |
 
 ## API Endpoints
 
@@ -218,16 +271,16 @@ The FastAPI backend serves at `http://localhost:8000`:
 |--------|----------|-------------|
 | GET | `/` | Web UI (single-page app) |
 | GET | `/api/matches?days=14` | Upcoming matches with predictions |
-| GET | `/api/matches/{id}` | Match detail (prediction, odds, Elo) |
+| GET | `/api/matches/{id}` | Match detail (prediction, odds, Elo, DC, MC) |
 | GET | `/api/matches/{id}/experts` | Expert council breakdown |
 | GET | `/api/matches/{id}/h2h` | Head-to-head history |
 | GET | `/api/matches/{id}/form` | Recent form (W/D/L streak + PPG) |
+| GET | `/api/matches/{id}/xg` | xG breakdown for match |
+| GET | `/api/matches/{id}/patterns` | Goal pattern analysis |
 | GET | `/api/matches/{id}/ai` | AI narrative (requires Ollama) |
 | GET | `/api/insights/value-bets` | Value bets with Kelly criterion |
 | GET | `/api/stats` | Database statistics |
 | GET | `/api/performance` | Model performance + calibration |
-| GET | `/api/matches/{id}/xg` | xG breakdown for match |
-| GET | `/api/matches/{id}/patterns` | Goal pattern analysis |
 | GET | `/api/league-table/{comp}` | Simulated league standings |
 | GET | `/api/competitions` | Available competitions |
 | GET | `/api/last-updated` | Last prediction timestamp |
@@ -236,7 +289,7 @@ The FastAPI backend serves at `http://localhost:8000`:
 
 | Source | What | Key Required |
 |--------|------|:---:|
-| football-data.org | Live fixtures & results | Yes |
+| football-data.org | Live fixtures & results (v4 API) | Yes |
 | football-data.co.uk | 25 seasons of historical results + odds | No |
 | API-Football | Lineups, injuries, pre-match context | Yes (optional) |
 | The Odds API | Multi-bookmaker odds (40+ bookmakers) | Yes (optional) |
@@ -274,22 +327,61 @@ DuckDB at `data/footy.duckdb`:
 | Table | Description |
 |-------|-------------|
 | matches | All fixtures (finished + upcoming) |
-| match_extras | Odds + stats (shots, corners, cards) |
-| match_xg | Expected goals per match |
+| match\_extras | Odds + stats (shots, corners, cards) |
+| match\_xg | Expected goals per match |
 | predictions | Model predictions per match per version |
-| prediction_scores | Scored predictions with accuracy metrics |
-| elo_state | Current Elo rating per team |
-| elo_applied | Tracks which matches have been applied to Elo |
-| poisson_state | Fitted Poisson parameters |
-| h2h_stats | Head-to-head stats (any venue) |
-| h2h_venue_stats | Head-to-head stats (specific venue) |
-| h2h_recent | Recent head-to-head form |
+| prediction\_scores | Scored predictions with accuracy metrics |
+| elo\_state | Current Elo rating per team |
+| elo\_applied | Tracks which matches have been applied to Elo |
+| poisson\_state | Fitted Poisson parameters |
+| h2h\_stats | Head-to-head stats (any venue) |
+| h2h\_venue\_stats | Head-to-head stats (specific venue) |
+| h2h\_recent | Recent head-to-head form |
 | news | Team news headlines |
-| expert_cache | Cached expert council breakdowns |
-| llm_insights | LLM-generated match narratives |
+| expert\_cache | Cached expert council breakdowns |
+| llm\_insights | LLM-generated match narratives |
 | metrics | Model performance metrics over time |
-| opta_predictions | Scraped Opta win probabilities |
-| team_mappings | Cross-provider team name mappings |
+| opta\_predictions | Scraped Opta win probabilities |
+| team\_mappings | Cross-provider team name mappings |
+| scheduled\_jobs | Background scheduler job definitions |
+| job\_runs | Scheduler execution history |
+| model\_training\_records | Continuous training run audit trail |
+| model\_deployments | Active model deployment registry |
+| retraining\_schedules | Auto-retrain configuration per model |
+
+## Continuous Training
+
+The system supports fully automated model retraining:
+
+```bash
+# Configure auto-retrain: retrain after 20 new matches, deploy if >0.5% improvement
+footy model setup v10_council --threshold-matches 20 --threshold-improvement 0.005
+
+# Check if retraining is needed
+footy model status
+
+# Auto-retrain: check → train → validate → deploy (or rollback)
+footy model retrain
+
+# Force retrain regardless of thresholds
+footy model retrain --force
+
+# Check for accuracy drift (compares last 60 days vs baseline)
+footy model drift-check
+
+# Schedule auto-retrain as a cron job
+footy scheduler add daily_retrain retrain "0 4 * * *"
+footy scheduler start
+```
+
+### Retraining Pipeline
+
+1. **Threshold check**: Count new finished matches since last training
+2. **Drift detection**: Compare recent accuracy (60d) vs baseline (365d) — triggers if >5pp drop
+3. **Train**: Full v10\_council training with all 11 experts
+4. **Validate**: Compare test-set performance vs current model
+5. **Deploy or rollback**: Deploy only if performance improves; auto-rollback on regression
+6. **Audit trail**: Every train/deploy/rollback logged in DuckDB
 
 ## Project Structure
 
@@ -308,36 +400,37 @@ football-predictor/
 │   │   ├── _shared.py         # Console, logging, lazy imports
 │   │   ├── pipeline_cmds.py   # go, refresh, matchday, nuke, serve
 │   │   ├── data_cmds.py       # footy data …
-│   │   ├── model_cmds.py      # footy model …
+│   │   ├── model_cmds.py      # footy model … (train, retrain, deploy, rollback)
 │   │   ├── ai_cmds.py         # footy ai …
 │   │   ├── scheduler_cmds.py  # footy scheduler …
 │   │   ├── perf_cmds.py       # footy perf …
+│   │   ├── pages_cmds.py      # footy pages …
 │   │   └── opta_cmds.py       # footy opta …
 │   ├── config.py              # Settings from .env (cached)
 │   ├── db.py                  # DuckDB connection + schema
 │   ├── pipeline.py            # Core pipeline logic
 │   ├── walkforward.py         # Walk-forward temporal CV
-│   ├── utils.py               # Shared helpers (safe_num, outcome_label, metrics)
 │   ├── normalize.py           # Team name normalization
 │   ├── extras.py              # Match extras ingestion
 │   ├── fixtures_odds.py       # Odds for upcoming matches
 │   ├── scheduler.py           # Background job scheduler (7 job types)
-│   ├── continuous_training.py # Auto-retraining pipeline
-│   ├── performance_tracker.py # Model performance tracking
+│   ├── continuous_training.py # Auto-retraining pipeline (drift + deploy + rollback)
+│   ├── performance_tracker.py # Model performance tracking + error analysis
 │   ├── degradation_alerts.py  # Accuracy drift alerts
 │   ├── cache.py               # Prediction caching
 │   ├── h2h.py                 # Head-to-head statistics
 │   ├── xg.py                  # xG computation
 │   ├── models/
-│   │   ├── council.py         # v9 Expert Council (primary — 9 experts)
+│   │   ├── council.py         # v10 Expert Council (primary — 11 experts + learned weights)
+│   │   ├── advanced_math.py   # Mathematical foundations (DC, Skellam, MC, shrinkage, etc.)
 │   │   ├── elo.py             # Dynamic Elo ratings
 │   │   ├── elo_core.py        # Shared Elo primitives
 │   │   ├── poisson.py         # Weighted Poisson model
 │   │   ├── dixon_coles.py     # Dixon-Coles correction
-│   │   ├── v3.py              # v3 GBDT form model
-│   │   └── v5.py              # v5 ultimate ensemble
+│   │   ├── v3.py              # v3 GBDT form model (legacy)
+│   │   └── v5.py              # v5 ultimate ensemble (legacy)
 │   ├── providers/
-│   │   ├── football_data_org.py  # football-data.org API (with retry)
+│   │   ├── football_data_org.py  # football-data.org (v4 API)
 │   │   ├── fdcuk_history.py      # Historical data scraper
 │   │   ├── fdcuk_fixtures.py     # Fixture scraper
 │   │   ├── api_football.py       # API-Football provider
@@ -350,20 +443,34 @@ football-predictor/
 │   └── llm/
 │       ├── ollama_client.py
 │       └── news_extractor.py
-└── web/
-    ├── api.py                 # FastAPI backend
-    ├── static/
-    │   ├── style.css
-    │   └── app.js             # Alpine.js frontend
-    └── templates/
-        └── index.html
+├── web/
+│   ├── api.py                 # FastAPI backend (REST API)
+│   ├── static/
+│   │   ├── style.css
+│   │   └── app.js             # Alpine.js frontend
+│   └── templates/
+│       └── index.html         # SPA template
+├── docs/                      # GitHub Pages static export
+├── tests/                     # 286 tests (pytest)
+│   ├── conftest.py            # Shared fixtures (in-memory DuckDB, sample data)
+│   ├── test_advanced_math.py  # 38 tests — all 10 mathematical modules
+│   ├── test_v10_council.py    # 29 tests — new experts, upgraded features, meta-learner
+│   ├── test_scheduler.py      # 24 tests — scheduler CRUD, execution, lifecycle
+│   ├── test_continuous_training.py  # 21 tests — training records, drift, deploy, rollback
+│   ├── test_models_council.py # Council training + prediction unit tests
+│   ├── test_walkforward.py    # Walk-forward CV tests
+│   ├── test_api.py            # FastAPI endpoint tests
+│   ├── test_db.py             # Database schema + query tests
+│   └── ...                    # Elo, Poisson, Dixon-Coles, H2H, xG, etc.
+└── ui/
+    └── app.py                 # Streamlit admin dashboard
 ```
 
 ## Testing
 
 ```bash
 pip install -e ".[test]"
-footy self-test              # Unit + integration tests
+footy self-test              # 286 unit + integration tests
 footy self-test --smoke      # Include live-DB smoke tests
 footy self-test --cov        # With coverage report
 ```
@@ -410,4 +517,16 @@ bash bootstrap.sh
 source .venv/bin/activate
 footy go                      # Full pipeline
 uvicorn web.api:app --host 0.0.0.0 --port 8000
+```
+
+## Model Evolution
+
+```
+v1 (Poisson)
+  └─► v2 (Meta-stacker)
+       └─► v3 (GBDT form)
+            └─► v4 (Expert council v1)
+                 └─► v5 (Ultimate ensemble)
+                      └─► v8 (9-expert council)
+                           └─► v10 (11-expert council + learned weights + DC/MC/Skellam)  ◄── current
 ```

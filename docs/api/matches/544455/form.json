@@ -1,1 +1,1 @@
-{"home": {"team": "Real Betis", "results": ["W", "W", "W", "W", "W"], "ppg": 3.0}, "away": {"team": "Vallecano", "results": ["W", "L", "L", "L", "L"], "ppg": 0.6}}
+{"home_form": ["W", "W", "W", "W", "W", "W"], "home_ppg": 3.0, "away_form": ["W", "W", "L", "L", "L", "L"], "away_ppg": 1.0}

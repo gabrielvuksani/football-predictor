@@ -188,7 +188,7 @@ def stats():
     console.print("\n[cyan]Scheduler Statistics[/cyan]")
     console.print(f"  Running: {st['scheduler_running']}")
     console.print(f"  Total Jobs: {st['total_jobs']}")
-    console.print(f"  Active Jobs: {len(st['active_jobs'])}")
+    console.print(f"  Active Jobs: {st['active_jobs']}")
 
     console.print(f"\n[cyan]Stats by Job Type:[/cyan]")
     for job_type, type_stats in st["stats_by_type"].items():

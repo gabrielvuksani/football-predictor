@@ -2,7 +2,7 @@
 
 ## Current State (February 2026)
 
-**Primary Model**: v8_council — Expert Council with 8 specialists + meta-learner
+**Primary Model**: v10_council — Expert Council with 8 specialists + meta-learner
 - Logloss: 0.951 | Brier: 0.563 | Accuracy: 55.1% | ECE: 0.040 | ~170 features
 - Trained on 11,745 matches across 5 leagues (PL, PD, SA, BL1, FL1)
 - Web UI: FastAPI + Alpine.js dark glassmorphism frontend
@@ -19,7 +19,7 @@
 ```
 v1_elo_poisson ─┐
 v2_meta_stack  ─┤
-v3_gbdt_form   ─┼─── v5_ultimate (retired) ──► v8_council (current)
+v3_gbdt_form   ─┼─── v5_ultimate (retired) ──► v10_council (current)
 v4_super_ensemble (retired)                      │
 Dixon-Coles    ─────────────────────────────────┘
 ```
@@ -31,7 +31,7 @@ Dixon-Coles    ─────────────────────�
 | v3_gbdt_form | GBDT + rolling form | 33 | 0.984 | Base layer |
 | v4_super_ensemble | Calibrated ensemble | 50 | 1.019 | Retired |
 | v5_ultimate | GBDT all signals | 94 | 0.949 | Superseded |
-| **v8_council** | **Expert Council** | **~170** | **0.951** | **Primary** |
+| **v10_council** | **Expert Council** | **~170** | **0.951** | **Primary** |
 
 ## v8 Council Architecture
 

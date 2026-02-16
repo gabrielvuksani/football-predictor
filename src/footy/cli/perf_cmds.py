@@ -40,7 +40,7 @@ def summary():
 
 
 @app.command()
-def improvement(model: str = "v8_council", days: int = 180):
+def improvement(model: str = "v10_council", days: int = 180):
     """Deep error analysis with actionable recommendations for model improvement."""
     from footy.performance_tracker import generate_improvement_report
     report = generate_improvement_report(model, days)
@@ -48,7 +48,7 @@ def improvement(model: str = "v8_council", days: int = 180):
 
 
 @app.command()
-def errors(model: str = "v8_council", days: int = 180):
+def errors(model: str = "v10_council", days: int = 180):
     """Show prediction error patterns: confusion matrix, calibration, market accuracy."""
     from footy.performance_tracker import analyze_prediction_errors
     import json
@@ -180,7 +180,7 @@ def compare(*models: str, days: int = 365):
 
     if not models:
         console.print("[red]Error: Specify at least one model[/red]")
-        console.print("  Usage: footy perf compare v8_council --days 365")
+        console.print("  Usage: footy perf compare v10_council --days 365")
         return
 
     tracker = get_performance_tracker()

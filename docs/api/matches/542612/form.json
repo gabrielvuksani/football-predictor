@@ -1,1 +1,1 @@
-{"home": {"team": "Brest", "results": ["D", "W", "W", "D", "D"], "ppg": 1.8}, "away": {"team": "Marseille", "results": ["D", "L", "L", "D", "D"], "ppg": 0.6}}
+{"home_form": ["D", "D", "W", "W", "D", "D"], "home_ppg": 1.67, "away_form": ["D", "D", "L", "L", "D", "D"], "away_ppg": 0.67}

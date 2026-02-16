@@ -68,7 +68,7 @@ def export(
                p.model_version
         FROM matches m
         LEFT JOIN predictions p
-          ON m.match_id = p.match_id AND p.model_version = 'v8_council'
+          ON m.match_id = p.match_id AND p.model_version = 'v10_council'
         LEFT JOIN match_extras e ON m.match_id = e.match_id
         WHERE m.status IN ('SCHEDULED', 'TIMED')
           AND m.utc_date >= CURRENT_DATE - INTERVAL {int(days)} DAY
@@ -83,7 +83,7 @@ def export(
         "b365h", "b365d", "b365a", "model_version",
     ]
     matches = [dict(zip(cols, r)) for r in rows]
-    _dump(api / "matches.json", {"matches": matches, "model": "v8_council"})
+    _dump(api / "matches.json", {"matches": matches, "model": "v10_council"})
     console.print(f"  matches.json — {len(matches)} matches")
 
     # ── 2. Per-match detail + experts + h2h + form ────────────────────
@@ -167,7 +167,7 @@ def _export_match_detail(db, api: Path, match_id: int) -> None:
     # Prediction
     pred_row = db.execute(
         "SELECT p_home, p_draw, p_away, eg_home, eg_away, notes "
-        "FROM predictions WHERE match_id=? AND model_version='v8_council'",
+        "FROM predictions WHERE match_id=? AND model_version='v10_council'",
         [match_id],
     ).fetchone()
     prediction = None
@@ -229,7 +229,7 @@ def _export_match_detail(db, api: Path, match_id: int) -> None:
     # Prediction score (if match is finished and was scored)
     score_row = db.execute(
         "SELECT outcome, logloss, brier, correct FROM prediction_scores "
-        "WHERE match_id=? AND model_version='v8_council'",
+        "WHERE match_id=? AND model_version='v10_council'",
         [match_id],
     ).fetchone()
     score = None
@@ -437,7 +437,7 @@ def _build_stats(db) -> dict:
 
 def _build_performance(db) -> dict:
     """Build model performance metrics matching live API /api/performance shape."""
-    model = "v8_council"
+    model = "v10_council"
     try:
         # Aggregate metrics
         metrics_row = db.execute(

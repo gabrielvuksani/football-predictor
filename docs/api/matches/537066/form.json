@@ -1,1 +1,1 @@
-{"home": {"team": "AC Milan", "results": ["W", "W", "W", "D", "D"], "ppg": 2.2}, "away": {"team": "Parma", "results": ["W", "W", "W", "L", "L"], "ppg": 1.8}}
+{"home_form": ["W", "W", "W", "W", "D", "D"], "home_ppg": 2.33, "away_form": ["W", "W", "W", "W", "L", "L"], "away_ppg": 2.0}

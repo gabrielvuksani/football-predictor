@@ -1,1 +1,1 @@
-{"home": {"team": "Freiburg", "results": ["L", "W", "W", "L", "L"], "ppg": 1.2}, "away": {"team": "Borussia M\u00f6nchengladbach", "results": ["L", "D", "D", "D", "D"], "ppg": 0.8}}
+{"home_form": ["L", "L", "W", "W", "L", "L"], "home_ppg": 1.0, "away_form": ["L", "L", "D", "D", "D", "D"], "away_ppg": 0.67}

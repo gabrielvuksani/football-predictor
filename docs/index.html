@@ -369,7 +369,7 @@
             <div class="section-label" style="margin-top:1.25rem;"><span class="icon">🤖</span> Models</div>
             <template x-for="m in stats.models" :key="m.version">
               <div class="model-row">
-                <span class="model-ver" :class="{ current: m.version === 'v8_council' }" x-text="m.version"></span>
+                <span class="model-ver" :class="{ current: m.version === 'v10_council' }" x-text="m.version"></span>
                 <span class="model-count" x-text="m.predictions + ' predictions'"></span>
               </div>
             </template>

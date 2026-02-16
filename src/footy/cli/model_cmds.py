@@ -64,7 +64,7 @@ def retrain(force: bool = False):
 
     manager = get_training_manager()
     try:
-        manager.setup_continuous_training("v8_council", 20, 0.005)
+        manager.setup_continuous_training("v10_council", 20, 0.005)
     except Exception:
         pass
 
@@ -99,7 +99,7 @@ def drift_check():
     from footy.continuous_training import get_training_manager
 
     manager = get_training_manager()
-    drift = manager.detect_drift("v8_council")
+    drift = manager.detect_drift("v10_council")
 
     if drift.get("reason") == "insufficient_data":
         console.print(f"[yellow]Not enough data for drift detection[/yellow]")
@@ -125,7 +125,7 @@ def setup(
 ):
     """Setup continuous retraining for a model type.
 
-    Model types: v8_council (current), v5_ultimate (legacy)
+    Model types: v10_council (current), v5_ultimate (legacy)
     """
     from footy.continuous_training import get_training_manager
 

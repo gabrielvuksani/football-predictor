@@ -22,7 +22,7 @@ document.addEventListener('alpine:init', () => {
     loadingPerf: false,
     lastUpdated: null,
     days: 14,
-    model: 'v8_council',
+    model: 'v10_council',
 
     // ── league table state ──
     tableComp: 'PL',
@@ -40,6 +40,10 @@ document.addEventListener('alpine:init', () => {
     matchForm: null,
     matchNarrative: null,
     loadingAI: false,
+    matchXG: null,
+    loadingXG: false,
+    matchPatterns: null,
+    loadingPatterns: false,
 
     // ── helpers ──
     async _fetch(url) {
@@ -90,10 +94,14 @@ document.addEventListener('alpine:init', () => {
       this.matchH2H = null;
       this.matchForm = null;
       this.matchNarrative = null;
+      this.matchXG = null;
+      this.matchPatterns = null;
       this.loadingDetail = true;
       this.loadingExperts = false;
       this.loadingH2H = false;
       this.loadingAI = false;
+      this.loadingXG = false;
+      this.loadingPatterns = false;
 
       if (pushState) {
         history.pushState({ view: 'match', matchId }, '', `/match/${matchId}`);
@@ -110,6 +118,8 @@ document.addEventListener('alpine:init', () => {
       this._loadMatchExperts(matchId);
       this._loadMatchH2H(matchId);
       this._loadMatchForm(matchId);
+      this._loadMatchXG(matchId);
+      this._loadMatchPatterns(matchId);
     },
 
     async _loadMatchExperts(matchId) {
@@ -126,6 +136,18 @@ document.addEventListener('alpine:init', () => {
 
     async _loadMatchForm(matchId) {
       try { this.matchForm = await this._fetch(`/api/matches/${matchId}/form`); } catch(e) { console.error(e); }
+    },
+
+    async _loadMatchXG(matchId) {
+      this.loadingXG = true;
+      try { this.matchXG = await this._fetch(`/api/matches/${matchId}/xg`); } catch(e) { console.error(e); }
+      this.loadingXG = false;
+    },
+
+    async _loadMatchPatterns(matchId) {
+      this.loadingPatterns = true;
+      try { this.matchPatterns = await this._fetch(`/api/matches/${matchId}/patterns`); } catch(e) { console.error(e); }
+      this.loadingPatterns = false;
     },
 
     async loadAI() {
