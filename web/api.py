@@ -85,7 +85,11 @@ async def index(request: Request):
 @app.get("/api/matches")
 async def api_matches(days: int = 7, model: str = "v7_council"):
     """Upcoming matches with predictions."""
-    rows = con().execute(f"""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+    rows = db.execute(f"""
         SELECT m.match_id, m.utc_date, m.competition,
                m.home_team, m.away_team,
                p.p_home, p.p_draw, p.p_away,
@@ -114,7 +118,10 @@ async def api_matches(days: int = 7, model: str = "v7_council"):
 @app.get("/api/matches/{match_id}")
 async def api_match_detail(match_id: int, model: str = "v7_council"):
     """Detailed match data."""
-    db = con()
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
     # Basic info + prediction
     row = db.execute("""
         SELECT m.match_id, m.utc_date, m.competition, m.home_team, m.away_team,
@@ -234,7 +241,11 @@ async def api_experts(match_id: int):
 @app.get("/api/matches/{match_id}/h2h")
 async def api_h2h(match_id: int):
     """Head-to-head data for a match."""
-    row = con().execute(
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+    row = db.execute(
         "SELECT home_team, away_team FROM matches WHERE match_id=?", [match_id]
     ).fetchone()
     if not row:
@@ -275,7 +286,10 @@ async def api_h2h(match_id: int):
 @app.get("/api/matches/{match_id}/form")
 async def api_form(match_id: int, n: int = 6):
     """Recent form (W/D/L streak + PPG) for both teams."""
-    db = con()
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
     row = db.execute(
         "SELECT home_team, away_team FROM matches WHERE match_id=?", [match_id]
     ).fetchone()
@@ -376,7 +390,11 @@ Do not use bullet points. Write in a punchy, analytical style."""
 @app.get("/api/insights/value-bets")
 async def api_value_bets(min_edge: float = 0.05):
     """Value bet scanner."""
-    rows = con().execute("""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+    rows = db.execute("""
         SELECT m.match_id, m.utc_date, m.competition, m.home_team, m.away_team,
                p.p_home, p.p_draw, p.p_away,
                e.b365h, e.b365d, e.b365a
@@ -425,7 +443,10 @@ async def api_value_bets(min_edge: float = 0.05):
 @app.get("/api/stats")
 async def api_stats():
     """Database and model statistics."""
-    db = con()
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
     total = db.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
     finished = db.execute("SELECT COUNT(*) FROM matches WHERE status='FINISHED'").fetchone()[0]
     upcoming = db.execute("SELECT COUNT(*) FROM matches WHERE status IN ('TIMED','SCHEDULED')").fetchone()[0]
@@ -463,7 +484,10 @@ async def api_stats():
 @app.get("/api/performance")
 async def api_performance(model: str = "v7_council"):
     """Model performance metrics — accuracy, logloss, brier, calibration."""
-    db = con()
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
 
     # Aggregate metrics
     metrics_row = db.execute(
@@ -537,7 +561,10 @@ async def api_performance(model: str = "v7_council"):
 @app.get("/api/last-updated")
 async def api_last_updated():
     """When predictions were last generated."""
-    db = con()
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
     row = db.execute(
         "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v7_council'"
     ).fetchone()

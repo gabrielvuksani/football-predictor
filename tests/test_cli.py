@@ -14,19 +14,27 @@ runner = CliRunner()
 class TestCliHelp:
     """Every command must respond to --help without error."""
 
-    _COMMANDS = [
-        "go", "refresh", "matchday", "nuke",
-        "ai-preview", "ai-value", "ai-review",
-        "serve", "ingest", "train", "predict", "metrics",
-        "update", "ingest-history", "reset-states", "news",
-        "backtest", "train-meta", "ingest-extras",
-        "ingest-fixtures-odds", "compute-h2h", "compute-xg",
-        "update-odds", "cache-stats", "cache-cleanup",
+    # Root-level commands
+    _ROOT_COMMANDS = [
+        "go", "refresh", "matchday", "nuke", "serve", "update", "self-test",
+    ]
+    # Sub-group commands: (group, sub-command)
+    _GROUP_COMMANDS = [
+        ("data", "ingest"), ("data", "history"), ("data", "extras"),
+        ("data", "fixtures-odds"), ("data", "odds"), ("data", "news"),
+        ("data", "h2h"), ("data", "xg"), ("data", "reset"),
+        ("data", "cache-stats"), ("data", "cache-cleanup"),
+        ("model", "train"), ("model", "predict"), ("model", "metrics"),
+        ("model", "backtest"), ("model", "train-meta"),
+        ("ai", "preview"), ("ai", "value"), ("ai", "review"),
     ]
 
-    @pytest.mark.parametrize("cmd", _COMMANDS)
-    def test_help(self, cmd):
+    @pytest.mark.parametrize("cmd", _ROOT_COMMANDS)
+    def test_root_help(self, cmd):
         result = runner.invoke(app, [cmd, "--help"])
         assert result.exit_code == 0, f"'{cmd} --help' failed: {result.output}"
-        assert cmd.replace("-", "_") in result.output.lower() or "usage" in result.output.lower() \
-            or "--help" in result.output.lower() or result.output.strip() != ""
+
+    @pytest.mark.parametrize("group,cmd", _GROUP_COMMANDS)
+    def test_group_help(self, group, cmd):
+        result = runner.invoke(app, [group, cmd, "--help"])
+        assert result.exit_code == 0, f"'{group} {cmd} --help' failed: {result.output}"

@@ -11,6 +11,7 @@ Goal: Fill in odds for upcoming matches where football-data.co.uk doesn't have t
 
 from __future__ import annotations
 import asyncio
+import os
 import httpx
 from typing import Optional
 import duckdb
@@ -19,7 +20,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ODD-API free tier config
-ODD_API_KEY = ""  # Set this environment variable if you have access
+ODD_API_KEY = os.getenv("ODD_API_KEY", "")
 ODD_API_BASE = "https://api.api-odds.com"
 
 async def fetch_odds_from_odd_api(
@@ -126,12 +127,19 @@ async def fetch_odds_from_thesportsdb(
         dict with whatever odds TheSportsDB provides or None
     """
     try:
+        # Map league codes to TheSportsDB league IDs
+        LEAGUE_IDS = {
+            "PL": "4328", "PD": "4335", "SA": "4332",
+            "BL1": "4331", "FL1": "4334",
+        }
+        league_id = LEAGUE_IDS.get(league, "4328")
+
         async with httpx.AsyncClient(timeout=10) as client:
             # Search for upcoming events
             resp = await client.get(
                 "https://www.thesportsdb.com/api/v1/json/3/eventslast.php",
                 params={
-                    "id": "133601",  # Example league event ID
+                    "id": league_id,
                 }
             )
             
@@ -233,72 +241,72 @@ def update_upcoming_match_odds(
         return {"updated": 0, "attempted": 0}
     
     updated = 0
-    
-    for _, row in upcoming.iterrows():
-        match_id = int(row["match_id"])
-        home = row["home_team"]
-        away = row["away_team"]
-        league = row["competition"]
-        
-        # Try to fetch odds from alternative sources
-        try:
-            odds_sources = asyncio.run(
-                fetch_odds_multi_source(home, away, league)
-            )
-            
-            if odds_sources:
-                # Choose best source (prefer odd-api for completeness)
-                best_odds = None
-                best_source = "unknown"
-                
-                if "odd-api" in odds_sources:
-                    # odd-api returns dict of bookmakers with h/d/a odds
-                    # Try to find Bet365 or Pinnacle equivalent
-                    for bookie, odds in odds_sources["odd-api"].items():
-                        if bookie in ["bet365", "pinnacle"]:
-                            best_odds = odds
-                            best_source = bookie
-                            break
-                    
-                    if not best_odds and odds_sources["odd-api"]:
-                        # Fall back to first available
-                        best_odds = next(iter(odds_sources["odd-api"].values()))
-                        best_source = "odd-api"
-                
-                if best_odds:
-                    # Store in match_extras
-                    con.execute("""
-                        INSERT INTO match_extras (
-                            match_id, provider, competition,
-                            b365h, b365d, b365a
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(match_id) DO UPDATE SET
-                            b365h = ?,
-                            b365d = ?,
-                            b365a = ?
-                    """, [
-                        match_id, f"odds_{best_source}", league,
-                        best_odds.get("home", 0),
-                        best_odds.get("draw", 0),
-                        best_odds.get("away", 0),
-                        best_odds.get("home", 0),
-                        best_odds.get("draw", 0),
-                        best_odds.get("away", 0),
-                    ])
-                    
-                    updated += 1
-                    
-                    if verbose:
-                        logger.info(
-                            f"[odds] {home} vs {away}: "
-                            f"{best_odds['home']:.2f}-{best_odds['draw']:.2f}-{best_odds['away']:.2f} "
-                            f"({best_source})"
-                        )
-        
-        except Exception as e:
-            if verbose:
-                logger.warning(f"[odds] Failed to fetch odds for match {match_id}: {e}")
-    
+
+    async def _fetch_all():
+        nonlocal updated
+        for _, row in upcoming.iterrows():
+            match_id = int(row["match_id"])
+            home = row["home_team"]
+            away = row["away_team"]
+            league = row["competition"]
+
+            try:
+                odds_sources = await fetch_odds_multi_source(home, away, league)
+
+                if odds_sources:
+                    # Choose best source (prefer odd-api for completeness)
+                    best_odds = None
+                    best_source = "unknown"
+
+                    if "odd-api" in odds_sources:
+                        # odd-api returns dict of bookmakers with h/d/a odds
+                        # Try to find Bet365 or Pinnacle equivalent
+                        for bookie, odds in odds_sources["odd-api"].items():
+                            if bookie in ["bet365", "pinnacle"]:
+                                best_odds = odds
+                                best_source = bookie
+                                break
+
+                        if not best_odds and odds_sources["odd-api"]:
+                            # Fall back to first available
+                            best_odds = next(iter(odds_sources["odd-api"].values()))
+                            best_source = "odd-api"
+
+                    if best_odds:
+                        # Store in match_extras
+                        con.execute("""
+                            INSERT INTO match_extras (
+                                match_id, provider, competition,
+                                b365h, b365d, b365a
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(match_id) DO UPDATE SET
+                                b365h = ?,
+                                b365d = ?,
+                                b365a = ?
+                        """, [
+                            match_id, f"odds_{best_source}", league,
+                            best_odds.get("home", 0),
+                            best_odds.get("draw", 0),
+                            best_odds.get("away", 0),
+                            best_odds.get("home", 0),
+                            best_odds.get("draw", 0),
+                            best_odds.get("away", 0),
+                        ])
+
+                        updated += 1
+
+                        if verbose:
+                            logger.info(
+                                f"[odds] {home} vs {away}: "
+                                f"{best_odds['home']:.2f}-{best_odds['draw']:.2f}-{best_odds['away']:.2f} "
+                                f"({best_source})"
+                            )
+
+            except Exception as e:
+                if verbose:
+                    logger.warning(f"[odds] Failed to fetch odds for match {match_id}: {e}")
+
+    asyncio.run(_fetch_all())
     return {"updated": updated, "attempted": len(upcoming)}
 
 

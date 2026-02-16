@@ -11,6 +11,11 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from footy.normalize import canonical_team_name
 from footy.config import settings
 from footy.models.poisson import fit_poisson, expected_goals, outcome_probs
+from footy.models.elo_core import (
+    elo_expected as _elo_expected,
+    elo_predict_with_diff as _elo_predict_with_diff,
+    elo_update,
+)
 
 V3_MODEL_VERSION = "v3_gbdt_form"
 MODEL_PATH = Path("data/models") / f"{V3_MODEL_VERSION}.joblib"
@@ -70,37 +75,10 @@ def implied_probs_from_odds(h, d, a):
     s = ih + id_ + ia
     return (ih / s, id_ / s, ia / s, 1.0)
 
-def _elo_expected(r_home: float, r_away: float) -> float:
-    return 1.0 / (1.0 + 10 ** (-(r_home - r_away) / 400.0))
-
 def elo_predict(ratings: dict[str, float], home: str, away: str):
-    DEFAULT_R = 1500.0
-    HOME_ADV = 60.0
-    P_DRAW = 0.26
-    rh = ratings.get(home, DEFAULT_R) + HOME_ADV
-    ra = ratings.get(away, DEFAULT_R)
-    p_home_raw = _elo_expected(rh, ra)
-    p_home = p_home_raw * (1.0 - P_DRAW)
-    p_away = (1.0 - p_home_raw) * (1.0 - P_DRAW)
-    s = p_home + P_DRAW + p_away
-    elo_diff = ratings.get(home, DEFAULT_R) - ratings.get(away, DEFAULT_R)
-    return (p_home / s, P_DRAW / s, p_away / s, float(elo_diff))
-
-def elo_update(ratings: dict[str, float], home: str, away: str, hg: int, ag: int):
-    DEFAULT_R = 1500.0
-    HOME_ADV = 60.0
-    K = 20.0
-    rh0 = ratings.get(home, DEFAULT_R)
-    ra0 = ratings.get(away, DEFAULT_R)
-    exp_home = _elo_expected(rh0 + HOME_ADV, ra0)
-
-    if hg > ag: s_home = 1.0
-    elif hg == ag: s_home = 0.5
-    else: s_home = 0.0
-
-    delta = K * (s_home - exp_home)
-    ratings[home] = rh0 + delta
-    ratings[away] = ra0 - delta
+    ph, pd_, pa, elo_diff = _elo_predict_with_diff(
+        ratings, home, away, home_adv=60.0, draw_base=0.26)
+    return (ph, pd_, pa, elo_diff)
 
 FEATURES = [
     "comp_id",

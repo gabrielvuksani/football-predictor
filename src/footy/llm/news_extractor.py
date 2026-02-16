@@ -28,6 +28,11 @@ def extract_news_signal(team: str, headlines: list[dict]) -> NewsSignal:
         return NewsSignal.model_validate(obj)
     except (json.JSONDecodeError, ValidationError):
         # fallback: ask model to output only JSON
-        txt2 = chat([{"role":"user","content":"Output ONLY valid JSON. No prose.\n\n"+prompt["content"]}])
-        obj2 = json.loads(txt2)
-        return NewsSignal.model_validate(obj2)
+        try:
+            txt2 = chat([{"role":"user","content":"Output ONLY valid JSON. No prose.\n\n"+prompt["content"]}])
+            if not txt2 or not txt2.strip():
+                return NewsSignal(availability_score=0.0, short_summary="LLM returned empty response")
+            obj2 = json.loads(txt2)
+            return NewsSignal.model_validate(obj2)
+        except (json.JSONDecodeError, ValidationError, Exception):
+            return NewsSignal(availability_score=0.0, short_summary="Failed to parse LLM output")

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import pandas as pd
 
 from footy.db import connect
 from footy.normalize import canonical_team_name
 from footy.providers.fdcuk_history import DIV_MAP, season_codes_last_n, download_division_csv
+from footy.utils import safe_num as _num
+
+log = logging.getLogger(__name__)
 
 def _match_id(season_code: str, competition: str, utc_date, home: str, away: str) -> int:
     # Must match ingest-history deterministic key
@@ -14,20 +18,6 @@ def _match_id(season_code: str, competition: str, utc_date, home: str, away: str
     h = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
     u = int.from_bytes(h, byteorder="big", signed=False) & 0x7FFFFFFFFFFFFFFF
     return u if u != 0 else 1
-
-def _num(v):
-    try:
-        if v is None:
-            return None
-        if isinstance(v, str) and v.strip() == "":
-            return None
-        import math
-        result = float(v)
-        if math.isnan(result) or math.isinf(result):
-            return None
-        return result
-    except Exception:
-        return None
 
 def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
     """
@@ -71,19 +61,19 @@ def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
         for d in divs:
             file_i += 1
             if verbose:
-                print(f"[extras] [{file_i}/{total_files}] {season_code}/{d.div}.csv", flush=True)
+                log.debug("[%d/%d] %s/%s.csv", file_i, total_files, season_code, d.div)
 
             try:
                 df = download_division_csv(season_code, d.div)
             except Exception as e:
                 if verbose:
-                    print(f"[extras]   download failed: {e}", flush=True)
+                    log.warning("download failed: %s", e)
                 continue
 
             required = {"Date","HomeTeam","AwayTeam","FTHG","FTAG"}
             if not required.issubset(df.columns):
                 if verbose:
-                    print(f"[extras]   missing required cols; skipping ({sorted(required - set(df.columns))})", flush=True)
+                    log.warning("missing required cols; skipping %s", sorted(required - set(df.columns)))
                 continue
 
             # Parse datetime
@@ -99,7 +89,7 @@ def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
             mask = dt.notna() & home.notna() & away.notna() & df["FTHG"].notna() & df["FTAG"].notna()
             if not mask.any():
                 if verbose:
-                    print("[extras]   no finished rows in this file (yet)", flush=True)
+                    log.debug("no finished rows in this file (yet)")
                 continue
 
             dfm = df.loc[mask].copy()
@@ -164,8 +154,8 @@ def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
                 inserted += 1
 
             if verbose:
-                print(f"[extras]   upserted {inserted - before}", flush=True)
+                log.debug("upserted %d", inserted - before)
 
     if verbose:
-        print(f"[extras] total upserted: {inserted}", flush=True)
+        log.info("total upserted: %d", inserted)
     return inserted

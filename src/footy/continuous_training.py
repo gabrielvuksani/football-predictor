@@ -423,7 +423,7 @@ class ContinuousTrainingManager:
         
         Args:
             model_version: New version identifier (e.g., "v5_ultimate_20260214_v2")
-            model_type: Model type (v5_ultimate, v4_super_ensemble, etc.)
+            model_type: Model type (v5_ultimate, v7_council, etc.)
             training_window_days: Number of days of data used for training
             n_matches_used: Number of matches in training set
             n_matches_test: Number of matches in test set

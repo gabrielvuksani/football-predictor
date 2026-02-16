@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from datetime import date, timedelta
 import math
 
@@ -10,9 +12,14 @@ from footy.config import settings
 from footy.providers.ratelimit import RateLimiter
 from footy.normalize import canonical_team_name
 
+log = logging.getLogger(__name__)
+
 BASE = "https://api.football-data.org/v4"
 
 _rl = RateLimiter(max_calls=10, period_seconds=60)
+
+_MAX_RETRIES = 3
+_RETRY_BACKOFF = (2.0, 5.0, 10.0)  # seconds
 
 def _client():
     s = settings()
@@ -23,17 +30,39 @@ def _client():
 
 def fetch_matches(date_from: date, date_to_exclusive: date) -> dict:
     _rl.wait()
+    for attempt in range(_MAX_RETRIES):
+        try:
+            with _client() as c:
+                r = c.get(
+                    f"{BASE}/matches",
+                    params={"dateFrom": str(date_from), "dateTo": str(date_to_exclusive)},
+                )
+                if r.status_code == 429:
+                    wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+                    log.warning("football-data.org rate limited (429), retrying in %.1fs", wait)
+                    time.sleep(wait)
+                    _rl.wait()
+                    continue
+                if r.status_code >= 500:
+                    wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+                    log.warning("football-data.org server error (%d), retrying in %.1fs", r.status_code, wait)
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                return r.json()
+        except httpx.TimeoutException:
+            wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+            log.warning("football-data.org timeout, retrying in %.1fs", wait)
+            time.sleep(wait)
+        except httpx.HTTPStatusError:
+            raise
+    # Final attempt — raise on failure
     with _client() as c:
         r = c.get(
             f"{BASE}/matches",
             params={"dateFrom": str(date_from), "dateTo": str(date_to_exclusive)},
         )
-        try:
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise RuntimeError(
-                f"football-data.org error {r.status_code} for {r.url}\nResponse: {r.text}"
-            ) from e
+        r.raise_for_status()
         return r.json()
 
 def fetch_matches_range(date_from: date, date_to_inclusive: date, chunk_days: int = 10, verbose: bool = False) -> list[dict]:
@@ -51,7 +80,7 @@ def fetch_matches_range(date_from: date, date_to_inclusive: date, chunk_days: in
         end_exclusive = end_inclusive + timedelta(days=1)
 
         if verbose:
-            print(f"[fd.org] chunk {chunk_i}/{n_chunks}: {cur} → {end_inclusive}", flush=True)
+            log.debug("chunk %d/%d: %s → %s", chunk_i, n_chunks, cur, end_inclusive)
 
         data = fetch_matches(cur, end_exclusive)
         got = 0
@@ -63,7 +92,7 @@ def fetch_matches_range(date_from: date, date_to_inclusive: date, chunk_days: in
                 got += 1
 
         if verbose:
-            print(f"[fd.org]   received {got} new matches", flush=True)
+            log.debug("received %d new matches", got)
 
         cur = end_inclusive + timedelta(days=1)
 

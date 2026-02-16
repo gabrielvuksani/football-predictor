@@ -1,7 +1,10 @@
 from __future__ import annotations
+
+import hashlib
 import json
+import logging
+import math
 from datetime import date, timedelta, datetime, timezone
-import time
 
 import numpy as np
 import pandas as pd
@@ -14,9 +17,9 @@ from footy.providers.fdcuk_history import DIV_MAP, season_codes_last_n, download
 from footy.normalize import canonical_team_name
 from footy.models import elo
 from footy.models.poisson import fit_poisson, expected_goals, outcome_probs
-from footy.models.meta import make_model as make_meta_model, save as save_meta_model, load as load_meta_model, META_MODEL_VERSION
-from footy.h2h import recompute_h2h_stats
-from footy.xg import backfill_xg_for_finished_matches
+from footy.utils import outcome_label, compute_metrics
+
+log = logging.getLogger(__name__)
 
 MODEL_VERSION = "v1_elo_poisson"
 
@@ -32,10 +35,10 @@ def reset_states(verbose: bool = True) -> None:
     for table in ["predictions", "metrics", "elo_state", "elo_applied", "poisson_state"]:
         try:
             con.execute(f"DELETE FROM {table}")
-        except Exception:
-            pass  # table may not exist yet on fresh DB
+        except Exception as e:
+            log.debug("reset_states: %s — %s", table, e)
     if verbose:
-        print("[reset] cleared predictions/metrics/elo_state/elo_applied/poisson_state", flush=True)
+        log.info("cleared predictions/metrics/elo_state/elo_applied/poisson_state")
 
 def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
     """
@@ -52,14 +55,14 @@ def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
             divs.append(DIV_MAP[comp])
 
     if not divs:
-        raise RuntimeError("No tracked competitions map to football-data.co.uk divisions. Use PL,PD,SA,BL1,FL1,DED.")
+        raise RuntimeError("No tracked competitions map to football-data.co.uk divisions. Use PL,PD,SA,BL1,FL1.")
 
     seasons = season_codes_last_n(n_seasons, include_current=True)
     total_files = len(seasons) * len(divs)
 
     if verbose:
-        print(f"[history] seasons={seasons}", flush=True)
-        print(f"[history] divisions={[d.div for d in divs]} (files={total_files})", flush=True)
+        log.info("seasons=%s", seasons)
+        log.info("divisions=%s (files=%d)", [d.div for d in divs], total_files)
 
     inserted = 0
     file_i = 0
@@ -67,13 +70,13 @@ def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
         for d in divs:
             file_i += 1
             if verbose:
-                print(f"[history] [{file_i}/{total_files}] downloading {season_code}/{d.div}.csv …", flush=True)
+                log.debug("[%d/%d] downloading %s/%s.csv", file_i, total_files, season_code, d.div)
 
             try:
                 df = download_division_csv(season_code, d.div)
             except Exception as e:
                 if verbose:
-                    print(f"[history]   failed {season_code}/{d.div}: {e}", flush=True)
+                    log.warning("failed %s/%s: %s", season_code, d.div, e)
                 continue
 
             # minimal column set
@@ -82,7 +85,7 @@ def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
             need = ["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"]
             if not all(n in cols for n in need):
                 if verbose:
-                    print(f"[history]   missing required columns; got={list(df.columns)[:12]}… skipping", flush=True)
+                    log.warning("missing required columns; got=%s skipping", list(df.columns)[:12])
                 continue
 
             # parse datetime
@@ -102,11 +105,10 @@ def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
 
             if df2.empty:
                 if verbose:
-                    print("[history]   no finished rows in this file (yet)", flush=True)
+                    log.debug("no finished rows in this file (yet)")
                 continue
 
             # Deterministic 64-bit match_id via blake2b
-            import hashlib
             def make_id(row) -> int:
                 key = f"fdcuk|{season_code}|{d.competition}|{row.utc_date.date()}|{row.home_team}|{row.away_team}"
                 h = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
@@ -141,10 +143,10 @@ def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
                 inserted += 1
 
             if verbose:
-                print(f"[history]   inserted {inserted - before} finished matches", flush=True)
+                log.debug("inserted %d finished matches", inserted - before)
 
     if verbose:
-        print(f"[history] total inserted/updated: {inserted}", flush=True)
+        log.info("total inserted/updated: %d", inserted)
     return inserted
 
 def _features_for_match(con, poisson_state: dict, home: str, away: str):
@@ -172,11 +174,11 @@ def ingest(days_back: int = 30, days_forward: int = 7, chunk_days: int = 10, ver
     d1 = date.today() + timedelta(days=days_forward)
 
     if verbose:
-        print(f"[ingest] fetching matches {d0} → {d1} (chunk_days={chunk_days})", flush=True)
+        log.info("fetching matches %s → %s (chunk_days=%d)", d0, d1, chunk_days)
 
     matches = fetch_matches_range(d0, d1, chunk_days=chunk_days, verbose=verbose)
     if verbose:
-        print(f"[ingest] fetched {len(matches)} raw matches; inserting…", flush=True)
+        log.info("fetched %d raw matches; inserting…", len(matches))
 
     s = settings()
     n = 0
@@ -202,10 +204,10 @@ def ingest(days_back: int = 30, days_forward: int = 7, chunk_days: int = 10, ver
         n += 1
 
         if verbose and i % 100 == 0:
-            print(f"[ingest] processed {i}/{len(matches)} raw matches…", flush=True)
+            log.debug("processed %d/%d raw matches…", i, len(matches))
 
     if verbose:
-        print(f"[ingest] inserted/updated {n} matches (kept={kept} after competition filter)", flush=True)
+        log.info("inserted/updated %d matches (kept=%d after competition filter)", n, kept)
 
     return n
 
@@ -225,7 +227,7 @@ def update_elo_from_finished(verbose: bool = True) -> int:
     ).fetchall()
 
     if verbose:
-        print(f"[elo] new finished matches to apply: {len(rows)}", flush=True)
+        log.info("new finished matches to apply: %d", len(rows))
 
     count = 0
     for i, (mid, home, away, hg, ag) in enumerate(rows, start=1):
@@ -234,7 +236,7 @@ def update_elo_from_finished(verbose: bool = True) -> int:
         count += 1
 
         if verbose and (i % 500 == 0 or i == len(rows)):
-            print(f"[elo] applied {i}/{len(rows)}…", flush=True)
+            log.debug("applied %d/%d…", i, len(rows))
 
     return count
 
@@ -247,13 +249,13 @@ def refit_poisson(verbose: bool = True) -> dict:
     ).df()
 
     if verbose:
-        print(f"[poisson] fitting on finished matches: {len(df)}", flush=True)
+        log.info("fitting on finished matches: %d", len(df))
 
     state = fit_poisson(df)
     con.execute("INSERT OR REPLACE INTO poisson_state(key, value) VALUES ('state', ?)", [json.dumps(state)])
 
     if verbose:
-        print(f"[poisson] fit complete; teams={len(state.get('teams', []))}", flush=True)
+        log.info("fit complete; teams=%d", len(state.get('teams', [])))
 
     return state
 
@@ -269,21 +271,20 @@ def predict_upcoming(lookahead_days: int | None = None, verbose: bool = True) ->
     s = settings()
     look = lookahead_days or s.lookahead_days
 
+    cutoff_date = datetime.now(timezone.utc) + timedelta(days=look)
     df = con.execute(
-        f"""SELECT match_id, home_team, away_team, utc_date, status
+        """SELECT match_id, home_team, away_team, utc_date, status
             FROM matches
             WHERE status IN ('SCHEDULED','TIMED')
-              AND utc_date <= (CURRENT_TIMESTAMP + INTERVAL {look} DAY)
-            ORDER BY utc_date ASC"""
+              AND utc_date <= ?
+            ORDER BY utc_date ASC""",
+        [cutoff_date]
     ).df()
 
     if verbose:
-        print(f"[predict] upcoming matches in next {look} days: {len(df)}", flush=True)
+        log.info("upcoming matches in next %d days: %d", look, len(df))
 
     poisson_state = load_poisson()
-    meta = load_meta_model()
-    if verbose:
-        print(f"[predict] meta model available: {bool(meta)}", flush=True)
 
     n = 0
     for _, r in df.iterrows():
@@ -308,17 +309,6 @@ def predict_upcoming(lookahead_days: int | None = None, verbose: bool = True) ->
         )
         n += 1
 
-        # --- v2 meta stack ---
-        if meta is not None:
-            import numpy as np
-            Pm = meta.predict_proba(np.array([X], dtype=float))[0]
-            con.execute(
-                """INSERT OR REPLACE INTO predictions
-                   (match_id, model_version, p_home, p_draw, p_away, eg_home, eg_away, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                [mid, META_MODEL_VERSION, float(Pm[0]), float(Pm[1]), float(Pm[2]), lam_h, lam_a, "meta(logreg stack)"]
-            )
-
     return n
 
 def backtest_metrics() -> dict:
@@ -337,27 +327,16 @@ def backtest_metrics() -> dict:
         return {"n": 0, "logloss": None, "brier": None, "accuracy": None}
 
     P = df[["p_home", "p_draw", "p_away"]].to_numpy()
-    y = []
-    for hg, ag in zip(df["home_goals"], df["away_goals"]):
-        if hg > ag: y.append(0)
-        elif hg == ag: y.append(1)
-        else: y.append(2)
-    y = np.array(y, dtype=int)
+    y = np.array([outcome_label(int(hg), int(ag))
+                  for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
 
-    eps = 1e-12
-    logloss = float(np.mean(-np.log(P[np.arange(len(y)), y] + eps)))
-
-    Y = np.zeros_like(P)
-    Y[np.arange(len(y)), y] = 1.0
-    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
-
-    accuracy = float(np.mean(np.argmax(P, axis=1) == y))
+    m = compute_metrics(P, y)
 
     con.execute(
         "INSERT OR REPLACE INTO metrics(model_version, n_matches, logloss, brier, accuracy) VALUES (?, ?, ?, ?, ?)",
-        [MODEL_VERSION, int(len(y)), logloss, brier, accuracy]
+        [MODEL_VERSION, int(len(y)), m["logloss"], m["brier"], m["accuracy"]]
     )
-    return {"n": int(len(y)), "logloss": logloss, "brier": brier, "accuracy": accuracy}
+    return {"n": int(len(y)), **m}
 
 
 # ---------------------------------------------------------------------------
@@ -379,9 +358,6 @@ def score_finished_predictions(verbose: bool = True) -> dict:
       - ou25_correct (was Over 2.5 prediction correct?)
       - score_correct (was exact score correct?)
     """
-    import math
-    import json as _json
-
     con = connect()
     rows = con.execute("""
         SELECT m.match_id, m.home_goals, m.away_goals,
@@ -401,7 +377,7 @@ def score_finished_predictions(verbose: bool = True) -> dict:
 
     if not rows:
         if verbose:
-            print("[score] no new finished predictions to score", flush=True)
+            log.info("no new finished predictions to score")
         return {"scored": 0}
 
     scored = 0
@@ -415,14 +391,14 @@ def score_finished_predictions(verbose: bool = True) -> dict:
     n_score = 0
 
     for match_id, hg, ag, model_version, ph, pd_, pa, eg_h, eg_a, notes in rows:
-        outcome = 0 if hg > ag else (1 if hg == ag else 2)
+        outcome = outcome_label(int(hg), int(ag))
         probs = [float(ph), float(pd_), float(pa)]
         outcome_prob = probs[outcome]
         predicted = max(range(3), key=lambda i: probs[i])
 
         ll = -math.log(max(outcome_prob, 1e-15))
         brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2
-                     for i, p in enumerate(probs)) / 3.0
+                     for i, p in enumerate(probs))
         correct = predicted == outcome
 
         # Goal prediction accuracy
@@ -443,7 +419,7 @@ def score_finished_predictions(verbose: bool = True) -> dict:
 
         if notes:
             try:
-                nj = _json.loads(notes) if isinstance(notes, str) else {}
+                nj = json.loads(notes) if isinstance(notes, str) else {}
             except Exception:
                 nj = {}
 
@@ -519,7 +495,7 @@ def score_finished_predictions(verbose: bool = True) -> dict:
             parts.append(f"O2.5={total_ou25_correct / n_ou25:.1%}({n_ou25})")
         if n_score:
             parts.append(f"ExactScore={total_score_correct / n_score:.1%}({n_score})")
-        print(f"[score] {' | '.join(parts)}", flush=True)
+        log.info(" | ".join(parts))
 
     return {"scored": scored, "logloss": total_ll / scored if scored else 0,
             "accuracy": total_correct / scored if scored else 0,
@@ -532,20 +508,22 @@ def ingest_news_for_teams(days_back: int = 2, max_records: int = 10) -> int:
     con = connect()
     s = settings()
 
+    lookahead_cutoff = datetime.now(timezone.utc) + timedelta(days=s.lookahead_days)
     teams = con.execute(
-        f"""SELECT DISTINCT home_team AS team FROM matches
+        """SELECT DISTINCT home_team AS team FROM matches
               WHERE status IN ('SCHEDULED','TIMED')
-                AND utc_date <= (CURRENT_TIMESTAMP + INTERVAL {s.lookahead_days} DAY)
+                AND utc_date <= ?
             UNION
             SELECT DISTINCT away_team AS team FROM matches
               WHERE status IN ('SCHEDULED','TIMED')
-                AND utc_date <= (CURRENT_TIMESTAMP + INTERVAL {s.lookahead_days} DAY)"""
+                AND utc_date <= ?""",
+        [lookahead_cutoff, lookahead_cutoff]
     ).fetchall()
 
     teams = [t for (t,) in teams if t]
     total = len(teams)
     if total == 0:
-        print("No upcoming teams found. Run: footy update", flush=True)
+        log.warning("No upcoming teams found. Run: footy update")
         return 0
 
     def _parse_seendate(v):
@@ -581,7 +559,7 @@ def ingest_news_for_teams(days_back: int = 2, max_records: int = 10) -> int:
             except Exception:
                 pass
 
-        print(f"[news] [{i}/{total}] Fetching: {team}", flush=True)
+        log.debug("[%d/%d] Fetching: %s", i, total, team)
 
         df = fetch_team_news(team, days_back=days_back, max_records=max_records)
         if df is None or df.empty:
@@ -613,13 +591,15 @@ def train_meta_model(days: int = 365, test_days: int = 28, verbose: bool = True)
       - if train/test too small, falls back to an 80/20 chronological split with minimum sizes
     """
     con = connect()
+    history_cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     df = con.execute(
-        f"""SELECT match_id, home_team, away_team, home_goals, away_goals, utc_date
+        """SELECT match_id, home_team, away_team, home_goals, away_goals, utc_date
               FROM matches
               WHERE status='FINISHED'
                 AND home_goals IS NOT NULL AND away_goals IS NOT NULL
-                AND utc_date >= (CURRENT_TIMESTAMP - INTERVAL {days} DAY)
-              ORDER BY utc_date ASC"""
+                AND utc_date >= ?
+              ORDER BY utc_date ASC""",
+        [history_cutoff]
     ).df()
 
     if df.empty or len(df) < 80:
@@ -644,7 +624,7 @@ def train_meta_model(days: int = 365, test_days: int = 28, verbose: bool = True)
         cutoff = test["utc_date"].min()
 
     if verbose:
-        print(f"[meta] total finished: {len(df)} | train: {len(train)} | test: {len(test)} | cutoff: {cutoff}", flush=True)
+        log.info("total finished: %d | train: %d | test: %d | cutoff: %s", len(df), len(train), len(test), cutoff)
 
     if len(train) < 50 or len(test) < 20:
         return {"error": "Still not enough data after fallback split. Increase finished match history."}
@@ -676,20 +656,25 @@ def train_meta_model(days: int = 365, test_days: int = 28, verbose: bool = True)
         hg = int(r.home_goals); ag = int(r.away_goals)
 
         X_train.append(features_from_dict(home, away))
-        if hg > ag: y_train.append(0)
-        elif hg == ag: y_train.append(1)
-        else: y_train.append(2)
+        y_train.append(outcome_label(hg, ag))
 
         _elo_update_dict(ratings, home, away, hg, ag)
 
         if verbose and i % 100 == 0:
-            print(f"[meta] train features {i}/{len(train)}…", flush=True)
+            log.debug("train features %d/%d…", i, len(train))
 
     import numpy as np
     X_train = np.array(X_train, dtype=float)
     y_train = np.array(y_train, dtype=int)
 
-    model = make_meta_model()
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline as SkPipeline
+    from sklearn.preprocessing import StandardScaler
+    model = SkPipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(
+            multi_class="multinomial", solver="lbfgs", max_iter=500, C=1.0)),
+    ])
     model.fit(X_train, y_train)
 
     # Evaluate on TEST sequentially (ratings continue rolling forward)
@@ -699,75 +684,49 @@ def train_meta_model(days: int = 365, test_days: int = 28, verbose: bool = True)
         hg = int(r.home_goals); ag = int(r.away_goals)
 
         X_test.append(features_from_dict(home, away))
-        if hg > ag: y_test.append(0)
-        elif hg == ag: y_test.append(1)
-        else: y_test.append(2)
+        y_test.append(outcome_label(hg, ag))
 
         _elo_update_dict(ratings, home, away, hg, ag)
 
         if verbose and i % 50 == 0:
-            print(f"[meta] test features {i}/{len(test)}…", flush=True)
+            log.debug("test features %d/%d…", i, len(test))
 
     X_test = np.array(X_test, dtype=float)
     y_test = np.array(y_test, dtype=int)
 
     P = model.predict_proba(X_test)
-    eps = 1e-12
-    logloss = float(np.mean(-np.log(P[np.arange(len(y_test)), y_test] + eps)))
+    m = compute_metrics(P, y_test)
 
-    Y = np.zeros_like(P)
-    Y[np.arange(len(y_test)), y_test] = 1.0
-    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
-
-    accuracy = float(np.mean(np.argmax(P, axis=1) == y_test))
-
-    save_meta_model(model)
+    META_VERSION = "v2_meta_stack"
+    import joblib
+    from pathlib import Path
+    model_path = Path("data/models") / f"{META_VERSION}.joblib"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"model": model, "feature_names": [
+        "pE_home","pE_draw","pE_away","pP_home","pP_draw","pP_away",
+        "elo_diff","eg_home","eg_away","eg_diff",
+    ]}, model_path)
 
     con.execute(
         "INSERT OR REPLACE INTO metrics(model_version, n_matches, logloss, brier, accuracy) VALUES (?, ?, ?, ?, ?)",
-        [META_MODEL_VERSION, int(len(y_test)), logloss, brier, accuracy]
+        [META_VERSION, int(len(y_test)), m["logloss"], m["brier"], m["accuracy"]]
     )
 
-    out = {"n": int(len(y_test)), "logloss": logloss, "brier": brier, "accuracy": accuracy}
+    out = {"n": int(len(y_test)), **m}
     if verbose:
-        print(f"[meta] saved {META_MODEL_VERSION} to data/models; result={out}", flush=True)
+        log.info("saved %s to data/models; result=%s", META_VERSION, out)
     return out
 
 # --- Real test you can run immediately (time-split backtest) ---
 
-def _elo_expected(r_home: float, r_away: float) -> float:
-    return 1.0 / (1.0 + 10 ** (-(r_home - r_away) / 400.0))
+# Use consolidated Elo core for all in-memory Elo operations
+from footy.models.elo_core import elo_predict as _elo_predict_core, elo_update as _elo_update_core
 
 def _elo_predict_dict(ratings: dict, home: str, away: str) -> tuple[float, float, float]:
-    DEFAULT_R = 1500.0
-    HOME_ADV = 60.0
-    p_draw = 0.26
-
-    rh = ratings.get(home, DEFAULT_R) + HOME_ADV
-    ra = ratings.get(away, DEFAULT_R)
-
-    p_home = _elo_expected(rh, ra)
-    p_home_adj = p_home * (1.0 - p_draw)
-    p_away_adj = (1.0 - p_home) * (1.0 - p_draw)
-    s = p_home_adj + p_draw + p_away_adj
-    return (p_home_adj / s, p_draw / s, p_away_adj / s)
+    return _elo_predict_core(ratings, home, away, home_adv=60.0, draw_base=0.26)
 
 def _elo_update_dict(ratings: dict, home: str, away: str, hg: int, ag: int):
-    DEFAULT_R = 1500.0
-    HOME_ADV = 60.0
-    K = 20.0
-
-    rh0 = ratings.get(home, DEFAULT_R)
-    ra0 = ratings.get(away, DEFAULT_R)
-    exp_home = _elo_expected(rh0 + HOME_ADV, ra0)
-
-    if hg > ag: s_home = 1.0
-    elif hg == ag: s_home = 0.5
-    else: s_home = 0.0
-
-    delta = K * (s_home - exp_home)
-    ratings[home] = rh0 + delta
-    ratings[away] = ra0 - delta
+    _elo_update_core(ratings, home, away, hg, ag, home_adv=60.0, k=20.0)
 
 def backtest_time_split(days: int = 180, test_days: int = 14, verbose: bool = True) -> dict:
     """
@@ -776,13 +735,15 @@ def backtest_time_split(days: int = 180, test_days: int = 14, verbose: bool = Tr
     - test = most recent `test_days` of finished matches
     """
     con = connect()
+    history_cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     df = con.execute(
-        f"""SELECT home_team, away_team, home_goals, away_goals, utc_date
+        """SELECT home_team, away_team, home_goals, away_goals, utc_date
             FROM matches
             WHERE status='FINISHED'
               AND home_goals IS NOT NULL AND away_goals IS NOT NULL
-              AND utc_date >= (CURRENT_TIMESTAMP - INTERVAL {days} DAY)
-            ORDER BY utc_date ASC"""
+              AND utc_date >= ?
+            ORDER BY utc_date ASC""",
+        [history_cutoff]
     ).df()
 
     if df.empty or len(df) < 50:
@@ -795,8 +756,8 @@ def backtest_time_split(days: int = 180, test_days: int = 14, verbose: bool = Tr
     test = df[df["utc_date"] >= cutoff].copy()
 
     if verbose:
-        print(f"[backtest] total finished in window: {len(df)}", flush=True)
-        print(f"[backtest] train: {len(train)} | test: {len(test)} | cutoff: {cutoff}", flush=True)
+        log.info("total finished in window: %d", len(df))
+        log.info("train: %d | test: %d | cutoff: %s", len(train), len(test), cutoff)
 
     if len(train) < 30 or len(test) < 10:
         return {"error": "Train/test split too small. Increase days or reduce test_days."}
@@ -829,12 +790,10 @@ def backtest_time_split(days: int = 180, test_days: int = 14, verbose: bool = Tr
         p_home, p_draw, p_away = p_home / ssum, p_draw / ssum, p_away / ssum
         P.append([p_home, p_draw, p_away])
 
-        if hg > ag: y.append(0)
-        elif hg == ag: y.append(1)
-        else: y.append(2)
+        y.append(outcome_label(hg, ag))
 
         if verbose and i % 25 == 0:
-            print(f"[backtest] predicted {i}/{len(test)}…", flush=True)
+            log.debug("predicted %d/%d…", i, len(test))
 
         # Update Elo with the *observed* result as we roll forward (realistic sequential backtest)
         _elo_update_dict(ratings, home, away, hg, ag)
@@ -842,16 +801,7 @@ def backtest_time_split(days: int = 180, test_days: int = 14, verbose: bool = Tr
     P = np.array(P, dtype=float)
     y = np.array(y, dtype=int)
 
-    eps = 1e-12
-    logloss = float(np.mean(-np.log(P[np.arange(len(y)), y] + eps)))
-
-    Y = np.zeros_like(P)
-    Y[np.arange(len(y)), y] = 1.0
-    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
-
-    accuracy = float(np.mean(np.argmax(P, axis=1) == y))
-
-    result = {"n": int(len(y)), "logloss": logloss, "brier": brier, "accuracy": accuracy}
+    result = {"n": int(len(y)), **compute_metrics(P, y)}
     if verbose:
-        print(f"[backtest] result: {result}", flush=True)
+        log.info("result: %s", result)
     return result

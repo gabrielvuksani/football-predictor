@@ -19,10 +19,12 @@ Legacy job types (still supported):
 """
 from __future__ import annotations
 import json
+import logging
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Any
 from enum import Enum
+import math
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -30,9 +32,9 @@ from apscheduler.job import Job
 
 from footy.db import connect
 from footy import pipeline
-from footy.models.v3 import train_and_save as v3_train_and_save, predict_upcoming as v3_predict_upcoming
-from footy.models.v5 import train_and_save as v5_train_and_save, predict_upcoming as v5_predict_upcoming
 from footy.models.council import train_and_save as council_train_and_save, predict_upcoming as council_predict_upcoming
+
+log = logging.getLogger(__name__)
 
 
 class JobStatus(str, Enum):
@@ -159,7 +161,7 @@ class TrainingScheduler:
         Returns:
             Job configuration dict
         """
-        valid_types = ["ingest", "train_base", "train_meta", "train_v3", "train_v4", "train_v5", "train_council", "predict", "score"]
+        valid_types = ["ingest", "train_base", "train_council", "predict", "score"]
         if job_type not in valid_types:
             raise ValueError(f"Invalid job_type: {job_type}")
         
@@ -208,11 +210,7 @@ class TrainingScheduler:
         job_funcs = {
             "ingest": self._job_ingest,
             "train_base": self._job_train_base,
-            "train_meta": self._job_train_meta,
-            "train_v3": self._job_train_v3,
-            "train_v4": self._job_train_v4,
-            "train_v5": self._job_train_v5,
-            "train_council": self._job_train_v4,  # train_council → same as train_v4 (council model)
+            "train_council": self._job_train_council,
             "predict": self._job_predict,
             "score": self._job_score,
         }
@@ -231,7 +229,7 @@ class TrainingScheduler:
         except Exception as e:
             status = JobStatus.FAILED
             error_message = str(e)
-            print(f"[red]Job {job_id} failed:[/red] {error_message}")
+            log.error("Job %s failed: %s", job_id, error_message)
         finally:
             completed_at = datetime.utcnow()
             duration = (completed_at - started_at).total_seconds()
@@ -259,45 +257,17 @@ class TrainingScheduler:
         state = pipeline.refit_poisson(verbose=False)
         return {"elo_updates": n_elo, "poisson_teams": len(state.get("teams", []))}
     
-    def _job_train_meta(self, days: int = 365, test_days: int = 28) -> dict:
-        """Train meta stacker (v2)"""
-        con = connect()
-        result = pipeline.train_meta_model(days=days, test_days=test_days, verbose=False)
-        return result
-    
-    def _job_train_v3(self, days: int = 3650, test_days: int = 28) -> dict:
-        """Train GBDT form model (v3)"""
-        con = connect()
-        result = v3_train_and_save(con, days=days, test_days=test_days, verbose=False)
-        return result
-    
-    def _job_train_v4(self, eval_days: int = 365) -> dict:
-        """Train council model (v7)"""
+    def _job_train_council(self, eval_days: int = 365) -> dict:
+        """Train council model (v7)."""
         con = connect()
         result = council_train_and_save(con, eval_days=eval_days, verbose=False)
         return result
-    
-    def _job_train_v5(self, days: int = 3650, eval_days: int = 365) -> dict:
-        """Train ultimate ensemble (v5)"""
-        con = connect()
-        result = v5_train_and_save(con, days=days, eval_days=eval_days, verbose=False)
-        return result
-    
+
     def _job_predict(self, lookahead_days: int = 7) -> dict:
-        """Generate predictions for upcoming matches"""
+        """Generate predictions for upcoming matches using the council model."""
         con = connect()
-        
-        # v3 predictions
-        df_v3 = v3_predict_upcoming(con, lookahead_days=lookahead_days)
-        n_v3 = len(df_v3) if df_v3 is not None and not df_v3.empty else 0
-        
-        # v5 predictions
-        n_v5 = v5_predict_upcoming(con, lookahead_days=lookahead_days, verbose=False)
-        
-        # v4/council predictions
-        n_v4 = council_predict_upcoming(con, lookahead_days=lookahead_days, verbose=False)
-        
-        return {"v3_predictions": n_v3, "v4_predictions": n_v4, "v5_predictions": n_v5}
+        n = council_predict_upcoming(con, lookahead_days=lookahead_days, verbose=False)
+        return {"council_predictions": n}
     
     def _job_score(self) -> dict:
         """Score finished predictions"""
@@ -337,7 +307,6 @@ class TrainingScheduler:
             brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2 for i, p in enumerate(probs)) / 3
             
             # Log loss (negative log likelihood)
-            import math
             logloss = -math.log(max(outcome_prob, 1e-15))
             
             # Store score

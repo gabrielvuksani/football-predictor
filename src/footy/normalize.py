@@ -45,7 +45,7 @@ def canonical_team_name(name: Optional[str]) -> Optional[str]:
         canonical = get_canonical_name(name)
         if canonical:
             return canonical
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         pass  # Fallback if team_mapping not available
     
     # Legacy normalization (fallback)
@@ -75,5 +75,5 @@ def get_canonical_id(name: Optional[str]) -> Optional[str]:
         from footy.team_mapping import get_canonical_id as _get_id
         canonical_id, _ = _get_id(name)
         return canonical_id
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return None

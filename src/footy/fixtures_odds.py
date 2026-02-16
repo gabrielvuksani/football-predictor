@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -11,16 +12,9 @@ from footy.db import connect
 from footy.normalize import canonical_team_name
 from footy.providers.fdcuk_history import DIV_MAP
 from footy.providers.fdcuk_fixtures import download_fixtures
+from footy.utils import safe_num as _num
 
-def _num(v):
-    try:
-        if v is None:
-            return None
-        if isinstance(v, str) and v.strip() == "":
-            return None
-        return float(v)
-    except Exception:
-        return None
+log = logging.getLogger(__name__)
 
 STOPWORDS = {
     "fc","cf","sc","ac","as","us","ss","rc","sv","afc",
@@ -102,7 +96,7 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
 
     if up.empty:
         if verbose:
-            print("[fixtures] no upcoming matches in DB", flush=True)
+            log.info("no upcoming matches in DB")
         return 0
 
     up["utc_date"] = pd.to_datetime(up["utc_date"], utc=True, errors="coerce")
@@ -112,9 +106,9 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
     up["away_n"] = up["away_team"].map(_norm)
 
     if verbose:
-        print(f"[fixtures] fixtures rows={len(fx)} unique_div_keys={len(idx_div)} unique_any_keys={len(idx_any)}", flush=True)
-        print("[fixtures] upcoming by competition:", flush=True)
-        print(up.groupby("competition")["match_id"].count().to_string(), flush=True)
+        log.info("fixtures rows=%d unique_div_keys=%d unique_any_keys=%d", len(fx), len(idx_div), len(idx_any))
+        log.info("upcoming by competition:")
+        log.info(up.groupby("competition")["match_id"].count().to_string())
 
     matched = 0
     exact = div_pm = anydiv = anydiv_pm = fuzzy = 0
@@ -130,6 +124,7 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
         ]
 
         found = None
+        match_method = "none"
 
         # 1/2 exact by div
         if div:
@@ -137,8 +132,12 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
                 k = (div, d, r.home_n, r.away_n)
                 if k in idx_div:
                     found = idx_div[k]
-                    if d == d0: exact += 1
-                    else: div_pm += 1
+                    if d == d0:
+                        exact += 1
+                        match_method = "exact"
+                    else:
+                        div_pm += 1
+                        match_method = "div_pm"
                     break
 
         # 3 exact ignoring div
@@ -147,8 +146,12 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
                 k = (d, r.home_n, r.away_n)
                 if k in idx_any:
                     found = idx_any[k]
-                    if d == d0: anydiv += 1
-                    else: anydiv_pm += 1
+                    if d == d0:
+                        anydiv += 1
+                        match_method = "anydiv"
+                    else:
+                        anydiv_pm += 1
+                        match_method = "anydiv_pm"
                     break
 
         # 4 fuzzy within same div/date±1
@@ -173,6 +176,7 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
             # accept only if confident and not ambiguous
             if best is not None and best_score >= 0.82 and (best_score - second) >= 0.04:
                 found = best
+                match_method = "fuzzy"
                 fuzzy += 1
 
         if found is None:
@@ -180,27 +184,44 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
                 unmatched_examples.append((r.competition, str(r.date_only), r.home_team, r.away_team, r.home_n, r.away_n))
             continue
 
-        con.execute(
-            """INSERT OR REPLACE INTO match_extras
-               (match_id, provider, competition, season_code, div_code, b365h, b365d, b365a, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        # Try UPDATE first (preserve existing extras data), INSERT only if no row
+        updated = con.execute(
+            """UPDATE match_extras
+               SET b365h = COALESCE(?, b365h),
+                   b365d = COALESCE(?, b365d),
+                   b365a = COALESCE(?, b365a),
+                   raw_json = ?
+               WHERE match_id = ?""",
             [
-                int(r.match_id),
-                "football-data.co.uk-fixtures",
-                r.competition,
-                None,
-                found.get("div") or div,
                 found.get("b365h"), found.get("b365d"), found.get("b365a"),
-                json.dumps({"source": "fixtures.csv", "matched_date": found.get("date"), "match_type": "fuzzy" if found and found.get("date") else "exact"}, default=str),
+                json.dumps({"source": "fixtures.csv", "matched_date": found.get("date"),
+                            "match_method": match_method}, default=str),
+                int(r.match_id),
             ]
-        )
+        ).fetchone()
+        # If no row existed, insert a new one
+        if con.execute("SELECT 1 FROM match_extras WHERE match_id = ?", [int(r.match_id)]).fetchone() is None:
+            con.execute(
+                """INSERT INTO match_extras
+                   (match_id, provider, competition, div_code, b365h, b365d, b365a, raw_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    int(r.match_id),
+                    "football-data.co.uk-fixtures",
+                    r.competition,
+                    found.get("div") or div,
+                    found.get("b365h"), found.get("b365d"), found.get("b365a"),
+                    json.dumps({"source": "fixtures.csv", "matched_date": found.get("date"),
+                                "match_method": match_method}, default=str),
+                ]
+            )
         matched += 1
 
     if verbose:
-        print(f"[fixtures] attached odds rows={matched} (exact={exact}, div±1={div_pm}, anydiv_exact={anydiv}, anydiv±1={anydiv_pm}, fuzzy={fuzzy})", flush=True)
+        log.info("attached odds rows=%d (exact=%d, div±1=%d, anydiv_exact=%d, anydiv±1=%d, fuzzy=%d)", matched, exact, div_pm, anydiv, anydiv_pm, fuzzy)
         if unmatched_examples:
-            print("[fixtures] examples unmatched (competition, date, home, away, home_n, away_n):", flush=True)
+            log.info("examples unmatched (competition, date, home, away, home_n, away_n):")
             for ex in unmatched_examples:
-                print("  -", ex, flush=True)
+                log.info("  - %s", ex)
 
     return matched

@@ -12,7 +12,7 @@ class TestSettings:
         s = settings()
         assert s.football_data_org_token
         assert s.api_football_key
-        assert isinstance(s.tracked_competitions, list)
+        assert isinstance(s.tracked_competitions, (list, tuple))
         assert len(s.tracked_competitions) > 0
 
     def test_tracked_competitions_default(self):

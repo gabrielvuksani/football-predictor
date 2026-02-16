@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import math
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,8 +45,11 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
+from scipy.stats import poisson as poisson_dist
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier
+
+from footy.models.elo_core import elo_expected as _elo_exp, elo_draw_prob as _elo_dp, dynamic_k as _dk
 
 from footy.config import settings
 from footy.normalize import canonical_team_name
@@ -200,10 +204,9 @@ class EloExpert(Expert):
 
             rh_adj = rh + adv
 
-            # expected
-            e_h = 1.0 / (1.0 + 10.0 ** (-(rh_adj - ra) / 400.0))
-            diff = abs(rh_adj - ra)
-            p_draw = max(0.18, min(0.34, 0.26 + 0.06 * math.exp(-diff / 200)))
+            # expected — use shared core
+            e_h = _elo_exp(rh_adj, ra)
+            p_draw = _elo_dp(rh_adj, ra)
             ph = e_h * (1 - p_draw)
             pa = (1 - e_h) * (1 - p_draw)
             ph, pd_, pa = _norm3(ph, p_draw, pa)
@@ -233,10 +236,9 @@ class EloExpert(Expert):
             gd = abs(hg - ag)
             n_h = counts.get(h, 0)
             n_a = counts.get(a, 0)
-            conv_h = 1.0 + max(0.0, 1.0 - n_h / 60.0)
-            conv_a = 1.0 + max(0.0, 1.0 - n_a / 60.0)
-            gd_m = 1.0 if gd <= 1 else (1.15 if gd == 2 else min(1.5, 1.3 + 0.05 * (gd - 3)))
-            k = self.K_BASE * ((conv_h + conv_a) / 2) * gd_m
+            k_h = _dk(n_h, gd, k_base=self.K_BASE)
+            k_a = _dk(n_a, gd, k_base=self.K_BASE)
+            k = (k_h + k_a) / 2.0
             delta = k * (s_home - e_h)
             ratings[h] = rh + delta
             ratings[a] = ra - delta
@@ -584,8 +586,6 @@ class PoissonExpert(Expert):
 
         def _a(t): return attack.get(t, self.AVG)
         def _d(t): return defense.get(t, self.AVG * 0.9)
-
-        from scipy.stats import poisson as poisson_dist
 
         for i, r in enumerate(df.itertuples(index=False)):
             h, a = r.home_team, r.away_team
@@ -1020,7 +1020,6 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     for ii in range(n):
         winners = [np.argmax(r.probs[ii]) for r in results[:6] if ii < r.probs.shape[0]]
         if winners:
-            from collections import Counter
             most_common = Counter(winners).most_common(1)[0][1]
             winner_votes[ii] = most_common / len(winners)
     blocks.extend([
@@ -1032,7 +1031,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
 
     # 5. Competition encoding (ordinal league ID)
     if competitions is not None:
-        _COMP_MAP = {"PL": 1, "PD": 2, "SA": 3, "BL1": 4, "FL1": 5, "DED": 6, "ELC": 7}
+        _COMP_MAP = {"PL": 1, "PD": 2, "SA": 3, "BL1": 4, "FL1": 5}
         comp_ids = np.array([_COMP_MAP.get(str(c), 0) for c in competitions], dtype=float)
         blocks.append(comp_ids[:, None])
 
@@ -1322,6 +1321,8 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         FROM matches m
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE m.status = 'FINISHED'
+          AND m.home_goals IS NOT NULL
+          AND m.away_goals IS NOT NULL
         ORDER BY m.utc_date ASC
     """).df()
     hist["utc_date"] = pd.to_datetime(hist["utc_date"], utc=True)
@@ -1365,16 +1366,6 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             dc_eg[i] = [egh, ega]
             dc_o25[i] = [po]
             has_dc[i] = [1.0]
-
-    # for upcoming only, compute DC from stored model
-    if "competition" not in combo.columns:
-        # add competition from up dataframe
-        combo_comp = pd.concat([
-            hist[["utc_date"]].assign(competition=""),
-            up[["utc_date", "competition"]],
-        ], ignore_index=True).sort_values("utc_date").reset_index(drop=True)
-    else:
-        combo_comp = combo
 
     # DC for the upcoming tail only
     for j, r in enumerate(up.itertuples(index=False)):

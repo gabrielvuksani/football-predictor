@@ -5,6 +5,8 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    env_file:
+      - .env
     environment:
-      - FOOTY_DB=data/footy.duckdb
+      - DB_PATH=data/footy.duckdb
     restart: unless-stopped

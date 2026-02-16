@@ -32,6 +32,16 @@ document.addEventListener('alpine:init', () => {
     days: 14,
     model: 'v7_council',
 
+    // ── helpers ──
+    async _fetch(url) {
+      const r = await fetch(url);
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${r.status}`);
+      }
+      return r.json();
+    },
+
     // ── lifecycle ──
     init() {
       this.fetchMatches();
@@ -42,8 +52,7 @@ document.addEventListener('alpine:init', () => {
     async fetchMatches() {
       this.loading = true;
       try {
-        const r = await fetch(`/api/matches?days=${this.days}&model=${this.model}`);
-        const d = await r.json();
+        const d = await this._fetch(`/api/matches?days=${this.days}&model=${this.model}`);
         this.matches = d.matches || [];
       } catch(e) { console.error(e); }
       this.loading = false;
@@ -51,8 +60,7 @@ document.addEventListener('alpine:init', () => {
 
     async fetchLastUpdated() {
       try {
-        const r = await fetch('/api/last-updated');
-        const d = await r.json();
+        const d = await this._fetch('/api/last-updated');
         this.lastUpdated = d.last_updated;
       } catch(e) { /* ignore */ }
     },
@@ -71,8 +79,7 @@ document.addEventListener('alpine:init', () => {
       this.loadingAI = false;
 
       try {
-        const r = await fetch(`/api/matches/${match.match_id}?model=${this.model}`);
-        this.detailData = await r.json();
+        this.detailData = await this._fetch(`/api/matches/${match.match_id}?model=${this.model}`);
       } catch(e) { console.error(e); }
       this.loadingDetail = false;
 
@@ -88,8 +95,7 @@ document.addEventListener('alpine:init', () => {
       if (!this.detailMatch || this.detailExperts) return;
       this.loadingExperts = true;
       try {
-        const r = await fetch(`/api/matches/${this.detailMatch.match_id}/experts`);
-        this.detailExperts = await r.json();
+        this.detailExperts = await this._fetch(`/api/matches/${this.detailMatch.match_id}/experts`);
       } catch(e) { console.error(e); }
       this.loadingExperts = false;
     },
@@ -98,8 +104,7 @@ document.addEventListener('alpine:init', () => {
       if (!this.detailMatch || this.detailH2H) return;
       this.loadingH2H = true;
       try {
-        const r = await fetch(`/api/matches/${this.detailMatch.match_id}/h2h`);
-        this.detailH2H = await r.json();
+        this.detailH2H = await this._fetch(`/api/matches/${this.detailMatch.match_id}/h2h`);
       } catch(e) { console.error(e); }
       this.loadingH2H = false;
     },
@@ -107,8 +112,7 @@ document.addEventListener('alpine:init', () => {
     async loadForm() {
       if (!this.detailMatch) return;
       try {
-        const r = await fetch(`/api/matches/${this.detailMatch.match_id}/form`);
-        this.detailForm = await r.json();
+        this.detailForm = await this._fetch(`/api/matches/${this.detailMatch.match_id}/form`);
       } catch(e) { console.error(e); }
     },
 
@@ -116,8 +120,7 @@ document.addEventListener('alpine:init', () => {
       if (!this.detailMatch || this.detailNarrative) return;
       this.loadingAI = true;
       try {
-        const r = await fetch(`/api/matches/${this.detailMatch.match_id}/ai`);
-        const d = await r.json();
+        const d = await this._fetch(`/api/matches/${this.detailMatch.match_id}/ai`);
         this.detailNarrative = d.narrative || 'AI analysis unavailable — is Ollama running?';
       } catch(e) {
         this.detailNarrative = 'Failed to generate analysis.';
@@ -128,8 +131,7 @@ document.addEventListener('alpine:init', () => {
     async fetchValueBets() {
       this.loadingBets = true;
       try {
-        const r = await fetch('/api/insights/value-bets?min_edge=0.03');
-        const d = await r.json();
+        const d = await this._fetch('/api/insights/value-bets?min_edge=0.03');
         this.valueBets = d.bets || [];
       } catch(e) { console.error(e); }
       this.loadingBets = false;
@@ -138,8 +140,7 @@ document.addEventListener('alpine:init', () => {
     async fetchStats() {
       this.loadingStats = true;
       try {
-        const r = await fetch('/api/stats');
-        this.stats = await r.json();
+        this.stats = await this._fetch('/api/stats');
       } catch(e) { console.error(e); }
       this.loadingStats = false;
     },
@@ -147,8 +148,7 @@ document.addEventListener('alpine:init', () => {
     async fetchPerformance() {
       this.loadingPerf = true;
       try {
-        const r = await fetch(`/api/performance?model=${this.model}`);
-        this.performance = await r.json();
+        this.performance = await this._fetch(`/api/performance?model=${this.model}`);
       } catch(e) { console.error(e); }
       this.loadingPerf = false;
     },

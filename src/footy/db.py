@@ -1,6 +1,9 @@
 from __future__ import annotations
+import logging
 import duckdb
 from footy.config import settings
+
+log = logging.getLogger(__name__)
 
 SCHEMA_SQL = r"""
 CREATE TABLE IF NOT EXISTS matches (
@@ -218,10 +221,14 @@ CREATE INDEX IF NOT EXISTS idx_matches_comp ON matches(competition);
 CREATE INDEX IF NOT EXISTS idx_matches_teams ON matches(home_team, away_team);
 CREATE INDEX IF NOT EXISTS idx_predictions_model ON predictions(model_version);
 CREATE INDEX IF NOT EXISTS idx_pscores_model ON prediction_scores(model_version);
+CREATE INDEX IF NOT EXISTS idx_news_seendate ON news(seendate);
+CREATE INDEX IF NOT EXISTS idx_h2h_canonical ON h2h_stats(team_a_canonical, team_b_canonical);
+CREATE INDEX IF NOT EXISTS idx_h2h_venue_canonical ON h2h_venue_stats(home_team_canonical, away_team_canonical);
+CREATE INDEX IF NOT EXISTS idx_match_extras_comp ON match_extras(competition, season_code);
 """
 
 # Columns that may need adding to older match_extras tables
-_EXTRAS_MIGRATIONS = [
+_MATCH_EXTRAS_MIGRATIONS = [
     ("b365ch", "DOUBLE"), ("b365cd", "DOUBLE"), ("b365ca", "DOUBLE"),
     ("psh", "DOUBLE"), ("psd", "DOUBLE"), ("psa", "DOUBLE"),
     ("avgh", "DOUBLE"), ("avgd", "DOUBLE"), ("avga", "DOUBLE"),
@@ -231,7 +238,10 @@ _EXTRAS_MIGRATIONS = [
     ("max_o25", "DOUBLE"), ("max_u25", "DOUBLE"),
     ("b365ahh", "DOUBLE"), ("b365ahha", "DOUBLE"), ("b365ahaw", "DOUBLE"),
     ("hthg", "INT"), ("htag", "INT"),
-    # prediction_scores expansions
+]
+
+# Columns that may need adding to older prediction_scores tables
+_PRED_SCORES_MIGRATIONS = [
     ("goals_mae", "DOUBLE"), ("btts_correct", "BOOLEAN"),
     ("ou25_correct", "BOOLEAN"), ("score_correct", "BOOLEAN"),
     ("eg_home", "DOUBLE"), ("eg_away", "DOUBLE"),
@@ -245,32 +255,40 @@ def _migrate_columns(con):
         existing = {r[0].lower() for r in con.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name='match_extras'"
         ).fetchall()}
-        for col, typ in _EXTRAS_MIGRATIONS[:23]:  # match_extras columns (up to htag)
+        for col, typ in _MATCH_EXTRAS_MIGRATIONS:
             if col not in existing:
                 try:
                     con.execute(f"ALTER TABLE match_extras ADD COLUMN {col} {typ}")
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as e:
+                    log.debug("migrate match_extras.%s: %s", col, e)
+    except Exception as e:
+        log.debug("migrate match_extras lookup: %s", e)
 
     try:
         existing = {r[0].lower() for r in con.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name='prediction_scores'"
         ).fetchall()}
-        for col, typ in _EXTRAS_MIGRATIONS[23:]:  # prediction_scores columns
+        for col, typ in _PRED_SCORES_MIGRATIONS:
             if col not in existing:
                 try:
                     con.execute(f"ALTER TABLE prediction_scores ADD COLUMN {col} {typ}")
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as e:
+                    log.debug("migrate prediction_scores.%s: %s", col, e)
+    except Exception as e:
+        log.debug("migrate prediction_scores lookup: %s", e)
+
+
+_connection: duckdb.DuckDBPyConnection | None = None
+_schema_initialized: bool = False
 
 
 def connect() -> duckdb.DuckDBPyConnection:
+    global _connection, _schema_initialized
     s = settings()
-    con = duckdb.connect(s.db_path)
-    con.execute(SCHEMA_SQL)
-    _migrate_columns(con)
-    return con
+    if _connection is None:
+        _connection = duckdb.connect(s.db_path)
+    if not _schema_initialized:
+        _connection.execute(SCHEMA_SQL)
+        _migrate_columns(_connection)
+        _schema_initialized = True
+    return _connection
