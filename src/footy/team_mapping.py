@@ -59,6 +59,18 @@ TEAM_MAPPINGS: Dict[str, list[str]] = {
     "west-ham-united": ["West Ham", "West Ham United", "West Ham United FC"],
     "wolverhampton-wanderers": ["Wolverhampton Wanderers", "Wolverhampton Wanderers FC", "Wolves"],
     "cardiff-city": ["Cardiff", "Cardiff City"],
+    "birmingham-city": ["Birmingham", "Birmingham City", "Birmingham City FC"],
+    "blackburn-rovers": ["Blackburn", "Blackburn Rovers", "Blackburn Rovers FC"],
+    "bolton-wanderers": ["Bolton", "Bolton Wanderers", "Bolton Wanderers FC"],
+    "charlton-athletic": ["Charlton", "Charlton Athletic", "Charlton Athletic FC"],
+    "hull-city": ["Hull", "Hull City", "Hull City FC"],
+    "middlesbrough": ["Middlesbrough", "Middlesbrough FC"],
+    "portsmouth": ["Portsmouth", "Portsmouth FC"],
+    "queens-park-rangers": ["QPR", "Queens Park Rangers", "Queens Park Rangers FC"],
+    "reading": ["Reading", "Reading FC"],
+    "stoke-city": ["Stoke", "Stoke City", "Stoke City FC"],
+    "swansea-city": ["Swansea", "Swansea City", "Swansea City FC"],
+    "wigan-athletic": ["Wigan", "Wigan Athletic", "Wigan Athletic FC"],
 
     # ======================== SPAIN ========================
     "atletico-madrid": ["Atletico Madrid", "Club Atlético de Madrid", "Atlético Madrid", "Ath Madrid", "Atl Madrid"],
@@ -89,6 +101,12 @@ TEAM_MAPPINGS: Dict[str, list[str]] = {
     "sevilla": ["Sevilla", "Sevilla FC", "Seville"],
     "valencia": ["Valencia", "Valencia CF"],
     "villarreal": ["Villarreal", "Villarreal CF"],
+    "deportivo-la-coruna": ["La Coruna", "Deportivo La Coruña", "Deportivo", "Dep. La Coruña"],
+    "malaga": ["Malaga", "Málaga CF", "Málaga"],
+    "racing-santander": ["Santander", "Racing Santander", "Racing de Santander"],
+    "real-zaragoza": ["Zaragoza", "Real Zaragoza"],
+    "recreativo-huelva": ["Recreativo", "Recreativo de Huelva"],
+    "sporting-gijon": ["Sp Gijon", "Sporting Gijón", "Sporting de Gijón"],
 
     # ======================== ITALY ========================
     "ac-milan": ["AC Milan", "Milan", "A.C. Milan"],
@@ -123,6 +141,13 @@ TEAM_MAPPINGS: Dict[str, list[str]] = {
     "torino": ["Torino", "Torino FC"],
     "udinese": ["Udinese", "Udinese Calcio"],
     "venezia": ["Venezia", "Venezia FC"],
+    "catania": ["Catania", "Calcio Catania"],
+    "cesena": ["Cesena", "AC Cesena"],
+    "livorno": ["Livorno", "AS Livorno Calcio", "AS Livorno"],
+    "messina": ["Messina", "ACR Messina"],
+    "palermo": ["Palermo", "US Città di Palermo", "US Palermo"],
+    "reggina": ["Reggina", "Reggina Calcio"],
+    "siena": ["Siena", "AC Siena", "ACN Siena", "Robur Siena"],
 
     # ======================== GERMANY ========================
     "augsburg": ["Augsburg", "FC Augsburg"],
@@ -154,6 +179,9 @@ TEAM_MAPPINGS: Dict[str, list[str]] = {
     "union-berlin": ["Union Berlin", "1. FC Union Berlin"],
     "werder-bremen": ["Werder Bremen", "SV Werder Bremen"],
     "wolfsburg": ["Wolfsburg", "VfL Wolfsburg"],
+    "energie-cottbus": ["Cottbus", "Energie Cottbus", "FC Energie Cottbus"],
+    "hansa-rostock": ["Hansa Rostock", "FC Hansa Rostock"],
+    "kaiserslautern": ["Kaiserslautern", "1. FC Kaiserslautern"],
 
     # ======================== FRANCE ========================
     "ajaccio": ["Ajaccio", "AC Ajaccio"],
@@ -201,6 +229,7 @@ TEAM_MAPPINGS: Dict[str, list[str]] = {
     "grenoble": ["Grenoble", "Grenoble Foot 38"],
     "niort": ["Niort", "Chamois Niortais"],
     "quevilly-rouen": ["Quevilly Rouen", "QRM", "Quevilly-Rouen Métropole"],
+    "evian-thonon-gaillard": ["Evian Thonon Gaillard", "ETG FC", "Evian TG"],
 
     # ======================== NETHERLANDS ========================
     "ajax": ["Ajax", "AFC Ajax"],

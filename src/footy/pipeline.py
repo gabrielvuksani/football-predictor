@@ -398,7 +398,7 @@ def score_finished_predictions(verbose: bool = True) -> dict:
 
         ll = -math.log(max(outcome_prob, 1e-15))
         brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2
-                     for i, p in enumerate(probs))
+                     for i, p in enumerate(probs)) / 3
         correct = predicted == outcome
 
         # Goal prediction accuracy

@@ -102,7 +102,11 @@ def learn_conversion_rates(con: duckdb.DuckDBPyConnection) -> dict:
             continue
         off_target = shots - sot
         on_target_rate = goals / sot if sot > 0 else 0.10
-        off_target_rate = max(0, (goals - sot * on_target_rate)) / off_target if off_target > 0 else 0.0
+        # Goals from off-target shots = total goals - goals attributable to on-target shots
+        # Use a conservative estimate: SOT conversion typically accounts for most goals
+        sot_goals = sot * on_target_rate
+        off_target_goals = max(0, goals - sot_goals) if off_target > 0 else 0.0
+        off_target_rate = off_target_goals / off_target if off_target > 0 else 0.0
         # Clamp off-target to a sane range (can be noisy with small data)
         off_target_rate = max(0.005, min(0.05, off_target_rate)) if off_target > 0 else 0.02
 

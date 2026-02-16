@@ -379,7 +379,10 @@ class ContinuousTrainingManager:
         )
 
         # ---- Deploy or rollback ----
-        improved = record.get("improvement_pct", 0) >= 0 or force
+        threshold = self.config.get("retraining_schedules", {}).get(
+            "v8_council", {}
+        ).get("performance_threshold_improvement", 0.01)
+        improved = record.get("improvement_pct", 0) >= threshold or force
         if improved:
             deploy = self.deploy_model(new_version, "v8_council", force=True)
             if verbose:

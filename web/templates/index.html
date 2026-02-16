@@ -459,7 +459,7 @@
                   <div class="section-label"><span class="icon">🎯</span> Poisson Analysis</div>
                   <div class="glass poisson-grid">
                     <div class="poisson-cell">
-                      <div class="poisson-val" x-text="md.poisson.predicted_score || '—'"></div>
+                      <div class="poisson-val" x-text="Array.isArray(md.poisson.predicted_score) ? md.poisson.predicted_score.join(' - ') : (md.poisson.predicted_score || '—')"></div>
                       <div class="poisson-lbl">Predicted Score</div>
                     </div>
                     <div class="poisson-cell">

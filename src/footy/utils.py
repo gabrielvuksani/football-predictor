@@ -48,6 +48,6 @@ def compute_metrics(
     logloss = float(np.mean(-np.log(P[np.arange(len(y)), y] + eps)))
     Y = np.zeros_like(P)
     Y[np.arange(len(y)), y] = 1.0
-    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
+    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1) / 3))
     accuracy = float(np.mean(np.argmax(P, axis=1) == y))
     return {"logloss": logloss, "brier": brier, "accuracy": accuracy}

@@ -16,7 +16,7 @@ def go(skip_history: bool = False):
     Runs: history → ingest → extras → odds → train (Elo+Poisson) →
           train-council → predict-council → score → compute-h2h + xG
 
-    v7 council is the unified model with 6 experts + meta-learner.
+    v8 council is the unified model with 8 experts + meta-learner.
     """
     from footy.db import connect
     t0 = time.perf_counter()
@@ -67,7 +67,7 @@ def go(skip_history: bool = False):
     state = _pipeline().refit_poisson(verbose=True)
     console.print(f"  Elo: {n_elo} matches | Poisson: {len(state.get('teams', []))} teams")
 
-    step(4, "Training council model (6 experts + meta-learner)...")
+    step(4, "Training council model (8 experts + meta-learner)...")
     con = connect()
     rc = _council()[0](con, eval_days=365, verbose=True)
     console.print(f"  council: {rc}")

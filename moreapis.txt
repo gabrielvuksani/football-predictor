@@ -1,0 +1,298 @@
+SOCCER DATA APIs (FREE / FREE-TIER) — VERIFIED & LAYOUTS
+Date verified: 2026-02-16 (America/Toronto)
+
+How to read this file:
+- “Public (no key)” = can be called immediately (still respect rate limits / fair use).
+- “Key required” = free tier exists but requires an API key/token.
+- “Layout” = base URL + endpoint patterns + example requests.
+- “What you can get” = practical feature list for soccer (H2H, stats, injuries, lineups, etc).
+
+# ========================================================
+SECTION 1) PUBLIC (NO KEY) — WORKING OPTIONS
+
+1. Fantasy Premier League (FPL) “unofficial official” endpoints (Premier League only)
+   Status: PUBLIC (no key) — reachable
+   Best for: injuries/availability flags (PL), fixtures, teams, players, live GW stats, some lineup-ish info via minutes/starts
+   Not for: other leagues, official starting XI before kickoff (it’s more fantasy-centric)
+
+Base URL:
+- [https://fantasy.premierleague.com/api/](https://fantasy.premierleague.com/api/)
+
+Layout (public endpoints you can hit without login):
+- GET /bootstrap-static/
+  (master data: teams, players “elements”, element_types, events/gameweeks, etc.)
+  Example: [https://fantasy.premierleague.com/api/bootstrap-static/](https://fantasy.premierleague.com/api/bootstrap-static/)
+- GET /fixtures/
+  Example: [https://fantasy.premierleague.com/api/fixtures/](https://fantasy.premierleague.com/api/fixtures/)
+  Common filters:
+  - ?event={gw}
+    Example: [https://fantasy.premierleague.com/api/fixtures/?event=1](https://fantasy.premierleague.com/api/fixtures/?event=1)
+- GET /event/{gw}/live/
+  (live per-player stats for a gameweek)
+  Example: [https://fantasy.premierleague.com/api/event/1/live/](https://fantasy.premierleague.com/api/event/1/live/)
+- GET /element-summary/{elementId}/
+  (per-player history + fixtures)
+  Example: [https://fantasy.premierleague.com/api/element-summary/1/](https://fantasy.premierleague.com/api/element-summary/1/)
+- GET /entry/{entryId}/
+  (public team info for a manager)
+  Example: [https://fantasy.premierleague.com/api/entry/123456/](https://fantasy.premierleague.com/api/entry/123456/)
+- GET /entry/{entryId}/history/
+  Example: [https://fantasy.premierleague.com/api/entry/123456/history/](https://fantasy.premierleague.com/api/entry/123456/history/)
+- GET /entry/{entryId}/transfers/
+  Example: [https://fantasy.premierleague.com/api/entry/123456/transfers/](https://fantasy.premierleague.com/api/entry/123456/transfers/)
+- GET /entry/{entryId}/event/{gw}/picks/
+  Example: [https://fantasy.premierleague.com/api/entry/123456/event/1/picks/](https://fantasy.premierleague.com/api/entry/123456/event/1/picks/)
+- GET /leagues-classic/{leagueId}/standings/
+  Example: [https://fantasy.premierleague.com/api/leagues-classic/123456/standings/](https://fantasy.premierleague.com/api/leagues-classic/123456/standings/)
+
+What you can get (PL only):
+- Player list + IDs + positions + team mapping
+- “Injury status / availability” style fields (chance_of_playing, status flags, news blurbs)
+- Fixtures + results
+- Live GW player stats (minutes, goals, assists, bonus, etc.)
+- Historical player performance (per match, per season)
+- Public manager team rosters + transfers + picks
+
+# ========================================================
+SECTION 2) KEY REQUIRED (FREE TIER EXISTS) — YOUR CURRENT STACK + GOOD ADDITIONS
+
+1. [football-data.org](http://football-data.org) (v4)
+   Status: KEY REQUIRED — docs clearly maintained; free tier exists
+   Best for: structured competitions/teams/matches + lineups/stats where available + built-in match “head2head”
+   Not for: reliable injuries feed (not the focus)
+
+Base URL:
+- [https://api.football-data.org/v4](https://api.football-data.org/v4)
+
+API KEY: 0d45897458e64b358fef21a46181b00d
+
+Important “layout” concept:
+- Match LIST endpoints often return “folded” matches by default.
+- You can request deeper detail with headers (on match list subresources): 
+  - X-Unfold-Lineups: true|false
+  - X-Unfold-Bookings: true|false
+  - X-Unfold-Subs: true|false
+  - X-Unfold-Goals: true|false
+
+Layout (common endpoints):
+- GET /competitions
+  Example: [https://api.football-data.org/v4/competitions](https://api.football-data.org/v4/competitions)
+- GET /competitions/{code}
+  Example: [https://api.football-data.org/v4/competitions/PL](https://api.football-data.org/v4/competitions/PL)
+- GET /competitions/{code}/matches
+  Example: [https://api.football-data.org/v4/competitions/PL/matches?matchday=11](https://api.football-data.org/v4/competitions/PL/matches?matchday=11)
+- GET /competitions/{code}/standings
+  Example: [https://api.football-data.org/v4/competitions/DED/standings](https://api.football-data.org/v4/competitions/DED/standings)
+- GET /competitions/{code}/teams
+  Example: [https://api.football-data.org/v4/competitions/PL/teams](https://api.football-data.org/v4/competitions/PL/teams)
+- GET /competitions/{code}/scorers
+  Example: [https://api.football-data.org/v4/competitions/SA/scorers](https://api.football-data.org/v4/competitions/SA/scorers)
+- GET /teams/{teamId}
+  Example: [https://api.football-data.org/v4/teams/90](https://api.football-data.org/v4/teams/90)
+- GET /teams/{teamId}/matches
+  Example: [https://api.football-data.org/v4/teams/65/matches?status=FINISHED&limit=1](https://api.football-data.org/v4/teams/65/matches?status=FINISHED&limit=1)
+- GET /matches
+  Example: [https://api.football-data.org/v4/matches](https://api.football-data.org/v4/matches)   (today’s matches)
+- GET /matches/{matchId}
+  Example: [https://api.football-data.org/v4/matches/330299](https://api.football-data.org/v4/matches/330299)
+- GET /matches/{matchId}/head2head
+  Example: [https://api.football-data.org/v4/matches/330299/head2head](https://api.football-data.org/v4/matches/330299/head2head)
+
+What you can get:
+- Competitions, seasons, match schedules, results, standings
+- Team details incl. squad list, coach
+- Match details can include: 
+  - starting XI + bench (lineups)
+  - formation, stats, goals, cards, substitutions (depending on competition + unfolding)
+- Built-in head-to-head for a match pairing (/head2head)
+
+API-FOOTBALL ([api-sports.io](http://api-sports.io) / [api-football.com](http://api-football.com))  [YOU ALREADY USE]
+Status: KEY REQUIRED — free tier exists (commonly 100 req/day)
+Best for: broad coverage across leagues + injuries + lineups + H2H + odds (depending on plan)
+Not for: “totally free unlimited”; coverage varies by competition
+
+Base URL:
+- [https://v3.football.api-sports.io/](https://v3.football.api-sports.io/)
+
+API KEY: 8952e9c9f1a8e33f67a5d68c3e9655e3
+
+Layout (high-value soccer endpoints; query-driven):
+- GET /leagues
+  Example: [https://v3.football.api-sports.io/leagues?current=true](https://v3.football.api-sports.io/leagues?current=true)
+- GET /standings
+  Example: [https://v3.football.api-sports.io/standings?league=39&season=2021](https://v3.football.api-sports.io/standings?league=39&season=2021)
+- GET /fixtures
+  Examples:
+  - Live: [https://v3.football.api-sports.io/fixtures?live=all](https://v3.football.api-sports.io/fixtures?live=all)
+  - By date: [https://v3.football.api-sports.io/fixtures?date=2019-10-22](https://v3.football.api-sports.io/fixtures?date=2019-10-22)
+  - By season+league: [https://v3.football.api-sports.io/fixtures?season=2021&league=78](https://v3.football.api-sports.io/fixtures?season=2021&league=78)
+- GET /fixtures/headtohead
+  (H2H is supported by API-FOOTBALL; exact params depend on docs — often team ids like h2h=team1-team2)
+- GET /lineups
+  Example pattern:
+  - [https://v3.football.api-sports.io/lineups?fixture={fixtureId}](https://v3.football.api-sports.io/lineups?fixture=%7BfixtureId%7D)
+  - optional filters: &team={teamId}, &player={playerId}
+- GET /injuries
+  Example: [https://v3.football.api-sports.io/injuries?team=85&season=2020](https://v3.football.api-sports.io/injuries?team=85&season=2020)
+- GET /predictions
+  Example: [https://v3.football.api-sports.io/predictions?fixture=198772](https://v3.football.api-sports.io/predictions?fixture=198772)
+- GET /players/squads
+  Example: [https://v3.football.api-sports.io/players/squads?team=33](https://v3.football.api-sports.io/players/squads?team=33)
+
+What you can get:
+- Leagues, seasons, teams, standings
+- Fixtures + live scores + events
+- Lineups (when provided by competition; often close to kickoff)
+- Injuries / sidelined-type endpoints
+- Player data + squads + transfers (plan dependent)
+- H2H and statistics/predictions (plan dependent)
+- Odds endpoints (plan dependent)
+
+Sportmonks Football API (v3)
+Status: KEY REQUIRED — has a Free plan (limited league access)
+Best for: lineups + “expected lineups” features + rich soccer entities (if your target leagues are included)
+Free-tier caveat: free access is limited (Sportmonks states Danish Superliga + Scottish Premiership for free plan)
+
+Base URL:
+- [https://api.sportmonks.com/v3/football](https://api.sportmonks.com/v3/football)
+
+API KEY: wDCmQXDwcpg84qOsj7iM7ku1zEtdEMjHaFjFWjAgX0J4HrV1VqgXJ0qxHrxX
+
+Layout (starter endpoints; tons more exist):
+- GET /leagues
+  Example: [https://api.sportmonks.com/v3/football/leagues](https://api.sportmonks.com/v3/football/leagues)
+- GET /fixtures
+  Example: [https://api.sportmonks.com/v3/football/fixtures?api_token=YOUR_TOKEN](https://api.sportmonks.com/v3/football/fixtures?api_token=YOUR_TOKEN)
+  (The docs also show: [https://api.sportmonks.com/v3/football/fixtures](https://api.sportmonks.com/v3/football/fixtures) as the base path)
+
+Includes / “expansions” concept:
+- Sportmonks uses “includes” to attach nested data (example: lineups include). 
+  - You typically do: /fixtures/{id}?include=lineups
+
+What you can get (depends on plan + coverage):
+- Fixtures + results + live match events
+- Standings
+- Team squads, coaches, referees
+- Lineups + formations
+- Odds + predictions add-ons (plan dependent)
+- Expected lineups (premium add-on)
+1. ScoreBat Video API  [YOU ALREADY USE? If not, it’s a free way to get highlight metadata]
+   Status: TOKEN REQUIRED — free plan exists
+   Best for: highlight clips metadata (videos) + match listing by competition/team
+   Not for: injuries/lineups
+
+Base URL (as documented by ScoreBat):
+- [https://www.scorebat.com/video-api/](https://www.scorebat.com/video-api/)
+
+Layout (typical usage patterns shown in ScoreBat docs):
+- GET /video-api/v3/?token=YOUR_TOKEN
+- Competition feeds + team feeds are referenced in docs (token-based)
+  (ScoreBat’s docs page is the definitive reference for the exact URL variations.)
+
+What you can get:
+- Video highlights metadata + links
+- Match listing (as part of feed)
+- Competition/team-oriented feeds
+
+The Odds API (v4)  [YOU ALREADY USE]
+Status: KEY REQUIRED — free tier exists (rate-limited)
+Best for: odds/markets (not lineups/injuries)
+Not for: soccer match stats beyond scores/odds context
+
+Base URL:
+- [https://api.the-odds-api.com](https://api.the-odds-api.com)
+
+API KEY: a89ee21ecfb6046154eb489a7bbd5698
+
+Layout (core endpoints):
+- GET /v4/sports/?apiKey={apiKey}
+- GET /v4/sports/{sport}/odds/?apiKey={apiKey}&regions=...&markets=...&oddsFormat=...
+- GET /v4/sports/{sport}/scores/?apiKey={apiKey}&daysFrom=...
+- GET /v4/sports/{sport}/events?apiKey={apiKey}
+- GET /v4/sports/{sport}/events/{eventId}/odds?apiKey={apiKey}&regions=...&markets=...
+
+What you can get:
+- Sport catalog + keys (including soccer keys)
+- Upcoming events + bookmaker odds
+- Scores endpoint (limited score info; odds-centric)
+- Historical odds endpoints exist (often not free / quota-heavy depending on plan)
+
+TheSportsDB  [YOU ALREADY USE]
+Status: KEY IN URL — free “test key” style access exists; v1 is “old but still used”
+Best for: teams/leagues/events metadata, some fixtures/results, artwork/badges
+Not for: reliable injuries, official lineups
+
+Base URL (v1):
+- [https://www.thesportsdb.com/api/v1/json/{APIKEY}/](https://www.thesportsdb.com/api/v1/json/%7BAPIKEY%7D/)
+
+Common “free key” for examples:
+- {APIKEY} = 1 (commonly used in docs/examples)
+
+Layout (useful endpoints):
+- GET lookup team by id:
+  /lookupteam.php?id={teamId}
+  Example: [https://www.thesportsdb.com/api/v1/json/1/lookupteam.php?id=133604](https://www.thesportsdb.com/api/v1/json/1/lookupteam.php?id=133604)
+- GET lookup player by id:
+  /lookupplayer.php?id={playerId}
+- GET event details by id:
+  /lookupevent.php?id={eventId}
+- GET next events by team id:
+  /eventsnext.php?id={teamId}
+- GET last events by team id:
+  /eventslast.php?id={teamId}
+- GET next events by league id:
+  /eventsnextleague.php?id={leagueId}
+- GET past events by league id:
+  /eventspastleague.php?id={leagueId}
+- GET search teams by name:
+  /searchteams.php?t={TeamName}
+
+What you can get:
+- Team/league/player metadata + artwork
+- Past/next events (fixtures/results depending on endpoint)
+- Event details (varies by sport/league data completeness)
+1. [football-data.co.uk](http://football-data.co.uk) (CSV feeds; not a typical REST API)  [YOU ALREADY USE]
+   Status: PUBLIC downloads — actively updated datasets
+   Best for: historical match results + betting odds + some match stats (shots, corners, cards)
+   Not for: injuries/lineups (generally not included)
+
+Base (examples of direct file download):
+- [https://www.football-data.co.uk/mmz4281/{season}/{division}.csv](https://www.football-data.co.uk/mmz4281/%7Bseason%7D/%7Bdivision%7D.csv)
+
+Example:
+- [https://www.football-data.co.uk/mmz4281/2223/E0.csv](https://www.football-data.co.uk/mmz4281/2223/E0.csv)
+
+What you can get (varies by league/season file):
+- Full-time / half-time score
+- Match stats (shots, shots on target, corners, fouls, cards) depending on league file
+- Bookmaker odds columns (varies by bookmaker and season)
+- Great for modeling/backtests
+
+# ========================================================
+SECTION 4) QUICK “WHO HAS WHAT?” (CHEAT SHEET)
+
+Head-to-head (H2H):
+- [football-data.org](http://football-data.org): /matches/{id}/head2head
+- API-FOOTBALL: supports H2H (endpoint/query depends on their docs)
+- TheSportsDB: not a clean H2H primitive; you can derive from event history
+
+Lineups:
+- [football-data.org](http://football-data.org): match endpoint includes lineup/bench; match lists can unfold lineups via headers
+- API-FOOTBALL: /lineups (availability depends on competition and is often near kickoff)
+- Sportmonks: lineups + expected lineups (plan/coverage dependent)
+
+Injuries:
+- FPL: PL injuries/availability style fields (fantasy-oriented)
+- API-FOOTBALL: /injuries
+- Sportmonks: injuries/suspensions exist (plan/coverage dependent)
+- [football-data.org](http://football-data.org): not primarily an injuries feed
+
+Odds:
+- The Odds API: odds/markets focus
+- API-FOOTBALL: odds endpoints (plan dependent)
+- [football-data.co.uk](http://football-data.co.uk): historical bookmaker odds columns in CSVs
+
+Advanced stats:
+- [football-data.co.uk](http://football-data.co.uk): rich historical columns (but “CSV data feed”, not a REST API)
+- [football-data.org](http://football-data.org): match statistics (in match endpoint and unfolded lists) where provided
+- API-FOOTBALL / Sportmonks: broad stats coverage (plan dependent)

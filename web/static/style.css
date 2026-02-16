@@ -476,7 +476,7 @@ a { color: inherit; text-decoration: none; }
 .table-comp-pills { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .standings-table { overflow: hidden; }
 .standings-head {
-  display: grid; grid-template-columns: 36px 1fr repeat(5, 32px) 44px 44px;
+  display: grid; grid-template-columns: 36px 1fr repeat(4, 32px) 44px 44px;
   padding: 0.6rem 0.85rem;
   font-size: 0.65rem; font-weight: 700; color: var(--text-3);
   text-transform: uppercase; letter-spacing: 0.06em;
@@ -484,7 +484,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface-0);
 }
 .standings-row {
-  display: grid; grid-template-columns: 36px 1fr repeat(5, 32px) 44px 44px;
+  display: grid; grid-template-columns: 36px 1fr repeat(4, 32px) 44px 44px;
   padding: 0.55rem 0.85rem;
   font-size: 0.82rem;
   border-bottom: 1px solid var(--border);
@@ -604,7 +604,7 @@ a { color: inherit; text-decoration: none; }
   .hero-teams { gap: 0.5rem; }
   .hero-team-name { font-size: 1.05rem; }
   .hero-score { font-size: 1.8rem; }
-  .standings-head, .standings-row { grid-template-columns: 30px 1fr repeat(5, 28px) 38px 38px; font-size: 0.75rem; padding: 0.45rem 0.65rem; }
+  .standings-head, .standings-row { grid-template-columns: 30px 1fr repeat(4, 28px) 38px 38px; font-size: 0.75rem; padding: 0.45rem 0.65rem; }
   .st-team { font-size: 0.75rem; }
 }
 @media (max-width: 640px) {

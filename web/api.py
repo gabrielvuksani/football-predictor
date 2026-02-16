@@ -38,6 +38,16 @@ async def lifespan(app: FastAPI):
     yield  # no persistent DB connection — opened per-request instead
 
 app = FastAPI(title="Footy Predictor", lifespan=lifespan)
+
+# CORS — allow browser requests from any origin (single-user tool)
+from starlette.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
 
@@ -262,7 +272,7 @@ async def api_h2h(match_id: int):
 
     try:
         from footy.h2h import get_h2h_any_venue
-        result = get_h2h_any_venue(con(), home, away, limit=10)
+        result = get_h2h_any_venue(db, home, away, limit=10)
 
         # format recent matches for JSON serialization
         recent = []

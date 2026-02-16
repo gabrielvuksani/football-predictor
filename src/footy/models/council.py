@@ -1251,8 +1251,8 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     """Construct the meta-feature matrix from expert results.
 
     Layout:
-        - Expert probs:          7 × 3 = 21
-        - Expert confidence:     7
+        - Expert probs:          N × 3  (N = 8 experts + DC pseudo-expert)
+        - Expert confidence:     N
         - Expert domain features: ~60-70
         - Conflict signals:      ~10
         - Competition encoding:  6 (ordinal league ID)
@@ -1274,7 +1274,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
             blocks.append(arr[:, None] if arr.ndim == 1 else arr)
 
     # 3. conflict / consensus signals
-    all_probs = np.stack([r.probs for r in results], axis=0)  # (6, n, 3)
+    all_probs = np.stack([r.probs for r in results], axis=0)  # (N_experts, n, 3)
     # variance across experts per outcome
     var_h = np.var(all_probs[:, :, 0], axis=0)
     var_d = np.var(all_probs[:, :, 1], axis=0)
@@ -1288,7 +1288,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     mean_probs = np.mean(all_probs, axis=0)
     ens_entropy = np.array([_entropy3(p) for p in mean_probs])
     # weighted consensus (confidence-weighted mean probability)
-    weights = np.stack([r.confidence for r in results], axis=0)  # (6, n)
+    weights = np.stack([r.confidence for r in results], axis=0)  # (N_experts, n)
     weights_sum = weights.sum(axis=0, keepdims=True) + 1e-12
     w_normed = weights / weights_sum
     weighted_probs = np.sum(
@@ -1436,6 +1436,16 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
             has_dc[i] = [1.0]
 
     # Append DC as pseudo-expert features
+    # Zero out DC features for training rows to prevent data leakage:
+    # the DC model was fit on training data, so its predictions on those
+    # rows are artificially accurate.  The meta-learner should only learn
+    # to trust DC from its (honest) test-set predictions.
+    train_idx = train_mask.to_numpy()
+    dc_probs[train_idx] = np.array([1 / 3, 1 / 3, 1 / 3])
+    dc_eg[train_idx] = 0.0
+    dc_o25[train_idx] = 0.0
+    has_dc[train_idx] = 0.0
+
     dc_result = ExpertResult(
         probs=dc_probs,
         confidence=has_dc.ravel(),
@@ -1479,7 +1489,7 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
     logloss = float(np.mean(-np.log(P[np.arange(len(yte)), yte] + eps)))
     Y = np.zeros_like(P)
     Y[np.arange(len(yte)), yte] = 1.0
-    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1)))
+    brier = float(np.mean(np.sum((P - Y) ** 2, axis=1) / 3))
     acc = float(np.mean(np.argmax(P, axis=1) == yte))
 
     # ECE (10-bin)
@@ -1748,7 +1758,7 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         o25_val = float(P_ou25[j, 1]) if P_ou25 is not None else o25_pois
 
         notes_dict = {
-            "model": "Expert Council (6 experts + meta-learner)",
+            "model": "Expert Council (8 experts + meta-learner)",
             "btts": round(btts_val, 3),
             "o25": round(o25_val, 3),
             "btts_poisson": round(btts_pois, 3),
