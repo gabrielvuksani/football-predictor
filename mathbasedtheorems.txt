@@ -1,0 +1,59 @@
+1) Time-decayed form / strength
+- EWMA time-decayed statistics (points, goals for/against, shots/xG if available).
+  Formula: s_t = α x_t + (1-α) s_{t-1}, with α = 1 - exp(-Δt/τ).
+  Do home/away splits.
+- Opponent-adjusted form: weight match contributions by opponent strength (Elo/table).
+- Schedule difficulty: rolling average opponent strength.
+- Rest/congestion: days since last match; matches in last 7/14/30 days; “3rd match in 7 days” flag.
+
+2) Stabilize noisy rates (Empirical Bayes shrinkage)
+- For any rate p = successes/n (win%, clean sheets, BTTS, over/under):
+  Beta-Binomial shrinkage: p_hat = (w + a)/(n + a + b)
+  Choose a,b from league-wide prior or fixed reasonable prior.
+- Use separate priors per league/season stage.
+
+3) Goal modeling (Poisson → upgrades)
+- Attack/defense model: estimate λ_home, λ_away using rolling attack/defense strengths + home advantage.
+- Add correlation adjustment (Dixon–Coles style) for low-score dependence (0–0, 1–0, 0–1).
+- Use Skellam distribution for goal difference features from λ_home, λ_away.
+- Monte Carlo simulation: draw scorelines many times to derive W/D/L, BTTS, O/U probabilities.
+
+4) Odds / market math (if odds exist)
+- Convert odds to implied probabilities: q_i = 1/odds_i
+- Remove margin (overround): p_i = q_i / Σ q_j
+- Work in log-odds: logit(p)=ln(p/(1-p))
+- Market-vs-model delta: Δ_i = logit(p_model_i) - logit(p_market_i)
+- Entropy/confidence: H(p) = -Σ p_i ln p_i
+- If multiple books: average in logit space or use median; compute dispersion as uncertainty.
+
+5) Council / ensemble math (expert disagreement + reliability)
+- Disagreement: variance across experts per outcome Var(p_e(outcome))
+- Pairwise deltas between experts; max-min spread; entropy of ensemble.
+- KL divergence expert→ensemble: D_KL(p^e || p^ens)
+- Dynamic expert weighting by recent proper loss:
+  w_e ∝ exp(-η * L_e), where L_e is rolling log loss or Brier.
+  Do this per league and with time decay.
+- Meta-learner inputs: include raw probs + logits + entropy + disagreement metrics + recency and league id.
+
+6) Calibration + evaluation (so probabilities mean something)
+- Use proper scoring rules: log loss and Brier score, tracked by league and time window.
+- Calibration curves by confidence buckets; reliability diagrams.
+- Post-hoc calibration options: isotonic regression / Platt scaling.
+- Add calibration features: “expected calibration error” proxy per league as a conditioning signal.
+- Use walk-forward (rolling window) backtests; forbid leakage by ensuring features only use data available pre-match.
+
+7) Injuries / lineups / rotation math (if available)
+- Availability index: sum over unavailable players of (minutes_share * importance_weight).
+- Lineup stability: Jaccard overlap J = |S_t ∩ S_{t-1}| / |S_t ∪ S_{t-1}|.
+- Rotation intensity: 1 - J (or starters changed count).
+- Fatigue proxy: team minutes load rolling sum if minutes are available; otherwise use congestion proxies.
+
+8) News math (if news volume exists)
+- News volume spike z-score: z_t = (m_t - μ)/σ over a baseline window.
+- Recency decay on z_t via EWMA.
+- Simple topic buckets (injury/coach/discipline/transfer) if headlines can be classified; use counts per bucket.
+
+9) Derived “match context” interactions (often high-signal)
+- Strength difference features: Elo_diff, form_diff, xG_diff, injury_diff, rest_diff.
+- Nonlinear transforms: tanh(Elo_diff/k), log(1+|diff|), piecewise bins.
+- Season stage: normalized matchweek; interactions with pressure bands (relegation/Europe).

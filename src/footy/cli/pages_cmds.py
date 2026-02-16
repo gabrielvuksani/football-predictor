@@ -70,7 +70,7 @@ def export(
         LEFT JOIN predictions p
           ON m.match_id = p.match_id AND p.model_version = 'v8_council'
         LEFT JOIN match_extras e ON m.match_id = e.match_id
-        WHERE m.status = 'TIMED'
+        WHERE m.status IN ('SCHEDULED', 'TIMED')
           AND m.utc_date >= CURRENT_DATE - INTERVAL {int(days)} DAY
           AND m.utc_date <= CURRENT_DATE + INTERVAL 30 DAY
         ORDER BY m.utc_date
@@ -99,7 +99,7 @@ def export(
 
     # ── 4. League tables ──────────────────────────────────────────────
     comps = db.execute(
-        "SELECT DISTINCT competition FROM matches WHERE status = 'TIMED'"
+        "SELECT DISTINCT competition FROM matches WHERE status IN ('SCHEDULED', 'TIMED')"
     ).fetchall()
     comp_list = sorted(set(c[0] for c in comps))
     for comp in comp_list:
@@ -417,7 +417,7 @@ def _build_stats(db) -> dict:
             SELECT
                 (SELECT COUNT(*) FROM matches) AS total,
                 (SELECT COUNT(*) FROM matches WHERE status = 'FINISHED') AS finished,
-                (SELECT COUNT(*) FROM matches WHERE status = 'TIMED') AS upcoming,
+                (SELECT COUNT(*) FROM matches WHERE status IN ('SCHEDULED', 'TIMED')) AS upcoming,
                 (SELECT COUNT(*) FROM predictions) AS predictions,
                 (SELECT COUNT(DISTINCT competition) FROM matches) AS leagues,
                 (SELECT COUNT(DISTINCT home_team) FROM matches) AS teams

@@ -161,7 +161,7 @@ class TrainingScheduler:
         Returns:
             Job configuration dict
         """
-        valid_types = ["ingest", "train_base", "train_council", "predict", "score"]
+        valid_types = ["ingest", "train_base", "train_council", "predict", "score", "retrain", "full_refresh"]
         if job_type not in valid_types:
             raise ValueError(f"Invalid job_type: {job_type}")
         
@@ -213,6 +213,8 @@ class TrainingScheduler:
             "train_council": self._job_train_council,
             "predict": self._job_predict,
             "score": self._job_score,
+            "retrain": self._job_retrain,
+            "full_refresh": self._job_full_refresh,
         }
         return job_funcs.get(job_type, self._job_ingest)
     
@@ -320,7 +322,51 @@ class TrainingScheduler:
             scored_count += 1
         
         return {"scored_predictions": scored_count}
-    
+
+    def _job_retrain(self, force: bool = False) -> dict:
+        """Auto-retrain using continuous_training.ModelManager.auto_retrain().
+
+        P1-8 fix: wires auto_retrain into the scheduler so continuous
+        training is no longer dead infrastructure.
+        """
+        try:
+            from footy.continuous_training import ModelManager
+            mgr = ModelManager()
+            result = mgr.auto_retrain(force=force, verbose=False)
+            return result
+        except Exception as e:
+            log.error("auto_retrain failed: %s", e)
+            return {"error": str(e)}
+
+    def _job_full_refresh(self) -> dict:
+        """Full refresh pipeline: ingest → extras → train → predict → score.
+
+        Equivalent to the CLI `refresh` command, wrapping all steps
+        into a single scheduled job.
+        """
+        results = {}
+        try:
+            results["ingest"] = self._job_ingest(days_back=30)
+        except Exception as e:
+            results["ingest_error"] = str(e)
+        try:
+            results["train_base"] = self._job_train_base()
+        except Exception as e:
+            results["train_base_error"] = str(e)
+        try:
+            results["train_council"] = self._job_train_council()
+        except Exception as e:
+            results["train_council_error"] = str(e)
+        try:
+            results["predict"] = self._job_predict()
+        except Exception as e:
+            results["predict_error"] = str(e)
+        try:
+            results["score"] = self._job_score()
+        except Exception as e:
+            results["score_error"] = str(e)
+        return results
+
     def remove_job(self, job_id: str) -> dict:
         """Remove a scheduled job"""
         # Remove from APScheduler

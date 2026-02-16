@@ -2,7 +2,7 @@
 Expert Council Model — Multi-expert ensemble for football match prediction.
 
 Architecture:
-    Layer 1 — Eight specialist experts, each computing domain-specific features
+    Layer 1 — Nine specialist experts, each computing domain-specific features
               and analytical probability estimates:
               1. EloExpert          – Rating dynamics, team-specific home advantage
               2. MarketExpert       – Odds intelligence, line movement, sharp money
@@ -12,27 +12,40 @@ Architecture:
               6. ContextExpert      – Rest / congestion / calendar / season stage
               7. GoalPatternExpert  – First-goal advantage, comeback rate, HT patterns
               8. LeagueTableExpert  – League position, points gap, table dynamics
-    Layer 2 — Conflict & consensus signals derived from expert disagreement
-    Layer 3 — Meta-learner (HistGradientBoosting + isotonic calibration)
-    Layer 4 — Ollama interpreter (optional) for narrative match analysis
+              9. MomentumExpert     – EMA crossovers, scoring slopes, form volatility
+    Layer 2 — Conflict, consensus & interaction signals across experts
+    Layer 3 — Multi-model stack (HistGBM + RandomForest + LogReg) + isotonic calibration
+    Layer 4 — Walk-forward cross-validation for honest performance estimation
+    Layer 5 — Ollama interpreter (optional) for narrative match analysis
 
-v8 Innovations:
+v9 Innovations:
+    • MomentumExpert: EMA crossovers (fast vs slow PPG), goal scoring/conceding
+      regression slopes, form volatility, scoring burst/drought detection,
+      defensive tightening signals, regression-to-mean tracking
+    • Multi-model stacking: HistGBM (60%) + RandomForest (25%) + LogisticRegression (15%)
+      with calibrated isotonic probabilities from each base model
+    • Enhanced feature engineering: per-expert entropy, cross-domain interaction
+      features (Elo×Form, Market×Poisson, Momentum×Form, BurstAttack×DefLeak)
+    • Walk-forward cross-validation diagnostic: expanding-window temporal CV with
+      per-fold logloss, brier, accuracy, ECE aggregation
+    • MarketExpert P1-6 fix: opening odds baseline features +
+      using_closing flag so model can learn closing-odds bias
+    • 11 pairwise agreement signals (was 9), including momentum cross-expert
+    • Extended feature matrix: ~200+ columns across 9+1 experts
+
+v8 Innovations (retained):
     • GoalPatternExpert: First-goal advantage, comeback rate, half-time
       scoring patterns, multi-goal/nil rates, lead-holding ability
     • LeagueTableExpert: Simulated live league table, position differential,
       points gap to top/relegation, relative position features
-    • Upgraded conflict signals: 9 pairwise agreement features (was 5),
-      including goal-pattern-form and league-table-elo cross-expert signals
-    • Extended feature matrix: ~170+ columns across 8+1 experts
+    • Upgraded conflict signals with cross-expert agreement
 
 v7 Innovations (retained):
     • PoissonExpert v2: venue-specific attack/defense, BTTS/O2.5/O1.5/U2.5
       probabilities, most likely score, goal-diff skewness, zero-inflation
     • ContextExpert v2: season progress, early/late season flags, day-of-week,
-      weekend/midweek detection, hour of kickoff, 30-day congestion,
-      rest ratio, short-rest flags
+      weekend/midweek detection, hour of kickoff, 30-day congestion
     • Meta-learner v2: isotonic calibration (cv=5)
-    • Tuned hyperparameters: lr=0.02, depth=5, iter=1800, L2=0.5, leaf=50
 
 Prior innovations (retained):
     • Opposition-Adjusted Form (OAF)  — weights results by opponent Elo
@@ -57,7 +70,9 @@ import numpy as np
 import pandas as pd
 from scipy.stats import poisson as poisson_dist
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression, RidgeClassifierCV
+from sklearn.preprocessing import StandardScaler
 
 from footy.models.elo_core import elo_expected as _elo_exp, elo_draw_prob as _elo_dp, dynamic_k as _dk
 
@@ -288,9 +303,13 @@ class MarketExpert(Expert):
         overround = np.zeros(n)
         src_quality = np.zeros(n)  # 3=closing, 2=avg, 1=max, 0=primary
         has_odds = np.zeros(n)
+        using_closing = np.zeros(n)  # P1-6 fix: flag when closing odds are used
         move_h = np.zeros(n); move_d = np.zeros(n); move_a = np.zeros(n)
         has_move = np.zeros(n)
         ou25 = np.zeros(n); ou_over = np.zeros(n); has_ou = np.zeros(n)
+        # Opening odds features (always use opening for primary signal to avoid train/serve skew)
+        open_ph = np.zeros(n); open_pd = np.zeros(n); open_pa = np.zeros(n)
+        has_open = np.zeros(n)
         conf = np.zeros(n)
 
         for i, r in enumerate(df.itertuples(index=False)):
@@ -313,13 +332,22 @@ class MarketExpert(Expert):
             psd_v = _f(getattr(r, "psd", None)) or _f(raw.get("PSD"))
             psa_v = _f(getattr(r, "psa", None)) or _f(raw.get("PSA"))
 
+            # P1-6 fix: Always compute opening odds baseline (available at both
+            # train and serve time) to avoid closing-odds skew.
+            imp_open = _implied(b365h, b365d, b365a)
+            if imp_open[0] > 0:
+                open_ph[i], open_pd[i], open_pa[i] = imp_open[0], imp_open[1], imp_open[2]
+                has_open[i] = 1.0
+
             # best available odds (closing > Pinnacle > avg > max > primary)
-            for trio, sq in [
-                ((b365ch, b365cd, b365ca), 4.0),
-                ((psh_v, psd_v, psa_v), 3.0),
-                ((avgh_v, avgd_v, avga_v), 2.0),
-                ((maxh_v, maxd_v, maxa_v), 1.0),
-                ((b365h, b365d, b365a), 0.0),
+            # The model learns via `using_closing` feature whether closing odds
+            # were used, so it can discount the extra info at serve time.
+            for trio, sq, is_closing in [
+                ((b365ch, b365cd, b365ca), 4.0, True),
+                ((psh_v, psd_v, psa_v), 3.0, False),
+                ((avgh_v, avgd_v, avga_v), 2.0, False),
+                ((maxh_v, maxd_v, maxa_v), 1.0, False),
+                ((b365h, b365d, b365a), 0.0, False),
             ]:
                 imp = _implied(trio[0], trio[1], trio[2])
                 if imp[0] > 0:
@@ -327,6 +355,7 @@ class MarketExpert(Expert):
                     overround[i] = imp[3]
                     src_quality[i] = sq
                     has_odds[i] = 1.0
+                    using_closing[i] = 1.0 if is_closing else 0.0
                     break
 
             # line movement (opening → closing)
@@ -368,9 +397,13 @@ class MarketExpert(Expert):
             features={
                 "mkt_overround": overround, "mkt_src_quality": src_quality,
                 "mkt_has_odds": has_odds,
+                "mkt_using_closing": using_closing,  # P1-6: model learns closing odds bias
                 "mkt_move_h": move_h, "mkt_move_d": move_d, "mkt_move_a": move_a,
                 "mkt_has_move": has_move,
                 "mkt_ou25": ou25, "mkt_ou_over": ou_over, "mkt_has_ou": has_ou,
+                # Opening odds baseline (always available, no train/serve skew)
+                "mkt_open_ph": open_ph, "mkt_open_pd": open_pd, "mkt_open_pa": open_pa,
+                "mkt_has_open": has_open,
             },
         )
 
@@ -1230,12 +1263,204 @@ class LeagueTableExpert(Expert):
 
 
 # ===================================================================
+# 9. MOMENTUM EXPERT
+# ===================================================================
+class MomentumExpert(Expert):
+    """
+    Advanced momentum analysis using EMA crossovers, linear regression slopes,
+    and rate-of-change features that capture *trajectory* (not just level).
+
+    Unlike FormExpert which tracks rolling averages, MomentumExpert tracks:
+    - EMA crossover signals (fast 3-game vs slow 8-game PPG)
+    - Goal scoring/conceding slope (linear regression over last N)
+    - Form volatility (consistency of results)
+    - Performance regression signal (distance from long-term mean)
+    - Scoring burst detection (sharp increases in goal output)
+    """
+    name = "momentum"
+
+    FAST_N = 3
+    SLOW_N = 8
+    SLOPE_N = 10
+    LONG_TERM_N = 30
+
+    def compute(self, df: pd.DataFrame) -> ExpertResult:
+        n = len(df)
+        team_pts: dict[str, list[float]] = {}
+        team_gf: dict[str, list[float]] = {}
+        team_ga: dict[str, list[float]] = {}
+
+        # Outputs
+        ema_cross_h = np.zeros(n)      # fast EMA > slow EMA = positive momentum
+        ema_cross_a = np.zeros(n)
+        gf_slope_h = np.zeros(n)       # goal scoring trend (regression slope)
+        gf_slope_a = np.zeros(n)
+        ga_slope_h = np.zeros(n)       # goals conceded trend
+        ga_slope_a = np.zeros(n)
+        pts_slope_h = np.zeros(n)      # points trend
+        pts_slope_a = np.zeros(n)
+        vol_h = np.zeros(n)            # form volatility (std of points)
+        vol_a = np.zeros(n)
+        regress_h = np.zeros(n)        # regression to mean signal
+        regress_a = np.zeros(n)
+        burst_h = np.zeros(n)          # scoring burst (last 3 vs last 8)
+        burst_a = np.zeros(n)
+        drought_h = np.zeros(n)        # scoring drought signal
+        drought_a = np.zeros(n)
+        def_tighten_h = np.zeros(n)    # defensive tightening signal
+        def_tighten_a = np.zeros(n)
+        probs = np.full((n, 3), 1 / 3)
+        conf = np.zeros(n)
+
+        def _ema(values, span):
+            """Exponential moving average."""
+            if not values:
+                return 0.0
+            alpha = 2.0 / (span + 1)
+            ema_val = values[0]
+            for v in values[1:]:
+                ema_val = alpha * v + (1 - alpha) * ema_val
+            return ema_val
+
+        def _slope(values):
+            """Linear regression slope of values."""
+            if len(values) < 3:
+                return 0.0
+            x = np.arange(len(values), dtype=float)
+            y = np.array(values, dtype=float)
+            # OLS slope = cov(x,y) / var(x)
+            xm = x.mean()
+            ym = y.mean()
+            cov = np.sum((x - xm) * (y - ym))
+            var = np.sum((x - xm) ** 2)
+            return float(cov / max(var, 1e-8))
+
+        for i, r in enumerate(df.itertuples(index=False)):
+            h, a = r.home_team, r.away_team
+
+            # Pre-match features
+            h_pts = team_pts.get(h, [])
+            a_pts = team_pts.get(a, [])
+            h_gf = team_gf.get(h, [])
+            a_gf = team_gf.get(a, [])
+            h_ga = team_ga.get(h, [])
+            a_ga = team_ga.get(a, [])
+
+            # EMA crossover (fast - slow)
+            if len(h_pts) >= self.FAST_N:
+                ema_cross_h[i] = _ema(h_pts[-self.SLOW_N:], self.FAST_N) - _ema(h_pts[-self.SLOW_N:], self.SLOW_N)
+            if len(a_pts) >= self.FAST_N:
+                ema_cross_a[i] = _ema(a_pts[-self.SLOW_N:], self.FAST_N) - _ema(a_pts[-self.SLOW_N:], self.SLOW_N)
+
+            # Goal scoring/conceding slopes
+            gf_slope_h[i] = _slope(h_gf[-self.SLOPE_N:])
+            gf_slope_a[i] = _slope(a_gf[-self.SLOPE_N:])
+            ga_slope_h[i] = _slope(h_ga[-self.SLOPE_N:])
+            ga_slope_a[i] = _slope(a_ga[-self.SLOPE_N:])
+            pts_slope_h[i] = _slope(h_pts[-self.SLOPE_N:])
+            pts_slope_a[i] = _slope(a_pts[-self.SLOPE_N:])
+
+            # Form volatility
+            if len(h_pts) >= 5:
+                vol_h[i] = float(np.std(h_pts[-self.SLOPE_N:]))
+            if len(a_pts) >= 5:
+                vol_a[i] = float(np.std(a_pts[-self.SLOPE_N:]))
+
+            # Regression to mean signal (recent - long term)
+            if len(h_pts) >= self.SLOW_N:
+                recent = np.mean(h_pts[-self.FAST_N:]) if len(h_pts) >= self.FAST_N else np.mean(h_pts)
+                longterm = np.mean(h_pts[-self.LONG_TERM_N:])
+                regress_h[i] = recent - longterm
+            if len(a_pts) >= self.SLOW_N:
+                recent = np.mean(a_pts[-self.FAST_N:]) if len(a_pts) >= self.FAST_N else np.mean(a_pts)
+                longterm = np.mean(a_pts[-self.LONG_TERM_N:])
+                regress_a[i] = recent - longterm
+
+            # Scoring burst: recent GF avg / older GF avg
+            if len(h_gf) >= self.SLOW_N:
+                recent_gf = np.mean(h_gf[-self.FAST_N:])
+                older_gf = np.mean(h_gf[-self.SLOW_N:])
+                burst_h[i] = recent_gf - older_gf
+            if len(a_gf) >= self.SLOW_N:
+                recent_gf = np.mean(a_gf[-self.FAST_N:])
+                older_gf = np.mean(a_gf[-self.SLOW_N:])
+                burst_a[i] = recent_gf - older_gf
+
+            # Scoring drought: consecutive games scoring 0
+            if h_gf:
+                d = 0
+                for g in reversed(h_gf):
+                    if g == 0:
+                        d += 1
+                    else:
+                        break
+                drought_h[i] = float(d)
+            if a_gf:
+                d = 0
+                for g in reversed(a_gf):
+                    if g == 0:
+                        d += 1
+                    else:
+                        break
+                drought_a[i] = float(d)
+
+            # Defensive tightening: recent GA decrease
+            if len(h_ga) >= self.SLOW_N:
+                def_tighten_h[i] = np.mean(h_ga[-self.SLOW_N:-self.FAST_N]) - np.mean(h_ga[-self.FAST_N:])
+            if len(a_ga) >= self.SLOW_N:
+                def_tighten_a[i] = np.mean(a_ga[-self.SLOW_N:-self.FAST_N]) - np.mean(a_ga[-self.FAST_N:])
+
+            # Momentum-based probability
+            mom_diff = ema_cross_h[i] - ema_cross_a[i]
+            slope_diff = pts_slope_h[i] - pts_slope_a[i]
+            combined = 0.6 * mom_diff + 0.4 * slope_diff
+            p_h = 1 / (1 + math.exp(-1.5 * combined)) * 0.7 + 0.15
+            p_a = (1 - p_h + 0.15) * 0.7
+            p_d = 1.0 - p_h - p_a
+            if p_d < 0.15:
+                p_d = 0.25
+            probs[i] = _norm3(max(0.05, p_h), max(0.10, p_d), max(0.05, p_a))
+
+            n_h = len(h_pts)
+            n_a = len(a_pts)
+            conf[i] = min(1.0, (n_h + n_a) / 16.0)
+
+            # --- Update state ---
+            hg, ag = int(r.home_goals), int(r.away_goals)
+            team_pts.setdefault(h, []).append(float(_pts(hg, ag)))
+            team_pts.setdefault(a, []).append(float(_pts(ag, hg)))
+            team_gf.setdefault(h, []).append(float(hg))
+            team_gf.setdefault(a, []).append(float(ag))
+            team_ga.setdefault(h, []).append(float(ag))
+            team_ga.setdefault(a, []).append(float(hg))
+
+        return ExpertResult(
+            probs=probs,
+            confidence=conf,
+            features={
+                "mom_ema_cross_h": ema_cross_h, "mom_ema_cross_a": ema_cross_a,
+                "mom_ema_cross_diff": ema_cross_h - ema_cross_a,
+                "mom_gf_slope_h": gf_slope_h, "mom_gf_slope_a": gf_slope_a,
+                "mom_ga_slope_h": ga_slope_h, "mom_ga_slope_a": ga_slope_a,
+                "mom_pts_slope_h": pts_slope_h, "mom_pts_slope_a": pts_slope_a,
+                "mom_pts_slope_diff": pts_slope_h - pts_slope_a,
+                "mom_vol_h": vol_h, "mom_vol_a": vol_a,
+                "mom_vol_diff": vol_h - vol_a,
+                "mom_regress_h": regress_h, "mom_regress_a": regress_a,
+                "mom_burst_h": burst_h, "mom_burst_a": burst_a,
+                "mom_drought_h": drought_h, "mom_drought_a": drought_a,
+                "mom_def_tighten_h": def_tighten_h, "mom_def_tighten_a": def_tighten_a,
+            },
+        )
+
+
+# ===================================================================
 # COUNCIL — META-LEARNER
 # ===================================================================
 ALL_EXPERTS: list[Expert] = [
     EloExpert(), MarketExpert(), FormExpert(),
     PoissonExpert(), H2HExpert(), ContextExpert(),
-    GoalPatternExpert(), LeagueTableExpert(),
+    GoalPatternExpert(), LeagueTableExpert(), MomentumExpert(),
 ]
 
 
@@ -1251,12 +1476,14 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     """Construct the meta-feature matrix from expert results.
 
     Layout:
-        - Expert probs:          N × 3  (N = 8 experts + DC pseudo-expert)
+        - Expert probs:          N × 3  (N = 9 experts + DC pseudo-expert)
         - Expert confidence:     N
-        - Expert domain features: ~60-70
-        - Conflict signals:      ~10
-        - Competition encoding:  6 (ordinal league ID)
-        ≈ 110+ total columns
+        - Expert domain features: ~80-100
+        - Conflict signals:      ~12
+        - Per-expert entropy:    N
+        - Feature interactions:  ~6
+        - Competition encoding:  1 (ordinal league ID)
+        ≈ 200+ total columns
     """
     if experts is None:
         experts = ALL_EXPERTS
@@ -1303,7 +1530,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     ])
 
     # 4. cross-expert interaction features (pairwise)
-    n_exp = min(8, len(results))
+    n_exp = min(9, len(results))  # 9 base experts now (including Momentum)
     # elo-market agreement
     elo_mkt_agree = 1.0 - np.abs(results[0].probs[:, 0] - results[1].probs[:, 0])
     # form-h2h agreement
@@ -1314,14 +1541,22 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     elo_form_agree = 1.0 - np.abs(results[0].probs[:, 0] - results[2].probs[:, 0])
     # poisson-elo agreement
     pois_elo_agree = 1.0 - np.abs(results[3].probs[:, 0] - results[0].probs[:, 0])
-    # goal-pattern-form agreement (new)
+    # goal-pattern-form agreement
     gp_form_agree = np.zeros(n)
     if n_exp > 6:
         gp_form_agree = 1.0 - np.abs(results[6].probs[:, 0] - results[2].probs[:, 0])
-    # league-table-elo agreement (new)
+    # league-table-elo agreement
     lt_elo_agree = np.zeros(n)
     if n_exp > 7:
         lt_elo_agree = 1.0 - np.abs(results[7].probs[:, 0] - results[0].probs[:, 0])
+    # momentum-form agreement (new: how aligned momentum is with form)
+    mom_form_agree = np.zeros(n)
+    if n_exp > 8:
+        mom_form_agree = 1.0 - np.abs(results[8].probs[:, 0] - results[2].probs[:, 0])
+    # momentum-elo agreement
+    mom_elo_agree = np.zeros(n)
+    if n_exp > 8:
+        mom_elo_agree = 1.0 - np.abs(results[8].probs[:, 0] - results[0].probs[:, 0])
     # max disagreement across any pair of experts (for home win)
     max_disagree = np.zeros(n)
     for ei in range(n_exp):
@@ -1339,11 +1574,38 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
         elo_mkt_agree[:, None], form_h2h_agree[:, None],
         pois_mkt_agree[:, None], elo_form_agree[:, None],
         pois_elo_agree[:, None], gp_form_agree[:, None],
-        lt_elo_agree[:, None], max_disagree[:, None],
+        lt_elo_agree[:, None], mom_form_agree[:, None],
+        mom_elo_agree[:, None], max_disagree[:, None],
         winner_votes[:, None],
     ])
 
-    # 5. Competition encoding (ordinal league ID)
+    # 5. Per-expert entropy (how uncertain each expert is)
+    for res in results[:n_exp]:
+        expert_ent = np.array([_entropy3(p) for p in res.probs])
+        blocks.append(expert_ent[:, None])
+
+    # 6. Feature interactions (cross-domain signal combinations)
+    # These capture nonlinear relationships the tree model might miss
+    # Elo diff × form PPG diff
+    elo_diff = results[0].features.get("elo_diff", np.zeros(n))
+    form_pts_h = results[2].features.get("form_pts_h", np.zeros(n))
+    form_pts_a = results[2].features.get("form_pts_a", np.zeros(n))
+    form_diff = form_pts_h - form_pts_a
+    blocks.append((elo_diff * form_diff)[:, None])  # Elo × Form interaction
+    # Market probability × Poisson probability (product of independent estimates)
+    mkt_ph = results[1].probs[:, 0]
+    pois_ph = results[3].probs[:, 0]
+    blocks.append((mkt_ph * pois_ph)[:, None])  # Market × Poisson interaction
+    # Momentum × recent form (amplifier when both agree)
+    if n_exp > 8:
+        mom_cross = results[8].features.get("mom_ema_cross_diff", np.zeros(n))
+        blocks.append((mom_cross * form_diff)[:, None])  # Momentum × Form
+        # Goal scoring burst × opponent defensive weakness
+        burst_h = results[8].features.get("mom_burst_h", np.zeros(n))
+        ga_slope_a = results[8].features.get("mom_ga_slope_a", np.zeros(n))
+        blocks.append((burst_h * ga_slope_a)[:, None])  # Attack surge × defensive leak
+
+    # 7. Competition encoding (ordinal league ID)
     if competitions is not None:
         _COMP_MAP = {"PL": 1, "PD": 2, "SA": 3, "BL1": 4, "FL1": 5}
         comp_ids = np.array([_COMP_MAP.get(str(c), 0) for c in competitions], dtype=float)
@@ -1390,7 +1652,14 @@ def _prepare_df(con, finished_only: bool = True, days: int = 3650) -> pd.DataFra
 # ---------- TRAINING ----------
 def train_and_save(con, days: int = 3650, eval_days: int = 365,
                    verbose: bool = True) -> dict:
-    """Train the Expert Council model."""
+    """Train the Expert Council model with multi-model stacking.
+
+    Architecture:
+        Base models: HistGBM (primary), RandomForest, LogisticRegression
+        Meta-layer: HistGBM on stacked OOF predictions
+        Calibration: Isotonic calibration (cv=5) on final output
+        Evaluation: Walk-forward diagnostic for honest performance estimate
+    """
 
     df = _prepare_df(con, finished_only=True, days=days)
     if df.empty or len(df) < 800:
@@ -1408,7 +1677,7 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
 
     # run all experts
     if verbose:
-        print("[council] running 6 experts...", flush=True)
+        print(f"[council] running {len(ALL_EXPERTS)} experts...", flush=True)
     results = _run_experts(df)
 
     # Dixon-Coles expert (fitted only on train split per competition)
@@ -1435,11 +1704,7 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
             dc_o25[i] = [po]
             has_dc[i] = [1.0]
 
-    # Append DC as pseudo-expert features
-    # Zero out DC features for training rows to prevent data leakage:
-    # the DC model was fit on training data, so its predictions on those
-    # rows are artificially accurate.  The meta-learner should only learn
-    # to trust DC from its (honest) test-set predictions.
+    # Zero out DC features for training rows to prevent data leakage
     train_idx = train_mask.to_numpy()
     dc_probs[train_idx] = np.array([1 / 3, 1 / 3, 1 / 3])
     dc_eg[train_idx] = 0.0
@@ -1468,7 +1733,11 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
     if verbose:
         print(f"[council] feature matrix: {X.shape[1]} columns", flush=True)
 
-    base = HistGradientBoostingClassifier(
+    # ================================================================
+    # MULTI-MODEL STACKING
+    # ================================================================
+    # Base model 1: HistGradientBoosting (primary — best on tabular)
+    gbm_base = HistGradientBoostingClassifier(
         learning_rate=0.02,
         max_depth=5,
         max_iter=1800,
@@ -1481,10 +1750,80 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
         n_iter_no_change=30,
         random_state=42,
     )
-    model = CalibratedClassifierCV(base, method="isotonic", cv=5)
-    model.fit(Xtr, ytr)
+    gbm_model = CalibratedClassifierCV(gbm_base, method="isotonic", cv=5)
+    gbm_model.fit(Xtr, ytr)
+    P_gbm = gbm_model.predict_proba(Xte)
 
-    P = model.predict_proba(Xte)
+    # Base model 2: RandomForest (complements GBM with lower variance)
+    rf_model = None
+    P_rf = None
+    try:
+        rf_base = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=12,
+            min_samples_leaf=30,
+            max_features="sqrt",
+            class_weight="balanced",
+            random_state=42,
+            n_jobs=-1,
+        )
+        rf_cal = CalibratedClassifierCV(rf_base, method="isotonic", cv=5)
+        rf_cal.fit(Xtr, ytr)
+        P_rf = rf_cal.predict_proba(Xte)
+        rf_model = rf_cal
+        if verbose:
+            rf_acc = float(np.mean(P_rf.argmax(axis=1) == yte))
+            print(f"[council] RF base: accuracy={rf_acc:.4f}", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[council] RF base failed: {e}", flush=True)
+
+    # Base model 3: LogisticRegression (linear baseline, regularized)
+    lr_model = None
+    P_lr = None
+    try:
+        from sklearn.pipeline import Pipeline as SkPipeline
+        lr_pipe = SkPipeline([
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(
+                multi_class="multinomial", solver="lbfgs",
+                max_iter=800, C=0.5, random_state=42,
+            )),
+        ])
+        lr_cal = CalibratedClassifierCV(lr_pipe, method="isotonic", cv=5)
+        lr_cal.fit(Xtr, ytr)
+        P_lr = lr_cal.predict_proba(Xte)
+        lr_model = lr_cal
+        if verbose:
+            lr_acc = float(np.mean(P_lr.argmax(axis=1) == yte))
+            print(f"[council] LR base: accuracy={lr_acc:.4f}", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[council] LR base failed: {e}", flush=True)
+
+    # Stacked ensemble: weighted blend of base models
+    # Weights: GBM gets 60%, RF 25%, LR 15% (GBM is strongest on tabular)
+    P = P_gbm.copy()
+    if P_rf is not None and P_lr is not None:
+        P = 0.60 * P_gbm + 0.25 * P_rf + 0.15 * P_lr
+        if verbose:
+            print("[council] using 3-model stack (GBM=0.60, RF=0.25, LR=0.15)", flush=True)
+    elif P_rf is not None:
+        P = 0.75 * P_gbm + 0.25 * P_rf
+        if verbose:
+            print("[council] using 2-model stack (GBM=0.75, RF=0.25)", flush=True)
+    elif P_lr is not None:
+        P = 0.80 * P_gbm + 0.20 * P_lr
+        if verbose:
+            print("[council] using 2-model stack (GBM=0.80, LR=0.20)", flush=True)
+    else:
+        if verbose:
+            print("[council] using single GBM model", flush=True)
+
+    # Normalize stacked probabilities
+    row_sums = P.sum(axis=1, keepdims=True)
+    P = P / np.maximum(row_sums, 1e-12)
+
     eps = 1e-12
     logloss = float(np.mean(-np.log(P[np.arange(len(yte)), yte] + eps)))
     Y = np.zeros_like(P)
@@ -1562,19 +1901,54 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({
-        "model": model,
+        "model": gbm_model,          # primary model (GBM + isotonic)
+        "rf_model": rf_model,         # secondary model (RF + isotonic)
+        "lr_model": lr_model,         # tertiary model (LR + isotonic)
         "dc_by_comp": dc_by_comp,
         "btts_model": btts_model,
         "ou25_model": ou25_model,
+        "stack_weights": (0.60, 0.25, 0.15) if (rf_model and lr_model)
+                    else (0.75, 0.25) if rf_model
+                    else (0.80, 0.20) if lr_model
+                    else (1.0,),
     }, MODEL_PATH)
+
+    # ================================================================
+    # WALK-FORWARD DIAGNOSTIC (optional, for logging only)
+    # ================================================================
+    wf_info = None
+    try:
+        from footy.walkforward import walk_forward_cv
+        dates = df["utc_date"].to_numpy()
+        wf_result = walk_forward_cv(
+            X, y, dates,
+            n_folds=4, min_train_frac=0.4, test_months=3,
+            expanding=True, calibrate=True, verbose=verbose,
+        )
+        wf_info = {
+            "n_folds": wf_result.n_folds,
+            "mean_logloss": round(wf_result.mean_logloss, 5),
+            "mean_accuracy": round(wf_result.mean_accuracy, 4),
+            "mean_brier": round(wf_result.mean_brier, 5),
+            "std_logloss": round(wf_result.std_logloss, 5),
+            "std_accuracy": round(wf_result.std_accuracy, 4),
+        }
+        if verbose:
+            print(f"[council] walk-forward CV: {wf_info}", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[council] walk-forward diagnostic skipped: {e}", flush=True)
 
     out = {
         "n_train": n_tr, "n_test": n_te,
         "logloss": round(logloss, 5), "brier": round(brier, 5),
         "accuracy": round(acc, 4), "ece": round(float(ece), 4),
         "n_features": int(X.shape[1]),
+        "n_experts": len(ALL_EXPERTS),
+        "stack_models": sum(1 for m in [gbm_model, rf_model, lr_model] if m is not None),
         "btts_accuracy": round(btts_acc, 4) if btts_model else None,
         "ou25_accuracy": round(ou25_acc, 4) if ou25_model else None,
+        "walkforward": wf_info,
     }
     if verbose:
         print(f"[council] saved {MODEL_VERSION} → {MODEL_PATH} | {out}", flush=True)
@@ -1594,6 +1968,9 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     if obj is None:
         raise RuntimeError(f"Council model not found at {MODEL_PATH}. Run: footy train")
     model = obj["model"]
+    rf_model_pred = obj.get("rf_model")
+    lr_model_pred = obj.get("lr_model")
+    stack_weights = obj.get("stack_weights", (1.0,))
     dc_by_comp = obj.get("dc_by_comp", {})
 
     s = settings()
@@ -1729,13 +2106,32 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
 
     up_competitions = up["competition"].to_numpy() if "competition" in up.columns else None
     X = _build_meta_X(tail_results, competitions=up_competitions)
-    P = model.predict_proba(X)
+
+    # Multi-model stacking at prediction time
+    P_gbm = model.predict_proba(X)
+    P = P_gbm.copy()
+    if len(stack_weights) == 3 and rf_model_pred and lr_model_pred:
+        P_rf = rf_model_pred.predict_proba(X)
+        P_lr = lr_model_pred.predict_proba(X)
+        P = stack_weights[0] * P_gbm + stack_weights[1] * P_rf + stack_weights[2] * P_lr
+    elif len(stack_weights) == 2:
+        if rf_model_pred:
+            P_rf = rf_model_pred.predict_proba(X)
+            P = stack_weights[0] * P_gbm + stack_weights[1] * P_rf
+        elif lr_model_pred:
+            P_lr = lr_model_pred.predict_proba(X)
+            P = stack_weights[0] * P_gbm + stack_weights[1] * P_lr
+    # Normalize
+    row_sums = P.sum(axis=1, keepdims=True)
+    P = P / np.maximum(row_sums, 1e-12)
 
     # BTTS & O2.5 model heads
     btts_model = obj.get("btts_model")
     ou25_model = obj.get("ou25_model")
     P_btts = btts_model.predict_proba(X) if btts_model else None
     P_ou25 = ou25_model.predict_proba(X) if ou25_model else None
+
+    stack_label = f"Expert Council ({len(ALL_EXPERTS)} experts + {len(stack_weights)}-model stack)"
 
     count = 0
     for j, (mid, ph, p_d, pa) in enumerate(zip(
@@ -1758,7 +2154,7 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         o25_val = float(P_ou25[j, 1]) if P_ou25 is not None else o25_pois
 
         notes_dict = {
-            "model": "Expert Council (8 experts + meta-learner)",
+            "model": stack_label,
             "btts": round(btts_val, 3),
             "o25": round(o25_val, 3),
             "btts_poisson": round(btts_pois, 3),

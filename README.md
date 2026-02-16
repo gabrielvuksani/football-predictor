@@ -1,6 +1,8 @@
 # Footy Predictor
 
-ML-powered football match prediction system with an 8-expert AI council, FastAPI backend, and dark-mode frontend.
+ML-powered football match prediction system with a **9-expert AI council**, multi-model stacking, walk-forward validation, FastAPI backend, and dark-mode frontend.
+
+Current Version: v0.0.2b3 (untested)
 
 ## Leagues Tracked
 
@@ -60,6 +62,15 @@ docker-compose up -d          # Builds, runs pipeline, serves UI on :8000
 
 Both are free to register. The system works without `API_FOOTBALL_KEY` (you just lose lineup/injury context).
 
+### Optional API Keys (all free)
+
+| Key | Source | What It Adds |
+|-----|--------|-------------|
+| `THE_ODDS_API_KEY` | [the-odds-api.com](https://the-odds-api.com/) | Multi-bookmaker odds from 40+ bookmakers |
+| `THESPORTSDB_KEY` | [thesportsdb.com](https://www.thesportsdb.com/api.php) | Team metadata, stadium info, badges |
+
+FPL (Fantasy Premier League) data is fetched automatically — no key needed.
+
 ## Commands
 
 Commands are organised into sub-groups. Run `footy --help` or `footy <group> --help` for full details.
@@ -68,9 +79,9 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 
 | Command | What It Does |
 |---------|-------------|
-| `footy go` | Full pipeline: 25-season history → train Elo/Poisson → train council → predict → H2H → xG |
+| `footy go` | Full pipeline: 25-season history → new APIs → train Elo/Poisson → train 9-expert council → predict → H2H → xG → export pages |
 | `footy go --skip-history` | Same but skips history download (fast daily use) |
-| `footy refresh` | Quick update: ingest recent → retrain council → predict |
+| `footy refresh` | Quick update: ingest recent → new APIs → retrain 9-expert council → predict → export pages |
 | `footy matchday` | Refresh + AI preview for all leagues (requires Ollama) |
 | `footy update` | Lightweight ingest → train → predict → metrics |
 | `footy serve` | Start web UI on port 8000 |
@@ -126,7 +137,7 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 
 | Command | Description |
 |---------|-------------|
-| `footy scheduler add` | Create a scheduled job (cron syntax) |
+| `footy scheduler add` | Create a scheduled job (cron syntax). Types: ingest, train_base, train_council, predict, score, retrain, full_refresh |
 | `footy scheduler start` | Start the background scheduler |
 | `footy scheduler stop` | Stop the scheduler |
 | `footy scheduler list` | List all jobs |
@@ -145,20 +156,6 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 | `footy perf alerts-check` | Check all models for degradation |
 | `footy perf alerts-list` | List active alerts |
 
-### `footy stats` — External Stats (Understat, FBRef)
-
-| Command | Description |
-|---------|-------------|
-| `footy stats understat-team` | Team xG statistics |
-| `footy stats understat-match` | Match xG breakdown |
-| `footy stats understat-rolling` | Rolling xG averages |
-| `footy stats fbref-shooting` | Team shooting stats |
-| `footy stats fbref-possession` | Possession stats |
-| `footy stats fbref-defense` | Defense stats |
-| `footy stats fbref-passing` | Passing stats |
-| `footy stats fbref-compare` | Compare two teams |
-| `footy stats fbref-all` | Complete stat dump for a team |
-
 ### `footy opta` — Opta Predictions
 
 | Command | Description |
@@ -169,33 +166,48 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 
 ## Architecture
 
-### Expert Council (v7) — Primary Model
+### Expert Council (v9) — Primary Model
 
 ```
-Layer 1 — SIX SPECIALIST EXPERTS
+Layer 1 — NINE SPECIALIST EXPERTS
 ┌──────────────┬──────────────┬──────────────┐
 │  EloExpert   │ MarketExpert │  FormExpert  │
 │ Rating       │ Multi-tier   │ Opposition-  │
 │ dynamics,    │ odds, line   │ adjusted PPG,│
 │ momentum,    │ movement,    │ BTTS, CS,    │
-│ home adv     │ sharp money  │ streaks      │
+│ home adv     │ open+close   │ streaks      │
 ├──────────────┼──────────────┼──────────────┤
 │PoissonExpert │  H2HExpert   │ContextExpert │
 │ Venue-split  │ Bayesian     │ Season stage,│
 │ attack/def,  │ Dirichlet    │ congestion,  │
 │ BTTS, O2.5,  │ prior, time  │ rest ratio,  │
 │ score matrix │ decay        │ day-of-week  │
+├──────────────┼──────────────┼──────────────┤
+│GoalPattern   │ LeagueTable  │  Momentum    │
+│ Scoring/     │ Simulated    │ EMA cross-   │
+│ conceding    │ standings,   │ overs, slope │
+│ streaks,     │ position     │ regression,  │
+│ burst/       │ delta, pts   │ volatility,  │
+│ drought      │ per game     │ burst detect │
 └──────────────┴──────────────┴──────────────┘
                      ↓
 Layer 2 — CONFLICT & CONSENSUS SIGNALS
-  Expert variance, pairwise agreements,
-  winner vote concentration, entropy
+  Expert variance, pairwise agreements (11 pairs),
+  winner vote concentration, per-expert entropy,
+  cross-domain interactions (Elo×Form, Market×Poisson,
+  Momentum×Form, BurstAttack×DefLeak)
                      ↓
-Layer 3 — META-LEARNER
-  HistGradientBoosting (lr=0.02, depth=5, 1800 iter)
-  + Isotonic calibration (cv=5)
+Layer 3 — MULTI-MODEL STACK (META-LEARNER)
+  HistGradientBoosting (60%) + RandomForest (25%)
+  + LogisticRegression (15%)
+  Each wrapped in isotonic calibration (cv=5)
   + Dixon-Coles pseudo-expert (per-league)
-  → ~140 features → P(Home, Draw, Away)
+  → ~200+ features → P(Home, Draw, Away)
+                     ↓
+Layer 4 — WALK-FORWARD VALIDATION
+  4-fold expanding-window temporal CV
+  Per-fold: logloss, brier, accuracy, ECE
+  Feature importance stability analysis
 ```
 
 ## API Endpoints
@@ -227,12 +239,12 @@ The FastAPI backend serves at `http://localhost:8000`:
 | football-data.org | Live fixtures & results | Yes |
 | football-data.co.uk | 25 seasons of historical results + odds | No |
 | API-Football | Lineups, injuries, pre-match context | Yes (optional) |
-| Understat | Expected goals (xG) | No (stub) |
-| FBRef | Advanced team stats | No (stub) |
+| The Odds API | Multi-bookmaker odds (40+ bookmakers) | Yes (optional) |
+| FPL API | Player injuries, availability, fixture difficulty | No |
+| TheSportsDB | Team metadata, stadium info, badges | Optional (free key) |
 | GDELT | Team news headlines | No |
 | Opta / The Analyst | Match win probabilities | No (scraped) |
 | Ollama | Local LLM for AI analysis | No (local) |
-| The Odds API | Market odds | Optional |
 
 ## Environment Variables
 
@@ -241,10 +253,9 @@ The FastAPI backend serves at `http://localhost:8000`:
 FOOTBALL_DATA_ORG_TOKEN=your_token_here
 API_FOOTBALL_KEY=your_key_here          # optional but recommended
 
-# Optional providers
-THE_ODDS_API_KEY=                        # market odds
-ODD_API_KEY=                             # alternative odds source
-SPORTAPI_AI_KEY=                         # SportAPI.ai
+# Optional data providers (all free)
+THE_ODDS_API_KEY=                        # multi-bookmaker market odds
+THESPORTSDB_KEY=3                        # team metadata (default: 3 = free dev key)
 
 # AI
 OLLAMA_HOST=http://localhost:11434
@@ -301,25 +312,24 @@ football-predictor/
 │   │   ├── ai_cmds.py         # footy ai …
 │   │   ├── scheduler_cmds.py  # footy scheduler …
 │   │   ├── perf_cmds.py       # footy perf …
-│   │   └── stats_cmds.py      # footy stats …
+│   │   └── opta_cmds.py       # footy opta …
 │   ├── config.py              # Settings from .env (cached)
 │   ├── db.py                  # DuckDB connection + schema
 │   ├── pipeline.py            # Core pipeline logic
+│   ├── walkforward.py         # Walk-forward temporal CV
 │   ├── utils.py               # Shared helpers (safe_num, outcome_label, metrics)
 │   ├── normalize.py           # Team name normalization
 │   ├── extras.py              # Match extras ingestion
 │   ├── fixtures_odds.py       # Odds for upcoming matches
-│   ├── scheduler.py           # Background job scheduler
+│   ├── scheduler.py           # Background job scheduler (7 job types)
 │   ├── continuous_training.py # Auto-retraining pipeline
 │   ├── performance_tracker.py # Model performance tracking
 │   ├── degradation_alerts.py  # Accuracy drift alerts
 │   ├── cache.py               # Prediction caching
 │   ├── h2h.py                 # Head-to-head statistics
 │   ├── xg.py                  # xG computation
-│   ├── understat.py           # Understat xG provider
-│   ├── fbref.py               # FBRef advanced stats provider
 │   ├── models/
-│   │   ├── council.py         # v8 Expert Council (primary)
+│   │   ├── council.py         # v9 Expert Council (primary — 9 experts)
 │   │   ├── elo.py             # Dynamic Elo ratings
 │   │   ├── elo_core.py        # Shared Elo primitives
 │   │   ├── poisson.py         # Weighted Poisson model
@@ -331,6 +341,9 @@ football-predictor/
 │   │   ├── fdcuk_history.py      # Historical data scraper
 │   │   ├── fdcuk_fixtures.py     # Fixture scraper
 │   │   ├── api_football.py       # API-Football provider
+│   │   ├── the_odds_api.py       # The Odds API (multi-bookmaker odds)
+│   │   ├── fpl.py                # Fantasy Premier League (injuries, availability)
+│   │   ├── thesportsdb.py        # TheSportsDB (team metadata, venues)
 │   │   ├── opta_analyst.py       # Opta predictions scraper
 │   │   ├── odds_scraper.py       # Odds aggregation
 │   │   └── news_gdelt.py         # GDELT news feed

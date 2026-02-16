@@ -8,7 +8,7 @@ Usage examples:
     footy ai preview --league PL # AI match preview
     footy scheduler start        # start background scheduler
     footy perf summary           # performance overview
-    footy stats fbref-shooting Arsenal
+    footy pages export           # export static pages for GitHub Pages
 """
 from __future__ import annotations
 

@@ -9,28 +9,69 @@ from footy.cli._shared import console, _setup_logging, _pipeline, _council, _odd
 app = typer.Typer(add_completion=False)
 
 
+def _ingest_new_apis():
+    """Call optional API providers (The Odds API, FPL, TheSportsDB).
+
+    Each provider is wrapped in try/except so failures are non-fatal.
+    """
+    # The Odds API — multi-bookmaker odds for upcoming matches
+    try:
+        from footy.providers.the_odds_api import ingest_odds_to_db
+        from footy.db import connect
+        con = connect()
+        matched = ingest_odds_to_db(con)
+        console.print(f"  The Odds API: {matched} matches with odds")
+    except Exception as e:
+        console.print(f"[yellow]  The Odds API warning:[/yellow] {e}")
+
+    # FPL — Premier League injury / availability data
+    try:
+        from footy.providers.fpl import get_all_teams_availability
+        avail = get_all_teams_availability()
+        if avail:
+            console.print(f"  FPL: availability data for {len(avail)} teams")
+        else:
+            console.print("  FPL: no availability data")
+    except Exception as e:
+        console.print(f"[yellow]  FPL warning:[/yellow] {e}")
+
+    # TheSportsDB — team metadata / venue enrichment
+    try:
+        from footy.providers.thesportsdb import enrich_matches_with_venue
+        from footy.db import connect
+        con = connect()
+        n_enriched = enrich_matches_with_venue(con)
+        console.print(f"  TheSportsDB: enriched {n_enriched} matches with venue data")
+    except Exception as e:
+        console.print(f"[yellow]  TheSportsDB warning:[/yellow] {e}")
+
+
 @app.command()
 def go(skip_history: bool = False):
     """Master command: full pipeline from ingest to predictions.
 
-    Runs: history → ingest → extras → odds → train (Elo+Poisson) →
-          train-council → predict-council → score → compute-h2h + xG
+    Runs: history → ingest → extras → odds → new APIs → train (Elo+Poisson) →
+          train (9-expert council + multi-model stack) → predict → score →
+          compute-h2h + xG → export pages
 
-    v8 council is the unified model with 8 experts + meta-learner.
+    v9 council: 9 experts + HistGBM/RF/LR multi-model stack.
     """
     from footy.db import connect
     t0 = time.perf_counter()
     _setup_logging()
 
     steps = [
-        ("1/8", "Ingest history (fdcuk)"),
-        ("2/8", "Ingest fixtures (API)"),
-        ("3/8", "Ingest extras + odds"),
-        ("4/8", "Train Elo + Poisson"),
-        ("5/8", "Train council model"),
-        ("6/8", "Predict council"),
-        ("7/8", "Score finished predictions"),
-        ("8/8", "Compute H2H + xG"),
+        ("1/11", "Ingest history (fdcuk)"),
+        ("2/11", "Ingest fixtures (API)"),
+        ("3/11", "Ingest extras + odds"),
+        ("4/11", "Ingest new API sources"),
+        ("5/11", "Train Elo + Poisson"),
+        ("6/11", "Train council model"),
+        ("7/11", "Predict council"),
+        ("8/11", "Score finished predictions"),
+        ("9/11", "Compute H2H + xG"),
+        ("10/11", "Export static pages"),
+        ("11/11", "Done"),
     ]
 
     def step(i, msg):
@@ -44,7 +85,7 @@ def go(skip_history: bool = False):
         except Exception as e:
             console.print(f"[yellow]History warning:[/yellow] {e}")
     else:
-        console.print("[yellow]Step 1/8[/yellow] Skipping history (--skip-history)")
+        console.print("[yellow]Step 1/11[/yellow] Skipping history (--skip-history)")
 
     step(1, "Ingesting fixtures from API (last 365 days + 7 ahead)...")
     try:
@@ -62,28 +103,31 @@ def go(skip_history: bool = False):
     except Exception as e:
         console.print(f"[yellow]Odds warning:[/yellow] {e}")
 
-    step(3, "Training Elo + Poisson...")
+    step(3, "Ingesting new API sources (The Odds API, FPL, TheSportsDB)...")
+    _ingest_new_apis()
+
+    step(4, "Training Elo + Poisson...")
     n_elo = _pipeline().update_elo_from_finished(verbose=True)
     state = _pipeline().refit_poisson(verbose=True)
     console.print(f"  Elo: {n_elo} matches | Poisson: {len(state.get('teams', []))} teams")
 
-    step(4, "Training council model (8 experts + meta-learner)...")
+    step(5, "Training council model (9 experts + multi-model stack)...")
     con = connect()
     rc = _council()[0](con, eval_days=365, verbose=True)
     console.print(f"  council: {rc}")
 
-    step(5, "Predicting council...")
+    step(6, "Predicting council...")
     nc = _council()[1](con, verbose=True)
     console.print(f"  council: {nc} predictions")
 
-    step(6, "Scoring finished predictions...")
+    step(7, "Scoring finished predictions...")
     try:
         sc = _pipeline().score_finished_predictions(verbose=True)
         console.print(f"  scored: {sc}")
     except Exception as e:
         console.print(f"[yellow]Scoring warning:[/yellow] {e}")
 
-    step(7, "Computing H2H + xG...")
+    step(8, "Computing H2H + xG...")
     try:
         from footy.h2h import recompute_h2h_stats
         recompute_h2h_stats(con, verbose=True)
@@ -95,13 +139,21 @@ def go(skip_history: bool = False):
     except Exception as e:
         console.print(f"[yellow]xG warning:[/yellow] {e}")
 
+    # ── Pages export ──────────────────────────────────────────────────
+    step(9, "Exporting static pages...")
+    try:
+        from footy.cli.pages_cmds import export as _pages_export
+        _pages_export(out="docs", days=14)
+    except Exception as e:
+        console.print(f"[yellow]Pages export warning:[/yellow] {e}")
+
     dt = time.perf_counter() - t0
     console.print(f"\n[green bold]Pipeline complete in {dt:.0f}s[/green bold]")
 
 
 @app.command()
 def refresh():
-    """Quick daily update: ingest recent → extras → odds → retrain council → predict → H2H.
+    """Quick daily update: ingest recent → extras → odds → APIs → retrain council → predict → H2H → export pages.
 
     Faster than `go` — skips history download. Use this for daily cron jobs.
     """
@@ -109,13 +161,13 @@ def refresh():
     t0 = time.perf_counter()
     _setup_logging()
 
-    console.print("[cyan]Step 1/7[/cyan] Ingest recent fixtures...")
+    console.print("[cyan]Step 1/9[/cyan] Ingest recent fixtures...")
     try:
         _pipeline().ingest(days_back=30, verbose=True)
     except Exception as e:
         console.print(f"[yellow]Ingest warning:[/yellow] {e}")
 
-    console.print("[cyan]Step 2/7[/cyan] Extras + odds...")
+    console.print("[cyan]Step 2/9[/cyan] Extras + odds...")
     try:
         _extras()(verbose=True)
     except Exception as e:
@@ -125,33 +177,43 @@ def refresh():
     except Exception as e:
         console.print(f"[yellow]Odds warning:[/yellow] {e}")
 
-    console.print("[cyan]Step 3/7[/cyan] Train Elo + Poisson...")
+    console.print("[cyan]Step 3/9[/cyan] New API sources...")
+    _ingest_new_apis()
+
+    console.print("[cyan]Step 4/9[/cyan] Train Elo + Poisson...")
     n_elo = _pipeline().update_elo_from_finished(verbose=True)
     _pipeline().refit_poisson(verbose=True)
     console.print(f"  Elo: {n_elo} matches")
 
-    console.print("[cyan]Step 4/7[/cyan] Retrain council...")
+    console.print("[cyan]Step 5/9[/cyan] Retrain council (9 experts + multi-model stack)...")
     con = connect()
     rc = _council()[0](con, eval_days=365, verbose=True)
     console.print(f"  council: {rc}")
 
-    console.print("[cyan]Step 5/7[/cyan] Predict council...")
+    console.print("[cyan]Step 6/9[/cyan] Predict council...")
     nc = _council()[1](con, lookahead_days=14, verbose=True)
     console.print(f"  council: {nc} predictions")
 
-    console.print("[cyan]Step 6/7[/cyan] Score finished predictions...")
+    console.print("[cyan]Step 7/9[/cyan] Score finished predictions...")
     try:
         sc = _pipeline().score_finished_predictions(verbose=True)
         console.print(f"  scored: {sc}")
     except Exception as e:
         console.print(f"[yellow]Scoring warning:[/yellow] {e}")
 
-    console.print("[cyan]Step 7/7[/cyan] Compute H2H...")
+    console.print("[cyan]Step 8/9[/cyan] Compute H2H...")
     try:
         from footy.h2h import recompute_h2h_stats
         recompute_h2h_stats(con, verbose=True)
     except Exception as e:
         console.print(f"[yellow]H2H warning:[/yellow] {e}")
+
+    console.print("[cyan]Step 9/9[/cyan] Export static pages...")
+    try:
+        from footy.cli.pages_cmds import export as _pages_export
+        _pages_export(out="docs", days=14)
+    except Exception as e:
+        console.print(f"[yellow]Pages export warning:[/yellow] {e}")
 
     dt = time.perf_counter() - t0
     console.print(f"\n[green bold]Refresh complete in {dt:.0f}s[/green bold]")

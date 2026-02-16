@@ -18,7 +18,7 @@ def add(
 ):
     """Add a new scheduled job.
 
-    Job types: ingest, train_base, train_council, predict, score
+    Job types: ingest, train_base, train_council, predict, score, retrain, full_refresh
 
     Cron examples:
       "0 2 * * *"     - Daily at 2 AM
