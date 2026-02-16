@@ -1,0 +1,1 @@
+{"home": {"first_goal_rate": 0.8, "comeback_rate": 0.2, "btts_rate": 0.8, "avg_goals_scored": 2.6, "avg_goals_conceded": 1.2, "n": 10}, "away": {"first_goal_rate": 0.2, "comeback_rate": 0.2, "btts_rate": 0.6, "avg_goals_scored": 1.2, "avg_goals_conceded": 2.0, "n": 10}}

@@ -1,6 +1,6 @@
 # Footy Predictor
 
-ML-powered football match prediction system with a 6-expert AI council, FastAPI backend, and dark-mode frontend.
+ML-powered football match prediction system with an 8-expert AI council, FastAPI backend, and dark-mode frontend.
 
 ## Leagues Tracked
 
@@ -159,6 +159,14 @@ Commands are organised into sub-groups. Run `footy --help` or `footy <group> --h
 | `footy stats fbref-compare` | Compare two teams |
 | `footy stats fbref-all` | Complete stat dump for a team |
 
+### `footy opta` — Opta Predictions
+
+| Command | Description |
+|---------|-------------|
+| `footy opta fetch` | Scrape Opta win probabilities (all leagues) |
+| `footy opta fetch --league PL` | Single league |
+| `footy opta show` | Display cached Opta predictions |
+
 ## Architecture
 
 ### Expert Council (v7) — Primary Model
@@ -205,7 +213,11 @@ The FastAPI backend serves at `http://localhost:8000`:
 | GET | `/api/matches/{id}/ai` | AI narrative (requires Ollama) |
 | GET | `/api/insights/value-bets` | Value bets with Kelly criterion |
 | GET | `/api/stats` | Database statistics |
-| GET | `/api/performance` | Model performance metrics |
+| GET | `/api/performance` | Model performance + calibration |
+| GET | `/api/matches/{id}/xg` | xG breakdown for match |
+| GET | `/api/matches/{id}/patterns` | Goal pattern analysis |
+| GET | `/api/league-table/{comp}` | Simulated league standings |
+| GET | `/api/competitions` | Available competitions |
 | GET | `/api/last-updated` | Last prediction timestamp |
 
 ## Data Sources
@@ -215,9 +227,10 @@ The FastAPI backend serves at `http://localhost:8000`:
 | football-data.org | Live fixtures & results | Yes |
 | football-data.co.uk | 25 seasons of historical results + odds | No |
 | API-Football | Lineups, injuries, pre-match context | Yes (optional) |
-| Understat | Expected goals (xG) | No |
-| FBRef | Advanced team stats | No |
+| Understat | Expected goals (xG) | No (stub) |
+| FBRef | Advanced team stats | No (stub) |
 | GDELT | Team news headlines | No |
+| Opta / The Analyst | Match win probabilities | No (scraped) |
 | Ollama | Local LLM for AI analysis | No (local) |
 | The Odds API | Market odds | Optional |
 
@@ -264,6 +277,7 @@ DuckDB at `data/footy.duckdb`:
 | expert_cache | Cached expert council breakdowns |
 | llm_insights | LLM-generated match narratives |
 | metrics | Model performance metrics over time |
+| opta_predictions | Scraped Opta win probabilities |
 | team_mappings | Cross-provider team name mappings |
 
 ## Project Structure
@@ -305,7 +319,7 @@ football-predictor/
 │   ├── understat.py           # Understat xG provider
 │   ├── fbref.py               # FBRef advanced stats provider
 │   ├── models/
-│   │   ├── council.py         # v7 Expert Council (primary)
+│   │   ├── council.py         # v8 Expert Council (primary)
 │   │   ├── elo.py             # Dynamic Elo ratings
 │   │   ├── elo_core.py        # Shared Elo primitives
 │   │   ├── poisson.py         # Weighted Poisson model
@@ -317,6 +331,7 @@ football-predictor/
 │   │   ├── fdcuk_history.py      # Historical data scraper
 │   │   ├── fdcuk_fixtures.py     # Fixture scraper
 │   │   ├── api_football.py       # API-Football provider
+│   │   ├── opta_analyst.py       # Opta predictions scraper
 │   │   ├── odds_scraper.py       # Odds aggregation
 │   │   └── news_gdelt.py         # GDELT news feed
 │   └── llm/
@@ -346,4 +361,40 @@ The server binds to `0.0.0.0:8000`, accessible from any device on the local netw
 
 ```
 http://<server-ip>:8000
+```
+
+## Deployment
+
+### Docker (self-hosted)
+
+```bash
+docker-compose up -d          # Build + run on port 8000
+```
+
+### Render.com (free tier)
+
+1. Push to GitHub
+2. Connect repo at [render.com](https://render.com)
+3. Render auto-detects `render.yaml` — creates a free web service
+4. Set `FOOTBALL_DATA_ORG_TOKEN` in the Render dashboard
+5. Deploy — live at `https://footy-predictor.onrender.com`
+
+> Free tier sleeps after 15 min inactivity; first request takes ~30s to wake.
+
+### Railway.app (free tier)
+
+1. Push to GitHub
+2. Connect repo at [railway.app](https://railway.app)
+3. Railway detects the `Procfile`
+4. Set environment variables in the dashboard
+5. Deploy — auto-assigned URL
+
+### Manual (any VPS)
+
+```bash
+git clone <repo> && cd football-predictor
+bash bootstrap.sh
+source .venv/bin/activate
+footy go                      # Full pipeline
+uvicorn web.api:app --host 0.0.0.0 --port 8000
 ```

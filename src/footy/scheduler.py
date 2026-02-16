@@ -7,7 +7,7 @@ Uses APScheduler for job scheduling with persistent storage in DuckDB.
 Scheduled Jobs:
 - ingest: Fetch upcoming fixtures and finished match results
 - train_base: Train Elo + Poisson models
-- train_council: Train council model (v7) with 6 experts + meta-learner
+- train_council: Train council model (v8) with 6 experts + meta-learner
 - predict: Generate predictions for upcoming matches
 - score: Score finished predictions and update metrics
 
@@ -21,8 +21,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timedelta
-from typing import Optional, Any
+from datetime import datetime
+from typing import Optional
 from enum import Enum
 import math
 
@@ -258,7 +258,7 @@ class TrainingScheduler:
         return {"elo_updates": n_elo, "poisson_teams": len(state.get("teams", []))}
     
     def _job_train_council(self, eval_days: int = 365) -> dict:
-        """Train council model (v7)."""
+        """Train council model (v8)."""
         con = connect()
         result = council_train_and_save(con, eval_days=eval_days, verbose=False)
         return result
@@ -310,11 +310,12 @@ class TrainingScheduler:
             logloss = -math.log(max(outcome_prob, 1e-15))
             
             # Store score
+            predicted_outcome = max(range(3), key=lambda i: probs[i])
             con.execute("""
                 INSERT INTO prediction_scores
                 (match_id, model_version, outcome, logloss, brier, correct)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, [match_id, model_version, outcome, logloss, brier, outcome_prob > 0.5])
+            """, [match_id, model_version, outcome, logloss, brier, predicted_outcome == outcome])
             
             scored_count += 1
         

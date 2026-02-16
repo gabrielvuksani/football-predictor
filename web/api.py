@@ -23,6 +23,7 @@ import duckdb
 
 from footy.normalize import canonical_team_name
 from footy.config import settings as get_settings
+from footy.xg import compute_xg_advanced, learn_conversion_rates, ensure_xg_table
 
 settings = get_settings()
 
@@ -79,11 +80,16 @@ async def index(request: Request):
     return TEMPLATES.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/match/{match_id}", response_class=HTMLResponse)
+async def match_page(request: Request, match_id: int):
+    return TEMPLATES.TemplateResponse("index.html", {"request": request})
+
+
 # ---------------------------------------------------------------------------
 # API — Matches
 # ---------------------------------------------------------------------------
 @app.get("/api/matches")
-async def api_matches(days: int = 7, model: str = "v7_council"):
+async def api_matches(days: int = 7, model: str = "v8_council"):
     """Upcoming matches with predictions."""
     try:
         db = con()
@@ -116,7 +122,7 @@ async def api_matches(days: int = 7, model: str = "v7_council"):
 
 
 @app.get("/api/matches/{match_id}")
-async def api_match_detail(match_id: int, model: str = "v7_council"):
+async def api_match_detail(match_id: int, model: str = "v8_council"):
     """Detailed match data."""
     try:
         db = con()
@@ -333,6 +339,142 @@ async def api_form(match_id: int, n: int = 6):
 
 
 # ---------------------------------------------------------------------------
+# API — xG
+# ---------------------------------------------------------------------------
+@app.get("/api/matches/{match_id}/xg")
+async def api_xg(match_id: int):
+    """xG data for a match."""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+    row = db.execute(
+        "SELECT home_team, away_team, competition FROM matches WHERE match_id=?", [match_id]
+    ).fetchone()
+    if not row:
+        return JSONResponse({"error": "Match not found"}, 404)
+
+    home_team, away_team, competition = row[0], row[1], row[2]
+
+    # Check cache first
+    cached = db.execute(
+        "SELECT home_xg, away_xg, method, confidence FROM match_xg WHERE match_id=?",
+        [match_id]
+    ).fetchone()
+    if cached:
+        rates = {}
+        try:
+            rates = learn_conversion_rates(db)
+            league_rates = rates.get(competition, rates.get("overall", {}))
+        except Exception:
+            league_rates = {"on_target": 0.10, "off_target": 0.02}
+        return {
+            "home_xg": round(float(cached[0]), 3) if cached[0] else None,
+            "away_xg": round(float(cached[1]), 3) if cached[1] else None,
+            "method": cached[2],
+            "confidence": round(float(cached[3]), 3) if cached[3] else None,
+            "rates": league_rates,
+        }
+
+    # Compute fresh
+    try:
+        result = compute_xg_advanced(db, home_team, away_team, competition)
+        rates = result.get("details", {}).get("conversion_rates", {})
+        return {
+            "home_xg": result.get("home_xg"),
+            "away_xg": result.get("away_xg"),
+            "method": result.get("method"),
+            "confidence": result.get("confidence"),
+            "rates": {
+                "on_target": rates.get("on_target", 0.10),
+                "off_target": rates.get("off_target", 0.02),
+            },
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+# ---------------------------------------------------------------------------
+# API — Goal Patterns
+# ---------------------------------------------------------------------------
+@app.get("/api/matches/{match_id}/patterns")
+async def api_patterns(match_id: int, n: int = 10):
+    """Goal scoring patterns for both teams."""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+    row = db.execute(
+        "SELECT home_team, away_team FROM matches WHERE match_id=?", [match_id]
+    ).fetchone()
+    if not row:
+        return JSONResponse({"error": "Match not found"}, 404)
+
+    def _team_patterns(team: str, limit: int = 10) -> dict:
+        matches = db.execute("""
+            SELECT m.home_team, m.away_team, m.home_goals, m.away_goals,
+                   me.hthg, me.htag
+            FROM matches m
+            LEFT JOIN match_extras me ON me.match_id = m.match_id
+            WHERE m.status = 'FINISHED'
+              AND (m.home_team = ? OR m.away_team = ?)
+              AND m.home_goals IS NOT NULL
+            ORDER BY m.utc_date DESC
+            LIMIT ?
+        """, [team, team, limit]).fetchall()
+
+        if not matches:
+            return {"first_goal_rate": None, "comeback_rate": None,
+                    "btts_rate": None, "avg_goals_scored": None,
+                    "avg_goals_conceded": None, "n": 0}
+
+        scored_first = 0
+        comebacks = 0
+        btts = 0
+        total_scored = 0
+        total_conceded = 0
+        ht_count = 0
+
+        for m in matches:
+            ht, at, hg, ag = m[0], m[1], m[2], m[3]
+            hthg, htag = m[4], m[5]
+            is_home = (ht == team)
+            gf = int(hg) if is_home else int(ag)
+            ga = int(ag) if is_home else int(hg)
+            total_scored += gf
+            total_conceded += ga
+
+            # BTTS
+            if gf > 0 and ga > 0:
+                btts += 1
+
+            # First goal / comeback (from half-time data)
+            if hthg is not None and htag is not None:
+                ht_count += 1
+                ht_gf = int(hthg) if is_home else int(htag)
+                ht_ga = int(htag) if is_home else int(hthg)
+                if ht_gf > ht_ga:
+                    scored_first += 1
+                elif ht_gf < ht_ga and gf >= ga:
+                    comebacks += 1
+
+        n_matches = len(matches)
+        return {
+            "first_goal_rate": round(scored_first / ht_count, 3) if ht_count else None,
+            "comeback_rate": round(comebacks / ht_count, 3) if ht_count else None,
+            "btts_rate": round(btts / n_matches, 3),
+            "avg_goals_scored": round(total_scored / n_matches, 2),
+            "avg_goals_conceded": round(total_conceded / n_matches, 2),
+            "n": n_matches,
+        }
+
+    return {
+        "home": _team_patterns(row[0], n),
+        "away": _team_patterns(row[1], n),
+    }
+
+
+# ---------------------------------------------------------------------------
 # API — AI Narrative
 # ---------------------------------------------------------------------------
 @app.get("/api/matches/{match_id}/ai")
@@ -358,7 +500,7 @@ async def api_ai_narrative(match_id: int):
         # Get the council's final prediction
         pred = con().execute(
             "SELECT p_home, p_draw, p_away FROM predictions "
-            "WHERE match_id=? AND model_version='v7_council'",
+            "WHERE match_id=? AND model_version='v8_council'",
             [match_id]
         ).fetchone()
         final = ""
@@ -399,7 +541,7 @@ async def api_value_bets(min_edge: float = 0.05):
                p.p_home, p.p_draw, p.p_away,
                e.b365h, e.b365d, e.b365a
         FROM matches m
-        JOIN predictions p ON p.match_id = m.match_id AND p.model_version = 'v7_council'
+        JOIN predictions p ON p.match_id = m.match_id AND p.model_version = 'v8_council'
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE m.status IN ('SCHEDULED','TIMED')
         ORDER BY m.utc_date
@@ -435,6 +577,85 @@ async def api_value_bets(min_edge: float = 0.05):
         k = (b["model_prob"] * b["odds"] - 1) / (b["odds"] - 1) if b["odds"] > 1 else 0
         b["kelly"] = round(max(0, k), 3)
     return {"bets": bets[:30]}
+
+
+# ---------------------------------------------------------------------------
+# API — League Table
+# ---------------------------------------------------------------------------
+@app.get("/api/league-table/{competition}")
+async def api_league_table(competition: str, season: str = None):
+    """Current league standings built from finished matches."""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+
+    # Determine season
+    if season is None:
+        season_row = db.execute("""
+            SELECT DISTINCT season_code FROM match_extras
+            WHERE competition = ? AND season_code IS NOT NULL
+            ORDER BY season_code DESC LIMIT 1
+        """, [competition]).fetchone()
+        season = season_row[0] if season_row else None
+
+    # Get finished matches for this competition/season
+    if season:
+        matches = db.execute("""
+            SELECT m.home_team, m.away_team, m.home_goals, m.away_goals
+            FROM matches m
+            JOIN match_extras me ON me.match_id = m.match_id
+            WHERE m.status = 'FINISHED'
+              AND m.competition = ?
+              AND me.season_code = ?
+              AND m.home_goals IS NOT NULL
+        """, [competition, season]).fetchall()
+    else:
+        matches = db.execute("""
+            SELECT home_team, away_team, home_goals, away_goals
+            FROM matches
+            WHERE status = 'FINISHED'
+              AND competition = ?
+              AND home_goals IS NOT NULL
+        """, [competition]).fetchall()
+
+    if not matches:
+        return JSONResponse({"error": f"No finished matches for {competition}"}, 404)
+
+    # Build table
+    table: dict = {}
+    for ht, at, hg, ag in matches:
+        hg, ag = int(hg), int(ag)
+        for team in (ht, at):
+            if team not in table:
+                table[team] = {"team": team, "p": 0, "w": 0, "d": 0, "l": 0,
+                                "gf": 0, "ga": 0, "gd": 0, "pts": 0}
+
+        table[ht]["p"] += 1
+        table[at]["p"] += 1
+        table[ht]["gf"] += hg
+        table[ht]["ga"] += ag
+        table[at]["gf"] += ag
+        table[at]["ga"] += hg
+
+        if hg > ag:
+            table[ht]["w"] += 1; table[ht]["pts"] += 3
+            table[at]["l"] += 1
+        elif hg == ag:
+            table[ht]["d"] += 1; table[ht]["pts"] += 1
+            table[at]["d"] += 1; table[at]["pts"] += 1
+        else:
+            table[at]["w"] += 1; table[at]["pts"] += 3
+            table[ht]["l"] += 1
+
+    for t in table.values():
+        t["gd"] = t["gf"] - t["ga"]
+
+    standings = sorted(table.values(), key=lambda x: (-x["pts"], -x["gd"], -x["gf"]))
+    for i, t in enumerate(standings, 1):
+        t["pos"] = i
+
+    return {"competition": competition, "season": season, "standings": standings}
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +703,7 @@ async def api_stats():
 # API — Performance tracking
 # ---------------------------------------------------------------------------
 @app.get("/api/performance")
-async def api_performance(model: str = "v7_council"):
+async def api_performance(model: str = "v8_council"):
     """Model performance metrics — accuracy, logloss, brier, calibration."""
     try:
         db = con()
@@ -550,12 +771,87 @@ async def api_performance(model: str = "v7_council"):
             "logloss": round(float(r[3]), 4) if r[3] else None,
         })
 
+    # Calibration: predicted probability buckets vs actual outcomes
+    cal_rows = db.execute("""
+        SELECT p.p_home, p.p_draw, p.p_away, ps.outcome
+        FROM prediction_scores ps
+        JOIN predictions p ON ps.match_id = p.match_id AND ps.model_version = p.model_version
+        WHERE ps.model_version = ?
+    """, [model]).fetchall()
+
+    buckets = {i: {"predicted_sum": 0.0, "actual_sum": 0, "count": 0}
+               for i in range(10)}  # 0-10%, 10-20%, ..., 90-100%
+    for r in cal_rows:
+        # Each row contributes 3 data points (one per outcome)
+        for prob, is_actual in [
+            (float(r[0]), 1 if r[3] == 0 else 0),  # home
+            (float(r[1]), 1 if r[3] == 1 else 0),  # draw
+            (float(r[2]), 1 if r[3] == 2 else 0),  # away
+        ]:
+            idx = min(int(prob * 10), 9)
+            buckets[idx]["predicted_sum"] += prob
+            buckets[idx]["actual_sum"] += is_actual
+            buckets[idx]["count"] += 1
+
+    calibration = []
+    for i in range(10):
+        b = buckets[i]
+        calibration.append({
+            "bucket": f"{i*10}-{(i+1)*10}%",
+            "avg_predicted": round(b["predicted_sum"] / b["count"], 4) if b["count"] else None,
+            "avg_actual": round(b["actual_sum"] / b["count"], 4) if b["count"] else None,
+            "count": b["count"],
+        })
+
     return {
         "model": model,
         "metrics": metrics,
         "recent": scored_matches,
         "by_competition": comp_perf,
+        "calibration": calibration,
     }
+
+
+# ---------------------------------------------------------------------------
+# API — Competitions
+# ---------------------------------------------------------------------------
+@app.get("/api/competitions")
+async def api_competitions():
+    """List all competitions with metadata."""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+    rows = db.execute("""
+        SELECT m.competition,
+               COUNT(*) AS match_count,
+               COUNT(DISTINCT m.home_team) AS team_count,
+               MAX(me.season_code) AS current_season
+        FROM matches m
+        LEFT JOIN match_extras me ON me.match_id = m.match_id
+        GROUP BY m.competition
+        ORDER BY match_count DESC
+    """).fetchall()
+
+    # Competition name mapping (common codes)
+    _NAMES = {
+        "PL": "Premier League", "BL1": "Bundesliga", "SA": "Serie A",
+        "PD": "La Liga", "FL1": "Ligue 1", "ELC": "Championship",
+        "DED": "Eredivisie", "PPL": "Primeira Liga", "CL": "Champions League",
+        "EC": "European Championship", "WC": "World Cup",
+    }
+
+    competitions = []
+    for r in rows:
+        code = r[0]
+        competitions.append({
+            "code": code,
+            "name": _NAMES.get(code, code),
+            "match_count": r[1],
+            "team_count": r[2],
+            "current_season": r[3],
+        })
+    return {"competitions": competitions}
 
 
 @app.get("/api/last-updated")
@@ -566,6 +862,6 @@ async def api_last_updated():
     except duckdb.IOException:
         return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
     row = db.execute(
-        "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v7_council'"
+        "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v8_council'"
     ).fetchone()
     return {"last_updated": str(row[0])[:19] if row and row[0] else None}

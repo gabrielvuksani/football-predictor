@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Footy Predictor</title>
+<script>
+// GitHub Pages SPA redirect: store path, load index at the repo root
+var base = '/';
+if (location.hostname.endsWith('.github.io')) {
+  var seg = location.pathname.split('/')[1];
+  if (seg) base = '/' + seg + '/';
+}
+sessionStorage.setItem('ghpages_redirect', location.pathname);
+location.replace(base);
+</script>
+</head>
+<body></body>
+</html>

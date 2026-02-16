@@ -2,26 +2,36 @@
 Expert Council Model — Multi-expert ensemble for football match prediction.
 
 Architecture:
-    Layer 1 — Six specialist experts, each computing domain-specific features
+    Layer 1 — Eight specialist experts, each computing domain-specific features
               and analytical probability estimates:
-              1. EloExpert        – Rating dynamics, team-specific home advantage
-              2. MarketExpert     – Odds intelligence, line movement, sharp money
-              3. FormExpert       – Opposition-adjusted rolling form
-              4. PoissonExpert    – Attack / defence + venue-split + score matrix
-              5. H2HExpert        – Bayesian head-to-head with time decay
-              6. ContextExpert    – Rest / congestion / calendar / season stage
+              1. EloExpert          – Rating dynamics, team-specific home advantage
+              2. MarketExpert       – Odds intelligence, line movement, sharp money
+              3. FormExpert         – Opposition-adjusted rolling form
+              4. PoissonExpert      – Attack / defence + venue-split + score matrix
+              5. H2HExpert          – Bayesian head-to-head with time decay
+              6. ContextExpert      – Rest / congestion / calendar / season stage
+              7. GoalPatternExpert  – First-goal advantage, comeback rate, HT patterns
+              8. LeagueTableExpert  – League position, points gap, table dynamics
     Layer 2 — Conflict & consensus signals derived from expert disagreement
     Layer 3 — Meta-learner (HistGradientBoosting + isotonic calibration)
     Layer 4 — Ollama interpreter (optional) for narrative match analysis
 
-v7 Innovations:
+v8 Innovations:
+    • GoalPatternExpert: First-goal advantage, comeback rate, half-time
+      scoring patterns, multi-goal/nil rates, lead-holding ability
+    • LeagueTableExpert: Simulated live league table, position differential,
+      points gap to top/relegation, relative position features
+    • Upgraded conflict signals: 9 pairwise agreement features (was 5),
+      including goal-pattern-form and league-table-elo cross-expert signals
+    • Extended feature matrix: ~170+ columns across 8+1 experts
+
+v7 Innovations (retained):
     • PoissonExpert v2: venue-specific attack/defense, BTTS/O2.5/O1.5/U2.5
       probabilities, most likely score, goal-diff skewness, zero-inflation
     • ContextExpert v2: season progress, early/late season flags, day-of-week,
       weekend/midweek detection, hour of kickoff, 30-day congestion,
       rest ratio, short-rest flags
-    • Meta-learner v2: 5 pairwise expert agreement features, max disagreement,
-      winner vote concentration, isotonic calibration (cv=5)
+    • Meta-learner v2: isotonic calibration (cv=5)
     • Tuned hyperparameters: lr=0.02, depth=5, iter=1800, L2=0.5, leaf=50
 
 Prior innovations (retained):
@@ -55,7 +65,7 @@ from footy.config import settings
 from footy.normalize import canonical_team_name
 from footy.models.dixon_coles import fit_dc, predict_1x2, DCModel
 
-MODEL_VERSION = "v7_council"
+MODEL_VERSION = "v8_council"
 MODEL_PATH = Path("data/models") / f"{MODEL_VERSION}.joblib"
 
 # ---------------------------------------------------------------------------
@@ -927,11 +937,305 @@ class ContextExpert(Expert):
 
 
 # ===================================================================
+# 7. GOAL PATTERN EXPERT
+# ===================================================================
+class GoalPatternExpert(Expert):
+    """
+    Analyses goal-scoring patterns that other experts miss:
+    - First-goal advantage (teams that score first win X% of the time)
+    - Comeback rate (how often a team recovers from conceding first)
+    - Scoring/conceding distributions by half (HT proxy from hthg/htag)
+    - Goal-timing tendency (early scorer vs late bloomer)
+    - Score-first probability from Poisson model
+    - Defensive resilience (clean sheet after conceding first)
+    """
+    name = "goal_pattern"
+
+    WINDOW = 15  # matches to analyze
+
+    def compute(self, df: pd.DataFrame) -> ExpertResult:
+        n = len(df)
+        team_history: dict[str, list[dict]] = {}
+
+        # outputs
+        first_goal_rate_h = np.zeros(n)    # how often home team scores first
+        first_goal_rate_a = np.zeros(n)
+        comeback_rate_h = np.zeros(n)      # how often they come back from behind
+        comeback_rate_a = np.zeros(n)
+        ht_goals_rate_h = np.zeros(n)      # fraction of goals scored in first half
+        ht_goals_rate_a = np.zeros(n)
+        ht_concede_rate_h = np.zeros(n)    # fraction of goals conceded in first half
+        ht_concede_rate_a = np.zeros(n)
+        first_goal_win_h = np.zeros(n)     # win rate when scoring first
+        first_goal_win_a = np.zeros(n)
+        multi_goal_rate_h = np.zeros(n)    # rate of scoring 2+ goals
+        multi_goal_rate_a = np.zeros(n)
+        nil_rate_h = np.zeros(n)           # rate of scoring 0
+        nil_rate_a = np.zeros(n)
+        lead_hold_rate_h = np.zeros(n)     # rate of holding HT lead
+        lead_hold_rate_a = np.zeros(n)
+        probs = np.full((n, 3), 1 / 3)
+        conf = np.zeros(n)
+
+        def _team_stats(team):
+            hist = team_history.get(team, [])[-self.WINDOW:]
+            if not hist:
+                return {}
+            fg = [h.get("scored_first", 0) for h in hist]
+            cb = [h.get("comeback", 0) for h in hist]
+            ht_frac = [h.get("ht_goal_frac", 0.5) for h in hist]
+            ht_conc = [h.get("ht_concede_frac", 0.5) for h in hist]
+            fg_win = [h.get("first_goal_win", 0) for h in hist if h.get("scored_first")]
+            multi = [1.0 if h.get("gf", 0) >= 2 else 0.0 for h in hist]
+            nil = [1.0 if h.get("gf", 0) == 0 else 0.0 for h in hist]
+            lead_hold = [h.get("held_lead", 0) for h in hist if h.get("had_ht_lead")]
+            return {
+                "fg_rate": float(np.mean(fg)),
+                "cb_rate": float(np.mean(cb)),
+                "ht_frac": float(np.mean(ht_frac)),
+                "ht_conc_frac": float(np.mean(ht_conc)),
+                "fg_win": float(np.mean(fg_win)) if fg_win else 0.5,
+                "multi": float(np.mean(multi)),
+                "nil": float(np.mean(nil)),
+                "lead_hold": float(np.mean(lead_hold)) if lead_hold else 0.5,
+            }
+
+        for i, r in enumerate(df.itertuples(index=False)):
+            h, a = r.home_team, r.away_team
+
+            # Pre-match features
+            hs = _team_stats(h)
+            as_ = _team_stats(a)
+
+            first_goal_rate_h[i] = hs.get("fg_rate", 0.5)
+            first_goal_rate_a[i] = as_.get("fg_rate", 0.5)
+            comeback_rate_h[i] = hs.get("cb_rate", 0.1)
+            comeback_rate_a[i] = as_.get("cb_rate", 0.1)
+            ht_goals_rate_h[i] = hs.get("ht_frac", 0.5)
+            ht_goals_rate_a[i] = as_.get("ht_frac", 0.5)
+            ht_concede_rate_h[i] = hs.get("ht_conc_frac", 0.5)
+            ht_concede_rate_a[i] = as_.get("ht_conc_frac", 0.5)
+            first_goal_win_h[i] = hs.get("fg_win", 0.5)
+            first_goal_win_a[i] = as_.get("fg_win", 0.5)
+            multi_goal_rate_h[i] = hs.get("multi", 0.4)
+            multi_goal_rate_a[i] = as_.get("multi", 0.4)
+            nil_rate_h[i] = hs.get("nil", 0.2)
+            nil_rate_a[i] = as_.get("nil", 0.2)
+            lead_hold_rate_h[i] = hs.get("lead_hold", 0.5)
+            lead_hold_rate_a[i] = as_.get("lead_hold", 0.5)
+
+            # Probability: combine first-goal rates with win-when-first patterns
+            fg_h = hs.get("fg_rate", 0.5)
+            fg_w_h = hs.get("fg_win", 0.5)
+            fg_a = as_.get("fg_rate", 0.5)
+            fg_w_a = as_.get("fg_win", 0.5)
+            p_h = fg_h * fg_w_h + (1 - fg_a) * 0.3  # score first + win | opponent doesn't score first
+            p_a = fg_a * fg_w_a + (1 - fg_h) * 0.3
+            p_d = 1.0 - p_h - p_a
+            if p_d < 0.15:
+                p_d = 0.25
+            probs[i] = _norm3(p_h, p_d, p_a)
+
+            n_h = len(team_history.get(h, []))
+            n_a = len(team_history.get(a, []))
+            conf[i] = min(1.0, (n_h + n_a) / 24.0)
+
+            # --- Update state ---
+            hg, ag = int(r.home_goals), int(r.away_goals)
+            hthg = _f(getattr(r, "hthg", None))
+            htag = _f(getattr(r, "htag", None))
+
+            # Determine first goal, HT fractions
+            scored_first_h = 1.0 if (hthg > 0 and htag == 0) or (hthg > htag) else (0.5 if hthg == htag and hg > 0 else 0.0)
+            scored_first_a = 1.0 if (htag > 0 and hthg == 0) or (htag > hthg) else (0.5 if hthg == htag and ag > 0 else 0.0)
+            # If no HT data, estimate from final score
+            if hthg == 0 and htag == 0 and (hg > 0 or ag > 0):
+                scored_first_h = 0.55 if hg > ag else (0.45 if hg < ag else 0.5)
+                scored_first_a = 1.0 - scored_first_h
+
+            ht_goal_frac_h = hthg / max(hg, 1) if hg > 0 else 0.0
+            ht_goal_frac_a = htag / max(ag, 1) if ag > 0 else 0.0
+            ht_concede_frac_h = htag / max(ag, 1) if ag > 0 else 0.0
+            ht_concede_frac_a = hthg / max(hg, 1) if hg > 0 else 0.0
+
+            # Comeback: behind at HT but won/drew
+            comeback_h = 1.0 if (hthg < htag and hg >= ag) else 0.0
+            comeback_a = 1.0 if (htag < hthg and ag >= hg) else 0.0
+
+            had_ht_lead_h = hthg > htag
+            held_lead_h = 1.0 if (had_ht_lead_h and hg > ag) else 0.0
+            had_ht_lead_a = htag > hthg
+            held_lead_a = 1.0 if (had_ht_lead_a and ag > hg) else 0.0
+
+            first_goal_win_val_h = 1.0 if (scored_first_h > 0.5 and hg > ag) else 0.0
+            first_goal_win_val_a = 1.0 if (scored_first_a > 0.5 and ag > hg) else 0.0
+
+            team_history.setdefault(h, []).append({
+                "gf": hg, "ga": ag,
+                "scored_first": scored_first_h,
+                "comeback": comeback_h,
+                "ht_goal_frac": ht_goal_frac_h,
+                "ht_concede_frac": ht_concede_frac_h,
+                "first_goal_win": first_goal_win_val_h,
+                "had_ht_lead": had_ht_lead_h,
+                "held_lead": held_lead_h,
+            })
+            team_history.setdefault(a, []).append({
+                "gf": ag, "ga": hg,
+                "scored_first": scored_first_a,
+                "comeback": comeback_a,
+                "ht_goal_frac": ht_goal_frac_a,
+                "ht_concede_frac": ht_concede_frac_a,
+                "first_goal_win": first_goal_win_val_a,
+                "had_ht_lead": had_ht_lead_a,
+                "held_lead": held_lead_a,
+            })
+
+        return ExpertResult(
+            probs=probs,
+            confidence=conf,
+            features={
+                "gp_first_goal_h": first_goal_rate_h, "gp_first_goal_a": first_goal_rate_a,
+                "gp_comeback_h": comeback_rate_h, "gp_comeback_a": comeback_rate_a,
+                "gp_ht_frac_h": ht_goals_rate_h, "gp_ht_frac_a": ht_goals_rate_a,
+                "gp_ht_conc_h": ht_concede_rate_h, "gp_ht_conc_a": ht_concede_rate_a,
+                "gp_fg_win_h": first_goal_win_h, "gp_fg_win_a": first_goal_win_a,
+                "gp_multi_h": multi_goal_rate_h, "gp_multi_a": multi_goal_rate_a,
+                "gp_nil_h": nil_rate_h, "gp_nil_a": nil_rate_a,
+                "gp_lead_hold_h": lead_hold_rate_h, "gp_lead_hold_a": lead_hold_rate_a,
+            },
+        )
+
+
+# ===================================================================
+# 8. LEAGUE TABLE EXPERT
+# ===================================================================
+class LeagueTableExpert(Expert):
+    """
+    Simulates the live league table position and derives features:
+    - League position differential (home pos vs away pos)
+    - Points-per-game differential
+    - Relative league position (0=bottom, 1=top)
+    - Points gap to leader & relegation zone
+    - Home/Away league-specific form
+    - Goal difference ranking
+    """
+    name = "league_table"
+
+    def compute(self, df: pd.DataFrame) -> ExpertResult:
+        n = len(df)
+        # Track per-season-competition tables
+        tables: dict[str, dict[str, dict]] = {}  # comp -> team -> stats
+
+        pos_h = np.zeros(n); pos_a = np.zeros(n)
+        rel_pos_h = np.zeros(n); rel_pos_a = np.zeros(n)
+        ppg_h = np.zeros(n); ppg_a = np.zeros(n)
+        gd_h = np.zeros(n); gd_a = np.zeros(n)
+        pts_h = np.zeros(n); pts_a = np.zeros(n)
+        gap_top_h = np.zeros(n); gap_top_a = np.zeros(n)
+        gap_bot_h = np.zeros(n); gap_bot_a = np.zeros(n)
+        probs = np.full((n, 3), 1 / 3)
+        conf = np.zeros(n)
+
+        def _get_table(comp):
+            if comp not in tables:
+                return {}
+            t = tables[comp]
+            ranked = sorted(t.values(), key=lambda x: (-x["pts"], -(x["gf"] - x["ga"]), -x["gf"]))
+            for idx, entry in enumerate(ranked):
+                entry["pos"] = idx + 1
+            return t
+
+        def _season_key(r):
+            """Get competition + season key for table tracking."""
+            comp = getattr(r, "competition", "UNK")
+            dt = r.utc_date
+            try:
+                yr = dt.year
+                m = dt.month
+                season = yr if m >= 7 else yr - 1
+            except Exception:
+                season = 2024
+            return f"{comp}_{season}"
+
+        for i, r in enumerate(df.itertuples(index=False)):
+            h, a = r.home_team, r.away_team
+            sk = _season_key(r)
+            table = _get_table(sk)
+            n_teams = max(len(table), 1)
+
+            # Pre-match features
+            h_entry = table.get(h, {"pts": 0, "gf": 0, "ga": 0, "played": 0, "pos": n_teams})
+            a_entry = table.get(a, {"pts": 0, "gf": 0, "ga": 0, "played": 0, "pos": n_teams})
+
+            pos_h[i] = h_entry.get("pos", n_teams)
+            pos_a[i] = a_entry.get("pos", n_teams)
+            rel_pos_h[i] = 1.0 - (pos_h[i] - 1) / max(n_teams - 1, 1) if n_teams > 1 else 0.5
+            rel_pos_a[i] = 1.0 - (pos_a[i] - 1) / max(n_teams - 1, 1) if n_teams > 1 else 0.5
+            ppg_h[i] = h_entry["pts"] / max(h_entry.get("played", 1), 1)
+            ppg_a[i] = a_entry["pts"] / max(a_entry.get("played", 1), 1)
+            gd_h[i] = h_entry["gf"] - h_entry["ga"]
+            gd_a[i] = a_entry["gf"] - a_entry["ga"]
+            pts_h[i] = h_entry["pts"]
+            pts_a[i] = a_entry["pts"]
+
+            # Gap to top and bottom
+            all_pts = [e["pts"] for e in table.values()] if table else [0]
+            max_pts = max(all_pts) if all_pts else 0
+            min_pts = min(all_pts) if all_pts else 0
+            gap_top_h[i] = max_pts - h_entry["pts"]
+            gap_top_a[i] = max_pts - a_entry["pts"]
+            gap_bot_h[i] = h_entry["pts"] - min_pts
+            gap_bot_a[i] = a_entry["pts"] - min_pts
+
+            # Position-based probability
+            pos_diff = rel_pos_h[i] - rel_pos_a[i]
+            p_h = 0.44 + pos_diff * 0.3
+            p_a = 0.28 - pos_diff * 0.2
+            p_d = 1.0 - p_h - p_a
+            probs[i] = _norm3(max(0.05, p_h), max(0.10, p_d), max(0.05, p_a))
+
+            total_played = h_entry.get("played", 0) + a_entry.get("played", 0)
+            conf[i] = min(1.0, total_played / 20.0)
+
+            # --- Update table ---
+            hg, ag = int(r.home_goals), int(r.away_goals)
+            if sk not in tables:
+                tables[sk] = {}
+            for team, gf, ga in [(h, hg, ag), (a, ag, hg)]:
+                if team not in tables[sk]:
+                    tables[sk][team] = {"pts": 0, "gf": 0, "ga": 0, "played": 0, "pos": 1}
+                e = tables[sk][team]
+                e["gf"] += gf
+                e["ga"] += ga
+                e["played"] += 1
+                e["pts"] += 3 if gf > ga else (1 if gf == ga else 0)
+
+        return ExpertResult(
+            probs=probs,
+            confidence=conf,
+            features={
+                "lt_pos_h": pos_h, "lt_pos_a": pos_a,
+                "lt_pos_diff": pos_h - pos_a,
+                "lt_rel_pos_h": rel_pos_h, "lt_rel_pos_a": rel_pos_a,
+                "lt_ppg_h": ppg_h, "lt_ppg_a": ppg_a,
+                "lt_ppg_diff": ppg_h - ppg_a,
+                "lt_gd_h": gd_h, "lt_gd_a": gd_a,
+                "lt_gd_diff": gd_h - gd_a,
+                "lt_pts_h": pts_h, "lt_pts_a": pts_a,
+                "lt_gap_top_h": gap_top_h, "lt_gap_top_a": gap_top_a,
+                "lt_gap_bot_h": gap_bot_h, "lt_gap_bot_a": gap_bot_a,
+            },
+        )
+
+
+# ===================================================================
 # COUNCIL — META-LEARNER
 # ===================================================================
 ALL_EXPERTS: list[Expert] = [
     EloExpert(), MarketExpert(), FormExpert(),
     PoissonExpert(), H2HExpert(), ContextExpert(),
+    GoalPatternExpert(), LeagueTableExpert(),
 ]
 
 
@@ -999,6 +1303,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     ])
 
     # 4. cross-expert interaction features (pairwise)
+    n_exp = min(8, len(results))
     # elo-market agreement
     elo_mkt_agree = 1.0 - np.abs(results[0].probs[:, 0] - results[1].probs[:, 0])
     # form-h2h agreement
@@ -1009,23 +1314,32 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     elo_form_agree = 1.0 - np.abs(results[0].probs[:, 0] - results[2].probs[:, 0])
     # poisson-elo agreement
     pois_elo_agree = 1.0 - np.abs(results[3].probs[:, 0] - results[0].probs[:, 0])
+    # goal-pattern-form agreement (new)
+    gp_form_agree = np.zeros(n)
+    if n_exp > 6:
+        gp_form_agree = 1.0 - np.abs(results[6].probs[:, 0] - results[2].probs[:, 0])
+    # league-table-elo agreement (new)
+    lt_elo_agree = np.zeros(n)
+    if n_exp > 7:
+        lt_elo_agree = 1.0 - np.abs(results[7].probs[:, 0] - results[0].probs[:, 0])
     # max disagreement across any pair of experts (for home win)
     max_disagree = np.zeros(n)
-    for ei in range(min(6, len(results))):
-        for ej in range(ei + 1, min(6, len(results))):
+    for ei in range(n_exp):
+        for ej in range(ei + 1, n_exp):
             pair_dis = np.abs(results[ei].probs[:, 0] - results[ej].probs[:, 0])
             max_disagree = np.maximum(max_disagree, pair_dis)
     # number of experts that agree on same winner
     winner_votes = np.zeros(n)
     for ii in range(n):
-        winners = [np.argmax(r.probs[ii]) for r in results[:6] if ii < r.probs.shape[0]]
+        winners = [np.argmax(r.probs[ii]) for r in results[:n_exp] if ii < r.probs.shape[0]]
         if winners:
             most_common = Counter(winners).most_common(1)[0][1]
             winner_votes[ii] = most_common / len(winners)
     blocks.extend([
         elo_mkt_agree[:, None], form_h2h_agree[:, None],
         pois_mkt_agree[:, None], elo_form_agree[:, None],
-        pois_elo_agree[:, None], max_disagree[:, None],
+        pois_elo_agree[:, None], gp_form_agree[:, None],
+        lt_elo_agree[:, None], max_disagree[:, None],
         winner_votes[:, None],
     ])
 
@@ -1056,7 +1370,8 @@ def _prepare_df(con, finished_only: bool = True, days: int = 3650) -> pd.DataFra
                e.avg_o25, e.avg_u25,
                e.max_o25, e.max_u25,
                e.hs, e.hst, e.hc, e.hy, e.hr,
-               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar
+               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar,
+               e.hthg, e.htag
         FROM matches m
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE {status_filter} {date_filter}
@@ -1307,7 +1622,7 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
 
     # load all history for sequential feature computation
     hist = con.execute("""
-        SELECT m.utc_date, m.home_team, m.away_team, m.home_goals, m.away_goals,
+        SELECT m.utc_date, m.competition, m.home_team, m.away_team, m.home_goals, m.away_goals,
                e.b365h, e.b365d, e.b365a, e.raw_json,
                e.b365ch, e.b365cd, e.b365ca,
                e.psh, e.psd, e.psa,
@@ -1317,7 +1632,8 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
                e.avg_o25, e.avg_u25,
                e.max_o25, e.max_u25,
                e.hs, e.hst, e.hc, e.hy, e.hr,
-               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar
+               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar,
+               e.hthg, e.htag
         FROM matches m
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE m.status = 'FINISHED'
@@ -1343,7 +1659,7 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     keep = ["utc_date", "home_team", "away_team"] + [c for c in _odds_cols if c in up.columns]
     dummy = up[keep].copy()
     dummy["home_goals"] = 0; dummy["away_goals"] = 0
-    for c in ["hs", "hst", "hc", "hy", "hr", "as_", "ast", "ac", "ay", "ar"]:
+    for c in ["hs", "hst", "hc", "hy", "hr", "as_", "ast", "ac", "ay", "ar", "hthg", "htag"]:
         dummy[c] = 0
 
     combo = pd.concat([hist, dummy], ignore_index=True).sort_values("utc_date").reset_index(drop=True)
@@ -1527,7 +1843,7 @@ def get_expert_breakdown(con, match_id: int) -> dict | None:
     # Load recent history only (last 5 seasons) for faster fallback
     # Full history is used during predict_upcoming and cached
     hist = con.execute("""
-        SELECT m.utc_date, m.home_team, m.away_team, m.home_goals, m.away_goals,
+        SELECT m.utc_date, m.competition, m.home_team, m.away_team, m.home_goals, m.away_goals,
                e.b365h, e.b365d, e.b365a, e.raw_json,
                e.b365ch, e.b365cd, e.b365ca,
                e.psh, e.psd, e.psa,
@@ -1537,7 +1853,8 @@ def get_expert_breakdown(con, match_id: int) -> dict | None:
                e.avg_o25, e.avg_u25,
                e.max_o25, e.max_u25,
                e.hs, e.hst, e.hc, e.hy, e.hr,
-               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar
+               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar,
+               e.hthg, e.htag
         FROM matches m
         LEFT JOIN match_extras e ON e.match_id = m.match_id
         WHERE m.status = 'FINISHED'
@@ -1594,6 +1911,8 @@ def get_expert_breakdown(con, match_id: int) -> dict | None:
         "max_u25": extras[21] if extras else None,
         "hs": 0, "hst": 0, "hc": 0, "hy": 0, "hr": 0,
         "as_": 0, "ast": 0, "ac": 0, "ay": 0, "ar": 0,
+        "hthg": 0, "htag": 0,
+        "competition": comp,
     }])
 
     combo = pd.concat([hist, dummy], ignore_index=True).sort_values("utc_date").reset_index(drop=True)

@@ -1,27 +1,19 @@
 /**
- * Footy Predictor v3 — Enhanced frontend
- * League filter · Confidence tiers · Verdicts · Kelly criterion
- * Auto-load · Performance tracking · Poisson stats · Scored predictions
+ * Footy Predictor v4 — Full-page match detail + League tables
+ * URL-driven routing · Auto-loading · Performance dashboard
  */
 document.addEventListener('alpine:init', () => {
 
   Alpine.data('app', () => ({
-    // ── state ──
+    // ── routing ──
+    view: 'main',       // 'main' or 'match'
     tab: 'matches',
+    matchId: null,
+
+    // ── main view state ──
     matches: [],
     loading: true,
     league: 'all',
-    detailOpen: false,
-    detailMatch: null,
-    detailData: null,
-    detailExperts: null,
-    detailH2H: null,
-    detailNarrative: null,
-    detailForm: null,
-    loadingDetail: false,
-    loadingExperts: false,
-    loadingH2H: false,
-    loadingAI: false,
     valueBets: [],
     loadingBets: false,
     stats: null,
@@ -30,7 +22,24 @@ document.addEventListener('alpine:init', () => {
     loadingPerf: false,
     lastUpdated: null,
     days: 14,
-    model: 'v7_council',
+    model: 'v8_council',
+
+    // ── league table state ──
+    tableComp: 'PL',
+    tableCompetitions: ['PL', 'PD', 'SA', 'BL1', 'FL1'],
+    leagueTable: [],
+    loadingTable: false,
+
+    // ── match detail state ──
+    md: null,           // match detail data
+    loadingDetail: false,
+    matchExperts: null,
+    loadingExperts: false,
+    matchH2H: null,
+    loadingH2H: false,
+    matchForm: null,
+    matchNarrative: null,
+    loadingAI: false,
 
     // ── helpers ──
     async _fetch(url) {
@@ -44,11 +53,92 @@ document.addEventListener('alpine:init', () => {
 
     // ── lifecycle ──
     init() {
-      this.fetchMatches();
+      // Detect URL for routing
+      const path = window.location.pathname;
+      const matchRoute = path.match(/^\/match\/(\d+)$/);
+      if (matchRoute) {
+        this.openMatch(parseInt(matchRoute[1]));
+      } else {
+        this.fetchMatches();
+      }
       this.fetchLastUpdated();
+
+      // Handle browser back/forward
+      window.addEventListener('popstate', (e) => {
+        if (e.state?.view === 'match' && e.state?.matchId) {
+          this.openMatch(e.state.matchId, false);
+        } else {
+          this.view = 'main';
+          if (!this.matches.length) this.fetchMatches();
+        }
+      });
     },
 
-    // ═══════ API ═══════
+    // ═══════ ROUTING ═══════
+    goHome() {
+      this.view = 'main';
+      if (!this.matches.length) this.fetchMatches();
+      history.pushState({ view: 'main' }, '', '/');
+      document.title = 'Footy Predictor';
+    },
+
+    async openMatch(matchId, pushState = true) {
+      this.view = 'match';
+      this.matchId = matchId;
+      this.md = null;
+      this.matchExperts = null;
+      this.matchH2H = null;
+      this.matchForm = null;
+      this.matchNarrative = null;
+      this.loadingDetail = true;
+      this.loadingExperts = false;
+      this.loadingH2H = false;
+      this.loadingAI = false;
+
+      if (pushState) {
+        history.pushState({ view: 'match', matchId }, '', `/match/${matchId}`);
+      }
+      window.scrollTo(0, 0);
+
+      try {
+        this.md = await this._fetch(`/api/matches/${matchId}?model=${this.model}`);
+        document.title = `${this.md.home_team} vs ${this.md.away_team} — Footy Predictor`;
+      } catch(e) { console.error(e); }
+      this.loadingDetail = false;
+
+      // Auto-load all match data in parallel
+      this._loadMatchExperts(matchId);
+      this._loadMatchH2H(matchId);
+      this._loadMatchForm(matchId);
+    },
+
+    async _loadMatchExperts(matchId) {
+      this.loadingExperts = true;
+      try { this.matchExperts = await this._fetch(`/api/matches/${matchId}/experts`); } catch(e) { console.error(e); }
+      this.loadingExperts = false;
+    },
+
+    async _loadMatchH2H(matchId) {
+      this.loadingH2H = true;
+      try { this.matchH2H = await this._fetch(`/api/matches/${matchId}/h2h`); } catch(e) { console.error(e); }
+      this.loadingH2H = false;
+    },
+
+    async _loadMatchForm(matchId) {
+      try { this.matchForm = await this._fetch(`/api/matches/${matchId}/form`); } catch(e) { console.error(e); }
+    },
+
+    async loadAI() {
+      if (!this.matchId || this.matchNarrative) return;
+      this.loadingAI = true;
+      try {
+        const d = await this._fetch(`/api/matches/${this.matchId}/ai`);
+        this.matchNarrative = d.narrative || 'AI analysis unavailable — is Ollama running?';
+      } catch(e) { this.matchNarrative = 'Failed to generate analysis.'; }
+      this.loadingAI = false;
+    },
+
+    // ═══════ API CALLS ═══════
     async fetchMatches() {
       this.loading = true;
       try {
@@ -65,69 +155,6 @@ document.addEventListener('alpine:init', () => {
       } catch(e) { /* ignore */ }
     },
 
-    async openDetail(match) {
-      this.detailMatch = match;
-      this.detailData = null;
-      this.detailExperts = null;
-      this.detailH2H = null;
-      this.detailNarrative = null;
-      this.detailForm = null;
-      this.detailOpen = true;
-      this.loadingDetail = true;
-      this.loadingExperts = false;
-      this.loadingH2H = false;
-      this.loadingAI = false;
-
-      try {
-        this.detailData = await this._fetch(`/api/matches/${match.match_id}?model=${this.model}`);
-      } catch(e) { console.error(e); }
-      this.loadingDetail = false;
-
-      // Auto-load everything in parallel (no manual button clicks)
-      this.loadExperts();
-      this.loadForm();
-      this.loadH2H();
-    },
-
-    closeDetail() { this.detailOpen = false; },
-
-    async loadExperts() {
-      if (!this.detailMatch || this.detailExperts) return;
-      this.loadingExperts = true;
-      try {
-        this.detailExperts = await this._fetch(`/api/matches/${this.detailMatch.match_id}/experts`);
-      } catch(e) { console.error(e); }
-      this.loadingExperts = false;
-    },
-
-    async loadH2H() {
-      if (!this.detailMatch || this.detailH2H) return;
-      this.loadingH2H = true;
-      try {
-        this.detailH2H = await this._fetch(`/api/matches/${this.detailMatch.match_id}/h2h`);
-      } catch(e) { console.error(e); }
-      this.loadingH2H = false;
-    },
-
-    async loadForm() {
-      if (!this.detailMatch) return;
-      try {
-        this.detailForm = await this._fetch(`/api/matches/${this.detailMatch.match_id}/form`);
-      } catch(e) { console.error(e); }
-    },
-
-    async loadAI() {
-      if (!this.detailMatch || this.detailNarrative) return;
-      this.loadingAI = true;
-      try {
-        const d = await this._fetch(`/api/matches/${this.detailMatch.match_id}/ai`);
-        this.detailNarrative = d.narrative || 'AI analysis unavailable — is Ollama running?';
-      } catch(e) {
-        this.detailNarrative = 'Failed to generate analysis.';
-      }
-      this.loadingAI = false;
-    },
-
     async fetchValueBets() {
       this.loadingBets = true;
       try {
@@ -139,28 +166,38 @@ document.addEventListener('alpine:init', () => {
 
     async fetchStats() {
       this.loadingStats = true;
-      try {
-        this.stats = await this._fetch('/api/stats');
-      } catch(e) { console.error(e); }
+      try { this.stats = await this._fetch('/api/stats'); } catch(e) { console.error(e); }
       this.loadingStats = false;
     },
 
     async fetchPerformance() {
       this.loadingPerf = true;
-      try {
-        this.performance = await this._fetch(`/api/performance?model=${this.model}`);
-      } catch(e) { console.error(e); }
+      try { this.performance = await this._fetch(`/api/performance?model=${this.model}`); } catch(e) { console.error(e); }
       this.loadingPerf = false;
+    },
+
+    async fetchLeagueTable() {
+      this.loadingTable = true;
+      try {
+        const d = await this._fetch(`/api/league-table/${this.tableComp}`);
+        this.leagueTable = d.standings || [];
+      } catch(e) { console.error(e); this.leagueTable = []; }
+      this.loadingTable = false;
+    },
+
+    selectTableComp(c) {
+      this.tableComp = c;
+      this.fetchLeagueTable();
     },
 
     switchTab(t) {
       this.tab = t;
       if (t === 'insights' && !this.valueBets.length) this.fetchValueBets();
       if (t === 'stats' && !this.stats) { this.fetchStats(); this.fetchPerformance(); }
+      if (t === 'table' && !this.leagueTable.length) this.fetchLeagueTable();
     },
 
     // ═══════ COMPUTED ═══════
-
     get leagues() {
       const s = new Set(this.matches.map(m => m.competition));
       return ['all', ...Array.from(s).sort()];
@@ -181,7 +218,7 @@ document.addEventListener('alpine:init', () => {
       return Object.entries(groups);
     },
 
-    // ═══════ HELPERS ═══════
+    // ═══════ FORMATTERS ═══════
     pct(v) { return v != null ? Math.round(v * 100) + '%' : '—'; },
     pct1(v) { return v != null ? (v * 100).toFixed(1) + '%' : '—'; },
 
@@ -195,11 +232,12 @@ document.addEventListener('alpine:init', () => {
     },
 
     matchTime(m) {
+      if (!m?.utc_date) return '';
       return m.utc_date.length > 10 ? m.utc_date.slice(11, 16) : '';
     },
 
     badgeClass(comp) {
-      const map = { PL: 'badge-PL', SA: 'badge-SA', PD: 'badge-PD', BL1: 'badge-BL1' };
+      const map = { PL: 'badge-PL', SA: 'badge-SA', PD: 'badge-PD', BL1: 'badge-BL1', FL1: 'badge-FL1' };
       return 'badge ' + (map[comp] || 'badge-default');
     },
 
@@ -213,10 +251,7 @@ document.addEventListener('alpine:init', () => {
 
     confLabel(m) {
       const c = this.confidence(m);
-      if (c === 'high') return 'Strong';
-      if (c === 'medium') return 'Moderate';
-      if (c === 'low') return 'Close';
-      return '';
+      return c === 'high' ? 'Strong' : c === 'medium' ? 'Moderate' : c === 'low' ? 'Close' : '';
     },
 
     verdict(m) {
@@ -226,37 +261,32 @@ document.addEventListener('alpine:init', () => {
       if (mx === h) {
         if (h >= 0.55) return { text: `${m.home_team} expected to win`, cls: 'verdict-home' };
         if (h >= 0.42) return { text: `${m.home_team} slight edge`, cls: 'verdict-home' };
-        return { text: 'Tight match, home slight lean', cls: 'verdict-home' };
+        return { text: 'Tight match, home lean', cls: 'verdict-home' };
       }
       if (mx === a) {
         if (a >= 0.55) return { text: `${m.away_team} expected to win`, cls: 'verdict-away' };
         if (a >= 0.42) return { text: `${m.away_team} slight edge`, cls: 'verdict-away' };
-        return { text: 'Tight match, away slight lean', cls: 'verdict-away' };
+        return { text: 'Tight match, away lean', cls: 'verdict-away' };
       }
       return { text: 'Draw is the highest probability', cls: 'verdict-draw' };
     },
 
-    isHighest(outcome, m) {
-      if (!m) return false;
-      const data = this.detailData?.prediction || m;
-      const h = data.p_home, d = data.p_draw, a = data.p_away;
-      if (h == null) return false;
-      const mx = Math.max(h, d, a);
-      if (outcome === 'home') return h === mx;
-      if (outcome === 'draw') return d === mx;
-      return a === mx;
+    isHighest(outcome) {
+      const p = this.md?.prediction;
+      if (!p) return false;
+      const mx = Math.max(p.p_home, p.p_draw, p.p_away);
+      if (outcome === 'home') return p.p_home === mx;
+      if (outcome === 'draw') return p.p_draw === mx;
+      return p.p_away === mx;
     },
 
     winner(hg, ag) {
-      if (hg > ag) return 'home';
-      if (ag > hg) return 'away';
-      return 'draw';
+      return hg > ag ? 'home' : ag > hg ? 'away' : 'draw';
     },
 
     kelly(prob, odds) {
       if (!odds || odds <= 1) return 0;
-      const k = (prob * odds - 1) / (odds - 1);
-      return Math.max(0, k);
+      return Math.max(0, (prob * odds - 1) / (odds - 1));
     },
 
     kellyPct(prob, odds) {
@@ -264,29 +294,24 @@ document.addEventListener('alpine:init', () => {
       return k > 0 ? (k * 100).toFixed(1) + '%' : '—';
     },
 
-    consensusScore() {
-      if (!this.detailExperts?.experts) return 50;
-      const experts = Object.values(this.detailExperts.experts);
-      if (experts.length < 2) return 100;
-      const homeProbs = experts.map(e => e.probs.home);
-      const mean = homeProbs.reduce((a,b) => a+b, 0) / homeProbs.length;
-      const variance = homeProbs.reduce((a,b) => a + (b - mean) ** 2, 0) / homeProbs.length;
-      const normalised = 1 - Math.min(variance / 0.04, 1);
-      return Math.round(normalised * 100);
+    consensusScore(experts) {
+      if (!experts?.experts) return 50;
+      const vals = Object.values(experts.experts);
+      if (vals.length < 2) return 100;
+      const probs = vals.map(e => e.probs.home);
+      const mean = probs.reduce((a,b) => a+b, 0) / probs.length;
+      const variance = probs.reduce((a,b) => a + (b - mean) ** 2, 0) / probs.length;
+      return Math.round((1 - Math.min(variance / 0.04, 1)) * 100);
     },
 
-    consensusLabel() {
-      const s = this.consensusScore();
-      if (s >= 75) return 'Strong agreement';
-      if (s >= 45) return 'Mixed signals';
-      return 'Expert clash';
+    consensusLabel(experts) {
+      const s = this.consensusScore(experts);
+      return s >= 75 ? 'Strong agreement' : s >= 45 ? 'Mixed signals' : 'Expert clash';
     },
 
-    consensusClass() {
-      const s = this.consensusScore();
-      if (s >= 75) return 'agree';
-      if (s >= 45) return 'mixed';
-      return 'clash';
+    consensusClass(experts) {
+      const s = this.consensusScore(experts);
+      return s >= 75 ? 'agree' : s >= 45 ? 'mixed' : 'clash';
     },
 
     edge(modelProb, odds) {
@@ -297,8 +322,8 @@ document.addEventListener('alpine:init', () => {
     edgeText(modelProb, odds) {
       const e = this.edge(modelProb, odds);
       if (e == null) return '';
-      const pct = (e * 100).toFixed(1);
-      return e > 0 ? `+${pct}%` : `${pct}%`;
+      const p = (e * 100).toFixed(1);
+      return e > 0 ? `+${p}%` : `${p}%`;
     },
 
     leagueName(code) {
@@ -309,8 +334,7 @@ document.addEventListener('alpine:init', () => {
     formatUpdated(ts) {
       if (!ts) return 'Never';
       const d = new Date(ts);
-      const now = new Date();
-      const diff = Math.floor((now - d) / 60000);
+      const diff = Math.floor((new Date() - d) / 60000);
       if (diff < 60) return `${diff}m ago`;
       if (diff < 1440) return `${Math.floor(diff/60)}h ago`;
       return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });

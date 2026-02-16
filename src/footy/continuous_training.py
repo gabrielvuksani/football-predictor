@@ -6,7 +6,7 @@ Tracks model versions, training windows, validates improvements, and auto-deploy
 
 Features:
 - Drift detection: monitors prediction accuracy on recent results
-- Auto-retrain: triggers v7_council retraining when new-match or drift thresholds are met
+- Auto-retrain: triggers v8_council retraining when new-match or drift thresholds are met
 - Performance gating: only deploys if new model beats current on held-out set
 - Automatic rollback: reverts if deployed model degrades within grace window
 - Full audit trail: every train/deploy/rollback is logged with metrics
@@ -14,7 +14,7 @@ Features:
 from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 import json
 import shutil
 import logging
@@ -62,7 +62,7 @@ class ContinuousTrainingManager:
     Example usage:
         manager = ContinuousTrainingManager()
         manager.setup_continuous_training(
-            model_type="v7_council",
+            model_type="v8_council",
             retrain_threshold_matches=10,
             performance_threshold_improvement=0.01
         )
@@ -310,15 +310,15 @@ class ContinuousTrainingManager:
         End-to-end auto-retrain: check thresholds → train → validate → deploy/rollback.
         
         1. Checks if retraining is needed (new matches or drift detected)
-        2. Trains new v7_council model
+        2. Trains new v8_council model
         3. Compares test-set performance vs current model
         4. Deploys only if performance improves (or force=True)
         5. Backs up old model artifact for rollback
         
         Returns summary dict.
         """
-        check = self.check_and_retrain("v7_council")
-        result = check.get("v7_council", {})
+        check = self.check_and_retrain("v8_council")
+        result = check.get("v8_council", {})
         status = result.get("status", "")
 
         if not force and status not in ("ready_to_retrain", "drift_detected"):
@@ -332,8 +332,8 @@ class ContinuousTrainingManager:
 
         # ---- Backup current model artifact ----
         model_dir = Path("data/models")
-        current_artifact = model_dir / "v7_council.joblib"
-        backup_artifact = model_dir / "v7_council.joblib.bak"
+        current_artifact = model_dir / "v8_council.joblib"
+        backup_artifact = model_dir / "v8_council.joblib.bak"
         if current_artifact.exists():
             shutil.copy2(current_artifact, backup_artifact)
 
@@ -367,10 +367,10 @@ class ContinuousTrainingManager:
         # ---- Record training ----
         from datetime import timezone as _tz
         ts = datetime.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
-        new_version = f"v7_council_{ts}"
+        new_version = f"v8_council_{ts}"
         record = self.record_training(
             model_version=new_version,
-            model_type="v7_council",
+            model_type="v8_council",
             training_window_days=train_result.get("window_days", 3650),
             n_matches_used=new_metrics["n_train"],
             n_matches_test=new_metrics["n_test"],
@@ -381,7 +381,7 @@ class ContinuousTrainingManager:
         # ---- Deploy or rollback ----
         improved = record.get("improvement_pct", 0) >= 0 or force
         if improved:
-            deploy = self.deploy_model(new_version, "v7_council", force=True)
+            deploy = self.deploy_model(new_version, "v8_council", force=True)
             if verbose:
                 log.info("Auto-retrain: deployed %s (improvement %.2f%%)",
                          new_version, record["improvement_pct"])
@@ -423,7 +423,7 @@ class ContinuousTrainingManager:
         
         Args:
             model_version: New version identifier (e.g., "v5_ultimate_20260214_v2")
-            model_type: Model type (v5_ultimate, v7_council, etc.)
+            model_type: Model type (v5_ultimate, v8_council, etc.)
             training_window_days: Number of days of data used for training
             n_matches_used: Number of matches in training set
             n_matches_test: Number of matches in test set

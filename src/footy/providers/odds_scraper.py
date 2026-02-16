@@ -408,8 +408,6 @@ def fill_upcoming_odds_from_predictions(
     Returns:
         dict with stats on how many matches were filled
     """
-    from footy.normalize import canonical_team_name
-    
     # Get upcoming matches without odds
     upcoming = con.execute("""
         SELECT m.match_id, m.home_team, m.away_team

@@ -103,11 +103,11 @@ class TestLiveDatabase:
 class TestLiveModel:
     """Verify the trained model file is loadable."""
 
-    def test_v7_model_exists(self):
+    def test_v8_model_exists(self):
         from footy.models.council import MODEL_PATH
         assert MODEL_PATH.exists(), f"Model file missing: {MODEL_PATH}"
 
-    def test_v7_model_loadable(self):
+    def test_v8_model_loadable(self):
         import joblib
         from footy.models.council import MODEL_PATH
         bundle = joblib.load(MODEL_PATH)
@@ -115,7 +115,7 @@ class TestLiveModel:
         assert "model" in bundle or "pipeline" in bundle or "clf" in bundle \
             or "meta" in bundle, f"Unexpected model keys: {list(bundle.keys())}"
 
-    def test_v7_model_has_feature_names(self):
+    def test_v8_model_has_feature_names(self):
         import joblib
         from footy.models.council import MODEL_PATH
         bundle = joblib.load(MODEL_PATH)

@@ -21,6 +21,8 @@ from footy.cli.ai_cmds import app as _ai_app
 from footy.cli.scheduler_cmds import app as _scheduler_app
 from footy.cli.perf_cmds import app as _perf_app
 from footy.cli.stats_cmds import app as _stats_app
+from footy.cli.opta_cmds import app as _opta_app
+from footy.cli.pages_cmds import app as _pages_app
 
 # Root app — inherits the root-level commands (go, refresh, serve, etc.)
 app = typer.Typer(add_completion=False)
@@ -37,6 +39,8 @@ app.add_typer(_ai_app, name="ai")
 app.add_typer(_scheduler_app, name="scheduler")
 app.add_typer(_perf_app, name="perf")
 app.add_typer(_stats_app, name="stats")
+app.add_typer(_opta_app, name="opta")
+app.add_typer(_pages_app, name="pages")
 
 
 if __name__ == "__main__":

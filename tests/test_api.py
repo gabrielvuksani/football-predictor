@@ -40,7 +40,7 @@ class TestApiMatches:
         assert r.status_code == 200
 
     def test_matches_with_model_param(self, client):
-        r = client.get("/api/matches?model=v7_council")
+        r = client.get("/api/matches?model=v8_council")
         assert r.status_code == 200
 
     def test_match_detail_not_found(self, client):

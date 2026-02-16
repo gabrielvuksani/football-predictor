@@ -54,7 +54,7 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
     con = connect()
     
     # Get recent matches for this team
-    query = f"""
+    query = """
     SELECT 
         utc_date, 
         home_team, 
@@ -63,12 +63,12 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
         away_goals,
         status
     FROM matches
-    WHERE (home_team = '{team}' OR away_team = '{team}')
+    WHERE (home_team = ? OR away_team = ?)
         AND status = 'FINISHED'
     ORDER BY utc_date DESC
-    LIMIT {matches_window}
+    LIMIT ?
     """
-    results = con.execute(query).df()
+    results = con.execute(query, [team, team, matches_window]).df()
     
     if results.empty:
         return {
@@ -271,7 +271,7 @@ def explain_match(
     home_pred: float,
     draw_pred: float,
     away_pred: float,
-    model_version: str = "v7_council"
+    model_version: str = "v8_council"
 ) -> dict:
     """
     Generate detailed LLM explanation for why a match has given probabilities.
@@ -296,11 +296,11 @@ def explain_match(
     
     # Get match details
     try:
-        match = con.execute(f"""
+        match = con.execute("""
             SELECT m.*
             FROM matches m
-            WHERE m.match_id = {match_id}
-        """).df()
+            WHERE m.match_id = ?
+        """, [match_id]).df()
         
         if match.empty:
             return {
@@ -328,11 +328,11 @@ def explain_match(
     # Get H2H if available
     h2h_text = ""
     try:
-        h2h = con.execute(f"""
+        h2h = con.execute("""
             SELECT games, home_wins, draws, away_wins
             FROM h2h_stats
-            WHERE team_1 = '{home_team}' AND team_2 = '{away_team}'
-        """).df()
+            WHERE team_1 = ? AND team_2 = ?
+        """, [home_team, away_team]).df()
         if not h2h.empty:
             row = h2h.iloc[0]
             h2h_text = f"H2H: {row['home_wins']}W-{row['draws']}D-{row['away_wins']}W ({row['games']} games)"
@@ -404,7 +404,7 @@ Return JSON:
 
 def explain_matches_batch(
     matches: list[dict],
-    model_version: str = "v7_council"
+    model_version: str = "v8_council"
 ) -> list[dict]:
     """
     Generate explanations for multiple matches.
@@ -759,7 +759,11 @@ def post_match_review(days_back: int = 3, competition_code: str | None = None) -
     con = connect()
     cutoff = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
 
-    comp_filter = f"AND m.competition = '{competition_code}'" if competition_code else ""
+    params = [cutoff]
+    comp_filter = ""
+    if competition_code:
+        comp_filter = "AND m.competition = ?"
+        params.append(competition_code)
     rows = con.execute(f"""
         SELECT m.match_id, m.home_team, m.away_team,
                m.home_goals, m.away_goals,
@@ -767,11 +771,11 @@ def post_match_review(days_back: int = 3, competition_code: str | None = None) -
         FROM matches m
         JOIN predictions p ON p.match_id = m.match_id
         WHERE m.status = 'FINISHED'
-          AND m.utc_date >= '{cutoff}'
+          AND m.utc_date >= ?
           AND p.model_version LIKE 'v%'
           {comp_filter}
         ORDER BY m.utc_date DESC
-    """).fetchall()
+    """, params).fetchall()
 
     if not rows:
         return {"matches_reviewed": 0, "correct": 0, "accuracy": 0,
@@ -944,13 +948,13 @@ def league_form_table(competition_code: str, last_n: int = 6) -> list[dict]:
 
     table = []
     for (team,) in teams:
-        rows = con.execute(f"""
+        rows = con.execute("""
             SELECT home_team, away_team, home_goals, away_goals
             FROM matches
             WHERE (home_team = ? OR away_team = ?)
               AND competition = ? AND status = 'FINISHED'
-            ORDER BY utc_date DESC LIMIT {last_n}
-        """, [team, team, competition_code]).fetchall()
+            ORDER BY utc_date DESC LIMIT ?
+        """, [team, team, competition_code, last_n]).fetchall()
 
         if not rows:
             continue
@@ -1100,16 +1104,16 @@ def prediction_accuracy_stats(days_back: int = 30) -> dict:
     con = connect()
     cutoff = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
 
-    rows = con.execute(f"""
+    rows = con.execute("""
         SELECT m.match_id, m.competition,
                p.p_home, p.p_draw, p.p_away,
                m.home_goals, m.away_goals
         FROM matches m
         JOIN predictions p ON p.match_id = m.match_id
         WHERE m.status = 'FINISHED'
-          AND m.utc_date >= '{cutoff}'
+          AND m.utc_date >= ?
         ORDER BY m.utc_date DESC
-    """).fetchall()
+    """, [cutoff]).fetchall()
 
     if not rows:
         return {"total": 0}

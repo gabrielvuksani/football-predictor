@@ -1,6 +1,4 @@
 from __future__ import annotations
-import math
-from footy.db import connect
 from footy.models.elo_core import (
     elo_expected as _expected,
     elo_draw_prob,

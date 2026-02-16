@@ -13,7 +13,7 @@ Features:
 """
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Optional
 import math
 
 from footy.db import connect
@@ -142,7 +142,8 @@ class PerformanceTracker:
             outcomes.append(outcome)
             probabilities.append((outcome, probs))
             
-            if outcome_prob > 0.5:
+            predicted_outcome = max(range(3), key=lambda i: probs[i])
+            if predicted_outcome == outcome:
                 n_correct += 1
             
             outcome_counts[outcome] += 1
@@ -165,7 +166,7 @@ class PerformanceTracker:
                 competitions[competition] = {"total": 0, "correct": 0}
             competitions[competition]["total"] += 1
             
-            if outcome_prob > 0.5:
+            if predicted_outcome == outcome:
                 competitions[competition]["correct"] += 1
         
         n = len(rows)
@@ -444,7 +445,7 @@ def get_performance_tracker() -> PerformanceTracker:
 # SELF-IMPROVEMENT: Error Analysis & Feedback Loop
 # ===================================================================
 
-def analyze_prediction_errors(model_version: str = "v7_council",
+def analyze_prediction_errors(model_version: str = "v8_council",
                                days: int = 180) -> dict:
     """
     Deep error analysis — identifies systematic weaknesses in predictions.
@@ -653,7 +654,7 @@ def analyze_prediction_errors(model_version: str = "v7_council",
     }
 
 
-def generate_improvement_report(model_version: str = "v7_council",
+def generate_improvement_report(model_version: str = "v8_council",
                                  days: int = 180) -> str:
     """
     Generate a human-readable self-improvement report.

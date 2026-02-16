@@ -13,11 +13,14 @@ Key concepts:
 """
 
 from __future__ import annotations
+import logging
 import re
 import unicodedata
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, List, Tuple
 from difflib import SequenceMatcher
 import duckdb
+
+log = logging.getLogger(__name__)
 
 # ============================================================================
 # COMPREHENSIVE TEAM MAPPINGS (all DB teams covered)
@@ -183,6 +186,21 @@ TEAM_MAPPINGS: Dict[str, list[str]] = {
     "strasbourg": ["Strasbourg", "RC Strasbourg Alsace", "RC Strasbourg"],
     "toulouse": ["Toulouse", "Toulouse FC"],
     "troyes": ["Troyes", "ESTAC Troyes"],
+    "laval": ["Laval", "Stade Lavallois", "Stade Lavallois Mayenne FC"],
+    "nancy": ["Nancy", "AS Nancy Lorraine", "AS Nancy"],
+    "bastia": ["Bastia", "SC Bastia"],
+    "sochaux": ["Sochaux", "FC Sochaux-Montbéliard"],
+    "valenciennes": ["Valenciennes", "Valenciennes FC"],
+    "sedan": ["Sedan", "CS Sedan"],
+    "le-mans": ["Le Mans", "Le Mans FC"],
+    "chateauroux": ["Châteauroux", "LB Châteauroux", "Chateauroux"],
+    "orleans": ["Orléans", "US Orléans", "Orleans"],
+    "rodez": ["Rodez", "Rodez AF"],
+    "pau": ["Pau", "Pau FC"],
+    "dunkerque": ["Dunkerque", "USL Dunkerque"],
+    "grenoble": ["Grenoble", "Grenoble Foot 38"],
+    "niort": ["Niort", "Chamois Niortais"],
+    "quevilly-rouen": ["Quevilly Rouen", "QRM", "Quevilly-Rouen Métropole"],
 
     # ======================== NETHERLANDS ========================
     "ajax": ["Ajax", "AFC Ajax"],
@@ -215,9 +233,88 @@ TEAM_MAPPINGS: Dict[str, list[str]] = {
 }
 
 # ============================================================================
+# Provider-specific hints: known aliases per provider
+# Checked before generic lookup for faster, more accurate resolution.
+# ============================================================================
+PROVIDER_HINTS: Dict[str, Dict[str, str]] = {
+    # football-data.co.uk uses short/abbreviated names
+    "football-data.co.uk": {
+        "man city": "manchester-city",
+        "man utd": "manchester-united",
+        "man united": "manchester-united",
+        "spurs": "tottenham-hotspur",
+        "wolves": "wolverhampton-wanderers",
+        "west brom": "west-bromwich-albion",
+        "west ham": "west-ham-united",
+        "sheff utd": "sheffield-united",
+        "sheff united": "sheffield-united",
+        "nott'm forest": "nottingham-forest",
+        "notts forest": "nottingham-forest",
+        "newcastle": "newcastle-united",
+        "brighton & ha": "brighton",
+        "ath madrid": "atletico-madrid",
+        "atl madrid": "atletico-madrid",
+        "ath bilbao": "athletic-bilbao",
+        "ein frankfurt": "eintracht-frankfurt",
+        "e. frankfurt": "eintracht-frankfurt",
+        "m'gladbach": "borussia-monchengladbach",
+        "gladbach": "borussia-monchengladbach",
+        "vallecano": "rayo-vallecano",
+        "sociedad": "real-sociedad",
+        "inter": "internazionale",
+        "bayern": "bayern-munich",
+        "paris sg": "paris-saint-germain",
+        "psg": "paris-saint-germain",
+        "for sittard": "fortuna-sittard",
+        "st etienne": "st-etienne",
+    },
+    # football-data.org uses full official names with FC/CF suffixes
+    "football-data.org": {
+        "manchester city fc": "manchester-city",
+        "manchester united fc": "manchester-united",
+        "tottenham hotspur fc": "tottenham-hotspur",
+        "wolverhampton wanderers fc": "wolverhampton-wanderers",
+        "west ham united fc": "west-ham-united",
+        "brighton & hove albion fc": "brighton",
+        "nottingham forest fc": "nottingham-forest",
+        "fc internazionale milano": "internazionale",
+        "club atletico de madrid": "atletico-madrid",
+        "rc celta de vigo": "celta-vigo",
+        "fc bayern munchen": "bayern-munich",
+        "paris saint-germain fc": "paris-saint-germain",
+        "stade rennais fc 1901": "rennes",
+        "racing club de lens": "lens",
+        "stade brestois 29": "brest",
+        "olympique de marseille": "marseille",
+        "olympique lyonnais": "lyon",
+    },
+    # api-football uses a mix
+    "api-football": {
+        "inter milan": "internazionale",
+        "atletico madrid": "atletico-madrid",
+        "bayern munich": "bayern-munich",
+        "paris saint germain": "paris-saint-germain",
+        "borussia monchengladbach": "borussia-monchengladbach",
+    },
+    # understat names
+    "understat": {
+        "manchester city": "manchester-city",
+        "manchester united": "manchester-united",
+        "tottenham": "tottenham-hotspur",
+        "wolverhampton wanderers": "wolverhampton-wanderers",
+        "west ham": "west-ham-united",
+        "sheffield united": "sheffield-united",
+    },
+}
+
+# ============================================================================
 # Reverse lookup cache
 # ============================================================================
 _NAME_TO_ID: Optional[Dict[str, str]] = None
+
+# Negative-lookup cache: team names that failed fuzzy matching.
+# Avoids wasteful repeated SequenceMatcher scans for the same unknown name.
+_NEGATIVE_CACHE: set[str] = set()
 
 
 def _strip_accents(s: str) -> str:
@@ -256,6 +353,9 @@ def _fuzzy_match(name: str, threshold: float = 0.80) -> Optional[str]:
     Fuzzy match against known team names.
     Uses token-overlap + SequenceMatcher. Higher threshold to avoid wrong matches.
     Requires a gap from second-best to ensure confidence.
+
+    Optimised: pre-filters candidates using token overlap and length ratio
+    to skip clearly non-matching names before the expensive SequenceMatcher call.
     """
     normalized = _normalize_for_lookup(name)
     if not normalized:
@@ -267,11 +367,21 @@ def _fuzzy_match(name: str, threshold: float = 0.80) -> Optional[str]:
     second_score = 0.0
 
     norm_tokens = set(normalized.split())
+    norm_len = len(normalized)
 
     for known, cid in reverse_map.items():
         known_tokens = set(known.split())
         overlap = len(norm_tokens & known_tokens)
         total = max(len(norm_tokens), len(known_tokens))
+
+        # --- Pre-filter: skip clearly non-matching names ---
+        # If zero token overlap AND length differs by more than 2x, skip.
+        known_len = len(known)
+        if overlap == 0:
+            length_ratio = max(norm_len, known_len) / max(1, min(norm_len, known_len))
+            if length_ratio > 2.0:
+                continue
+
         token_score = overlap / max(1, total)
 
         seq_score = SequenceMatcher(None, normalized, known).ratio()
@@ -298,6 +408,14 @@ def get_canonical_id(raw_name: Optional[str], provider: Optional[str] = None,
     """
     Convert any team name to canonical_id.
 
+    Args:
+        raw_name: The raw team name string.
+        provider: Optional data-source hint (e.g. "football-data.co.uk",
+                  "football-data.org", "api-football", "understat").
+                  When supplied, provider-specific known names are checked
+                  first for a fast, exact resolution.
+        confidence_threshold: Minimum score for fuzzy matching.
+
     Returns:
         (canonical_id, is_exact_match)
     """
@@ -305,17 +423,34 @@ def get_canonical_id(raw_name: Optional[str], provider: Optional[str] = None,
         return None, False
 
     normalized = _normalize_for_lookup(raw_name)
-    reverse_map = _get_reverse_map()
 
-    # Exact match
+    # --- Provider-specific shortcut ---
+    if provider and provider in PROVIDER_HINTS:
+        hint_map = PROVIDER_HINTS[provider]
+        lookup_key = normalized
+        if lookup_key in hint_map:
+            return hint_map[lookup_key], True
+        # Also try the raw lowered name (preserving punctuation like hyphens)
+        raw_lower = raw_name.strip().lower()
+        if raw_lower in hint_map:
+            return hint_map[raw_lower], True
+
+    # --- Exact match in global reverse map ---
+    reverse_map = _get_reverse_map()
     if normalized in reverse_map:
         return reverse_map[normalized], True
 
-    # Fuzzy match (with higher threshold)
+    # --- Negative cache: skip known failures ---
+    if normalized in _NEGATIVE_CACHE:
+        return None, False
+
+    # --- Fuzzy match (with higher threshold) ---
     fuzzy_id = _fuzzy_match(raw_name, threshold=confidence_threshold)
     if fuzzy_id:
         return fuzzy_id, False
 
+    # Record the miss so we don't retry expensive fuzzy matching
+    _NEGATIVE_CACHE.add(normalized)
     return None, False
 
 
@@ -324,11 +459,14 @@ def get_canonical_name(raw_name: Optional[str], provider: Optional[str] = None) 
     Convert any team name to the canonical display name.
     Returns first (primary) variant from TEAM_MAPPINGS.
     Falls back to cleaned-up original if no match.
+
+    The *provider* parameter is forwarded to :func:`get_canonical_id` so that
+    provider-specific hints are consulted first.
     """
     if not raw_name:
         return raw_name
 
-    canonical_id, _ = get_canonical_id(raw_name, provider)
+    canonical_id, _ = get_canonical_id(raw_name, provider=provider)
     if canonical_id and canonical_id in TEAM_MAPPINGS:
         variations = TEAM_MAPPINGS[canonical_id]
         if variations:
@@ -343,7 +481,8 @@ def register_team_mapping(raw_name: str, canonical_id: str) -> None:
         TEAM_MAPPINGS[canonical_id] = []
     if raw_name not in TEAM_MAPPINGS[canonical_id]:
         TEAM_MAPPINGS[canonical_id].append(raw_name)
-    _NAME_TO_ID = None  # Invalidate cache
+    _NAME_TO_ID = None  # Invalidate reverse-lookup cache
+    _NEGATIVE_CACHE.clear()  # New mapping may resolve previously-failed names
 
 
 def ensure_team_mapping_table(con: duckdb.DuckDBPyConnection) -> None:
@@ -393,6 +532,45 @@ def log_team_lookup(con: duckdb.DuckDBPyConnection, raw_name: str, canonical_id:
         """, [raw_name, canonical_id, confidence])
     except Exception:
         pass
+
+
+def learn_from_database(con: duckdb.DuckDBPyConnection) -> List[str]:
+    """
+    Self-learning helper: scan all distinct team names in the *matches* table,
+    attempt to resolve each one via :func:`get_canonical_id`, and log warnings
+    for any that remain unmatched.
+
+    Returns:
+        A list of unmatched team name strings.
+    """
+    try:
+        rows = con.execute("""
+            SELECT DISTINCT team FROM (
+                SELECT home_team AS team FROM matches WHERE home_team IS NOT NULL
+                UNION
+                SELECT away_team AS team FROM matches WHERE away_team IS NOT NULL
+            )
+        """).fetchall()
+    except Exception as exc:
+        log.warning("learn_from_database: could not query matches table: %s", exc)
+        return []
+
+    unmatched: List[str] = []
+    for (team_name,) in rows:
+        cid, _ = get_canonical_id(team_name)
+        if cid is None:
+            unmatched.append(team_name)
+
+    if unmatched:
+        log.warning(
+            "learn_from_database: %d team name(s) could not be resolved: %s",
+            len(unmatched),
+            unmatched,
+        )
+    else:
+        log.info("learn_from_database: all %d team names resolved successfully.", len(rows))
+
+    return unmatched
 
 
 def get_team_match_rate(con: duckdb.DuckDBPyConnection, verbose: bool = False) -> Dict[str, float]:
