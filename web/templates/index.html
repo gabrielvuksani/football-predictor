@@ -112,12 +112,20 @@
                         </div>
                         <div class="card-footer">
                           <div class="verdict" :class="verdict(m).cls" x-text="verdict(m).text"></div>
-                          <template x-if="confidence(m)">
-                            <span class="conf-badge" :class="'conf-' + confidence(m)">
-                              <span class="conf-dot"></span>
-                              <span x-text="confLabel(m)"></span>
-                            </span>
-                          </template>
+                          <div style="display:flex;align-items:center;gap:0.5rem;">
+                            <template x-if="m.btts != null">
+                              <span class="card-mini-tag" :class="m.btts >= 0.5 ? 'mini-yes' : 'mini-no'" x-text="'BTTS ' + pct(m.btts)"></span>
+                            </template>
+                            <template x-if="m.o25 != null">
+                              <span class="card-mini-tag" :class="m.o25 >= 0.5 ? 'mini-yes' : 'mini-no'" x-text="'O2.5 ' + pct(m.o25)"></span>
+                            </template>
+                            <template x-if="confidence(m)">
+                              <span class="conf-badge" :class="'conf-' + confidence(m)">
+                                <span class="conf-dot"></span>
+                                <span x-text="confLabel(m)"></span>
+                              </span>
+                            </template>
+                          </div>
                         </div>
                       </div>
                     </template>
@@ -867,72 +875,261 @@
             </template>
           </div>
 
+          <!-- ══════ Opta Analyst Comparison ══════ -->
+          <template x-if="md.opta">
+            <div class="section">
+              <div class="section-label"><span class="icon">📡</span> Opta Analyst Predictions</div>
+              <div class="glass opta-comparison">
+                <div class="opta-vs-header">
+                  <span class="opta-source-tag">OPTA</span>
+                  <span class="text-3">vs</span>
+                  <span class="opta-source-tag model">MODEL</span>
+                </div>
+                <div class="opta-probs-row">
+                  <div class="opta-prob-item">
+                    <div class="opta-label">Home Win</div>
+                    <div class="opta-vals">
+                      <span class="opta-val opta-tag" x-text="pct(md.opta.home_win)"></span>
+                      <span class="opta-val model-tag" x-text="md.prediction ? pct(md.prediction.p_home) : '—'"></span>
+                    </div>
+                    <template x-if="md.prediction">
+                      <div class="opta-diff" :class="md.prediction.p_home > md.opta.home_win ? 'edge-pos' : 'edge-neg'"
+                           x-text="((md.prediction.p_home - md.opta.home_win) * 100 > 0 ? '+' : '') + ((md.prediction.p_home - md.opta.home_win) * 100).toFixed(1) + '%'"></div>
+                    </template>
+                  </div>
+                  <div class="opta-prob-item">
+                    <div class="opta-label">Draw</div>
+                    <div class="opta-vals">
+                      <span class="opta-val opta-tag" x-text="pct(md.opta.draw)"></span>
+                      <span class="opta-val model-tag" x-text="md.prediction ? pct(md.prediction.p_draw) : '—'"></span>
+                    </div>
+                    <template x-if="md.prediction">
+                      <div class="opta-diff" :class="md.prediction.p_draw > md.opta.draw ? 'edge-pos' : 'edge-neg'"
+                           x-text="((md.prediction.p_draw - md.opta.draw) * 100 > 0 ? '+' : '') + ((md.prediction.p_draw - md.opta.draw) * 100).toFixed(1) + '%'"></div>
+                    </template>
+                  </div>
+                  <div class="opta-prob-item">
+                    <div class="opta-label">Away Win</div>
+                    <div class="opta-vals">
+                      <span class="opta-val opta-tag" x-text="pct(md.opta.away_win)"></span>
+                      <span class="opta-val model-tag" x-text="md.prediction ? pct(md.prediction.p_away) : '—'"></span>
+                    </div>
+                    <template x-if="md.prediction">
+                      <div class="opta-diff" :class="md.prediction.p_away > md.opta.away_win ? 'edge-pos' : 'edge-neg'"
+                           x-text="((md.prediction.p_away - md.opta.away_win) * 100 > 0 ? '+' : '') + ((md.prediction.p_away - md.opta.away_win) * 100).toFixed(1) + '%'"></div>
+                    </template>
+                  </div>
+                </div>
+                <div class="opta-scraped text-3" x-text="md.opta.scraped_at ? 'Scraped: ' + md.opta.scraped_at : ''"></div>
+              </div>
+            </div>
+          </template>
+
           <!-- ── Detail Grid (2-column on desktop) ── -->
           <div class="detail-grid">
 
             <!-- Left column -->
             <div class="detail-col">
 
-              <!-- Poisson Analysis -->
+              <!-- ══════ Multi-Model Analysis (v11) ══════ -->
+              <template x-if="md.model_analysis && (md.model_analysis.bp_home != null || md.model_analysis.cop_home != null || md.model_analysis.bt_home != null)">
+                <div class="section">
+                  <div class="section-label"><span class="icon">🔬</span> Multi-Model Analysis</div>
+                  <div class="glass model-analysis-panel">
+
+                    <!-- 1×W/D/L comparison across all models -->
+                    <div class="model-compare-table">
+                      <div class="model-compare-header">
+                        <span class="mc-model-name">Model</span>
+                        <span class="mc-val">Home</span>
+                        <span class="mc-val">Draw</span>
+                        <span class="mc-val">Away</span>
+                      </div>
+
+                      <!-- Council (Final) -->
+                      <template x-if="md.prediction">
+                        <div class="model-compare-row model-row-highlight">
+                          <span class="mc-model-name">Council <span class="mc-badge final">FINAL</span></span>
+                          <span class="mc-val" :class="isHighest('home') ? 'mc-best' : ''" x-text="pct(md.prediction.p_home)"></span>
+                          <span class="mc-val" :class="isHighest('draw') ? 'mc-best' : ''" x-text="pct(md.prediction.p_draw)"></span>
+                          <span class="mc-val" :class="isHighest('away') ? 'mc-best' : ''" x-text="pct(md.prediction.p_away)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Dixon-Coles -->
+                      <template x-if="md.poisson?.dc_home != null">
+                        <div class="model-compare-row">
+                          <span class="mc-model-name">Dixon-Coles</span>
+                          <span class="mc-val" x-text="pct(md.poisson.dc_home)"></span>
+                          <span class="mc-val" x-text="pct(md.poisson.dc_draw)"></span>
+                          <span class="mc-val" x-text="pct(md.poisson.dc_away)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Bivariate Poisson -->
+                      <template x-if="md.model_analysis.bp_home != null">
+                        <div class="model-compare-row">
+                          <span class="mc-model-name">Bivariate Poisson</span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.bp_home)"></span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.bp_draw)"></span>
+                          <span class="mc-val" x-text="pct(1 - (md.model_analysis.bp_home || 0) - (md.model_analysis.bp_draw || 0))"></span>
+                        </div>
+                      </template>
+
+                      <!-- Frank Copula -->
+                      <template x-if="md.model_analysis.cop_home != null">
+                        <div class="model-compare-row">
+                          <span class="mc-model-name">Frank Copula</span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.cop_home)"></span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.cop_draw)"></span>
+                          <span class="mc-val" x-text="pct(1 - (md.model_analysis.cop_home || 0) - (md.model_analysis.cop_draw || 0))"></span>
+                        </div>
+                      </template>
+
+                      <!-- COM-Poisson -->
+                      <template x-if="md.model_analysis.cmp_home != null">
+                        <div class="model-compare-row">
+                          <span class="mc-model-name">COM-Poisson</span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.cmp_home)"></span>
+                          <span class="mc-val" x-text="'—'"></span>
+                          <span class="mc-val" x-text="'—'"></span>
+                        </div>
+                      </template>
+
+                      <!-- Bradley-Terry -->
+                      <template x-if="md.model_analysis.bt_home != null">
+                        <div class="model-compare-row">
+                          <span class="mc-model-name">Bradley-Terry</span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.bt_home)"></span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.bt_draw)"></span>
+                          <span class="mc-val" x-text="pct(md.model_analysis.bt_away)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Opta -->
+                      <template x-if="md.opta">
+                        <div class="model-compare-row model-row-opta">
+                          <span class="mc-model-name">Opta <span class="mc-badge opta">EXT</span></span>
+                          <span class="mc-val" x-text="pct(md.opta.home_win)"></span>
+                          <span class="mc-val" x-text="pct(md.opta.draw)"></span>
+                          <span class="mc-val" x-text="pct(md.opta.away_win)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Market Implied -->
+                      <template x-if="md.odds">
+                        <div class="model-compare-row model-row-market">
+                          <span class="mc-model-name">Market <span class="mc-badge market">ODDS</span></span>
+                          <span class="mc-val" x-text="pct(md.odds.implied_h)"></span>
+                          <span class="mc-val" x-text="pct(md.odds.implied_d)"></span>
+                          <span class="mc-val" x-text="pct(md.odds.implied_a)"></span>
+                        </div>
+                      </template>
+                    </div>
+
+                    <!-- Skellam expected goal difference -->
+                    <template x-if="md.model_analysis.sk_expected_gd != null">
+                      <div class="skellam-row">
+                        <span class="text-3">Skellam Expected GD:</span>
+                        <span class="skellam-val mono" :class="md.model_analysis.sk_expected_gd > 0.2 ? 'edge-pos' : md.model_analysis.sk_expected_gd < -0.2 ? 'edge-neg' : 'text-2'"
+                              x-text="(md.model_analysis.sk_expected_gd > 0 ? '+' : '') + md.model_analysis.sk_expected_gd.toFixed(2)"></span>
+                        <span class="text-3" x-text="md.model_analysis.sk_expected_gd > 0.3 ? '→ Home favored' : md.model_analysis.sk_expected_gd < -0.3 ? '→ Away favored' : '→ Even contest'"></span>
+                      </div>
+                    </template>
+
+                    <!-- COM-Poisson dispersion -->
+                    <template x-if="md.model_analysis.cmp_disp_h != null">
+                      <div class="skellam-row">
+                        <span class="text-3">Dispersion:</span>
+                        <span class="mono text-2" x-text="'Home ν=' + md.model_analysis.cmp_disp_h.toFixed(2) + '  Away ν=' + md.model_analysis.cmp_disp_a.toFixed(2)"></span>
+                        <span class="text-3" x-text="md.model_analysis.cmp_disp_h < 0.8 ? '(under-dispersed)' : md.model_analysis.cmp_disp_h > 1.2 ? '(over-dispersed)' : '(normal)'"></span>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <!-- ══════ BTTS/O2.5 Multi-Model Comparison ══════ -->
+              <template x-if="md.poisson || md.model_analysis">
+                <div class="section">
+                  <div class="section-label"><span class="icon">⚽</span> BTTS &amp; Over 2.5 — All Models</div>
+                  <div class="glass btts-compare-panel">
+                    <div class="btts-compare-table">
+                      <div class="btts-compare-header">
+                        <span class="bc-source">Source</span>
+                        <span class="bc-val">BTTS</span>
+                        <span class="bc-val">O2.5</span>
+                      </div>
+
+                      <!-- Model head (final) -->
+                      <template x-if="md.poisson?.btts != null">
+                        <div class="btts-compare-row">
+                          <span class="bc-source">Model Head</span>
+                          <span class="bc-val" :class="md.poisson.btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.btts)"></span>
+                          <span class="bc-val" :class="md.poisson.o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.o25)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Raw Poisson -->
+                      <template x-if="md.poisson?.btts_poisson != null">
+                        <div class="btts-compare-row">
+                          <span class="bc-source">Poisson (raw)</span>
+                          <span class="bc-val" :class="md.poisson.btts_poisson >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.btts_poisson)"></span>
+                          <span class="bc-val" :class="md.poisson.o25_poisson >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.o25_poisson)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Monte Carlo -->
+                      <template x-if="md.poisson?.mc_btts != null">
+                        <div class="btts-compare-row">
+                          <span class="bc-source">Monte Carlo</span>
+                          <span class="bc-val" :class="md.poisson.mc_btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_btts)"></span>
+                          <span class="bc-val" :class="md.poisson.mc_o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_o25)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Bivariate Poisson -->
+                      <template x-if="md.model_analysis?.bp_btts != null">
+                        <div class="btts-compare-row">
+                          <span class="bc-source">Bivariate Poisson</span>
+                          <span class="bc-val" :class="md.model_analysis.bp_btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.model_analysis.bp_btts)"></span>
+                          <span class="bc-val" :class="md.model_analysis.bp_o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.model_analysis.bp_o25)"></span>
+                        </div>
+                      </template>
+
+                      <!-- Frank Copula -->
+                      <template x-if="md.model_analysis?.cop_btts != null">
+                        <div class="btts-compare-row">
+                          <span class="bc-source">Frank Copula</span>
+                          <span class="bc-val" :class="md.model_analysis.cop_btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.model_analysis.cop_btts)"></span>
+                          <span class="bc-val" :class="md.model_analysis.cop_o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.model_analysis.cop_o25)"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Poisson Core -->
               <template x-if="md.poisson">
                 <div class="section">
-                  <div class="section-label"><span class="icon">🎯</span> Poisson Analysis</div>
-                  <div class="glass poisson-grid">
-                    <div class="poisson-cell">
-                      <div class="poisson-val" x-text="Array.isArray(md.poisson.predicted_score) ? md.poisson.predicted_score.join(' - ') : (md.poisson.predicted_score || '—')"></div>
-                      <div class="poisson-lbl">Predicted Score</div>
-                    </div>
-                    <div class="poisson-cell">
-                      <div class="poisson-val" :class="md.poisson.btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.btts)"></div>
-                      <div class="poisson-lbl">BTTS</div>
-                    </div>
-                    <div class="poisson-cell">
-                      <div class="poisson-val" :class="md.poisson.o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.o25)"></div>
-                      <div class="poisson-lbl">Over 2.5</div>
-                    </div>
-                  </div>
-                  <div class="poisson-lambda text-3" style="margin-top:0.4rem;">
-                    <span x-text="'λ Home: ' + (md.poisson.lambda_home?.toFixed(2) || '—')"></span> ·
-                    <span x-text="'λ Away: ' + (md.poisson.lambda_away?.toFixed(2) || '—')"></span>
-                  </div>
-
-                  <!-- v10: Dixon-Coles adjusted probabilities -->
-                  <template x-if="md.poisson.dc_home != null">
-                    <div style="margin-top:0.6rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top:0.5rem;">
-                      <div class="text-3" style="color:var(--text-2); margin-bottom:0.3rem; font-weight:600;">Dixon-Coles Adjusted</div>
-                      <div class="poisson-grid" style="gap:0.5rem;">
-                        <div class="poisson-cell">
-                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_home)"></div>
-                          <div class="poisson-lbl">DC Home</div>
-                        </div>
-                        <div class="poisson-cell">
-                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_draw)"></div>
-                          <div class="poisson-lbl">DC Draw</div>
-                        </div>
-                        <div class="poisson-cell">
-                          <div class="poisson-val text-2" x-text="pct(md.poisson.dc_away)"></div>
-                          <div class="poisson-lbl">DC Away</div>
-                        </div>
+                  <div class="section-label"><span class="icon">🎯</span> Poisson Core</div>
+                  <div class="glass" style="padding: 0.75rem 1rem;">
+                    <div class="poisson-grid">
+                      <div class="poisson-cell">
+                        <div class="poisson-val" x-text="Array.isArray(md.poisson.predicted_score) ? md.poisson.predicted_score.join(' - ') : (md.poisson.predicted_score || '—')"></div>
+                        <div class="poisson-lbl">Predicted Score</div>
+                      </div>
+                      <div class="poisson-cell">
+                        <div class="poisson-val" x-text="md.poisson.lambda_home?.toFixed(2) || '—'"></div>
+                        <div class="poisson-lbl">λ Home</div>
+                      </div>
+                      <div class="poisson-cell">
+                        <div class="poisson-val" x-text="md.poisson.lambda_away?.toFixed(2) || '—'"></div>
+                        <div class="poisson-lbl">λ Away</div>
                       </div>
                     </div>
-                  </template>
-
-                  <!-- v10: Monte Carlo simulation -->
-                  <template x-if="md.poisson.mc_btts != null">
-                    <div style="margin-top:0.4rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top:0.5rem;">
-                      <div class="text-3" style="color:var(--text-2); margin-bottom:0.3rem; font-weight:600;">Monte Carlo (2000 sims)</div>
-                      <div class="poisson-grid" style="gap:0.5rem;">
-                        <div class="poisson-cell">
-                          <div class="poisson-val text-2" :class="md.poisson.mc_btts >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_btts)"></div>
-                          <div class="poisson-lbl">MC BTTS</div>
-                        </div>
-                        <div class="poisson-cell">
-                          <div class="poisson-val text-2" :class="md.poisson.mc_o25 >= 0.5 ? 'poisson-yes' : 'poisson-no'" x-text="pct(md.poisson.mc_o25)"></div>
-                          <div class="poisson-lbl">MC O2.5</div>
-                        </div>
-                      </div>
-                    </div>
-                  </template>
+                  </div>
                 </div>
               </template>
 
@@ -989,39 +1186,41 @@
                 </div>
               </template>
 
-              <!-- Elo -->
-              <template x-if="md.elo">
-                <div class="section">
-                  <div class="section-label"><span class="icon">📐</span> Elo Ratings</div>
-                  <div class="glass" style="padding: 0.75rem 1rem;">
-                    <div class="elo-grid">
-                      <div><div class="elo-val" x-text="md.elo.home || '—'"></div><div class="elo-lbl" x-text="md.home_team"></div></div>
-                      <div class="elo-diff" :class="{'elo-diff-pos': md.elo.diff > 0, 'elo-diff-neg': md.elo.diff < 0, 'elo-diff-neu': !md.elo.diff}">
-                        <span x-text="md.elo.diff != null ? (md.elo.diff > 0 ? '+' : '') + Math.round(md.elo.diff) : '—'"></span>
-                        <span class="elo-lbl">Diff</span>
+              <!-- Elo & xG side-by-side -->
+              <div class="elo-xg-row">
+                <!-- Elo -->
+                <template x-if="md.elo">
+                  <div class="section" style="flex:1">
+                    <div class="section-label"><span class="icon">📐</span> Elo</div>
+                    <div class="glass" style="padding: 0.75rem 1rem;">
+                      <div class="elo-grid">
+                        <div><div class="elo-val" x-text="md.elo.home || '—'"></div><div class="elo-lbl" x-text="md.home_team"></div></div>
+                        <div class="elo-diff" :class="{'elo-diff-pos': md.elo.diff > 0, 'elo-diff-neg': md.elo.diff < 0, 'elo-diff-neu': !md.elo.diff}">
+                          <span x-text="md.elo.diff != null ? (md.elo.diff > 0 ? '+' : '') + Math.round(md.elo.diff) : '—'"></span>
+                          <span class="elo-lbl">Diff</span>
+                        </div>
+                        <div><div class="elo-val" x-text="md.elo.away || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
                       </div>
-                      <div><div class="elo-val" x-text="md.elo.away || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
                     </div>
                   </div>
-                </div>
-              </template>
+                </template>
 
-              <!-- xG Analysis -->
-              <template x-if="matchXG && matchXG.home_xg != null">
-                <div class="section">
-                  <div class="section-label"><span class="icon">⚡</span> Expected Goals (xG)</div>
-                  <div class="glass" style="padding: 0.75rem 1rem;">
-                    <div class="elo-grid">
-                      <div><div class="elo-val" x-text="matchXG.home_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.home_team"></div></div>
-                      <div style="text-align:center">
-                        <div class="text-3" style="color:var(--text-2);">xG</div>
-                        <div class="text-4" x-text="matchXG.method || 'model'" style="color:var(--text-3);"></div>
+                <!-- xG Analysis -->
+                <template x-if="matchXG && matchXG.home_xg != null">
+                  <div class="section" style="flex:1">
+                    <div class="section-label"><span class="icon">⚡</span> xG</div>
+                    <div class="glass" style="padding: 0.75rem 1rem;">
+                      <div class="elo-grid">
+                        <div><div class="elo-val" x-text="matchXG.home_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.home_team"></div></div>
+                        <div style="text-align:center">
+                          <div class="text-3" style="color:var(--text-2);">xG</div>
+                        </div>
+                        <div><div class="elo-val" x-text="matchXG.away_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
                       </div>
-                      <div><div class="elo-val" x-text="matchXG.away_xg?.toFixed(2) || '—'"></div><div class="elo-lbl" x-text="md.away_team"></div></div>
                     </div>
                   </div>
-                </div>
-              </template>
+                </template>
+              </div>
 
               <!-- Goal Patterns -->
               <template x-if="matchPatterns && (matchPatterns.home || matchPatterns.away)">
@@ -1099,6 +1298,35 @@
                   <div class="glass info-box">Loading expert analysis...</div>
                 </template>
               </div>
+
+              <!-- Expert Summary (inline from notes) -->
+              <template x-if="md.expert_summary && !matchExperts">
+                <div class="section">
+                  <div class="section-label"><span class="icon">📋</span> Expert Summary (cached)</div>
+                  <div class="glass" style="padding: 0.6rem;">
+                    <div class="expert-grid">
+                      <template x-for="[name, data] in Object.entries(md.expert_summary)" :key="'es_'+name">
+                        <div class="expert-row">
+                          <div class="expert-name" x-text="name"></div>
+                          <div>
+                            <div class="expert-bar">
+                              <div class="home" :style="'width:' + ((data.home || data.probs?.home || 0)*100) + '%'"></div>
+                              <div class="draw" :style="'width:' + ((data.draw || data.probs?.draw || 0)*100) + '%'"></div>
+                              <div class="away" :style="'width:' + ((data.away || data.probs?.away || 0)*100) + '%'"></div>
+                            </div>
+                            <div class="expert-pcts">
+                              <span x-text="pct(data.home || data.probs?.home)"></span>
+                              <span x-text="pct(data.draw || data.probs?.draw)"></span>
+                              <span x-text="pct(data.away || data.probs?.away)"></span>
+                            </div>
+                          </div>
+                          <div class="expert-conf" x-text="pct(data.confidence || data.conf)"></div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
 
               <!-- H2H -->
               <div class="section">

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import httpx
 import pandas as pd
 
+from footy.providers.ratelimit import retry_request
+
 # football-data.co.uk historical CSV pattern examples: /mmz4281/{season}/E0.csv :contentReference[oaicite:2]{index=2}
 BASE = "https://www.football-data.co.uk/mmz4281"
 
@@ -45,11 +47,16 @@ def season_codes_last_n(n: int, include_current: bool = True) -> list[str]:
 def download_division_csv(season_code: str, div_code: str) -> pd.DataFrame:
     url = f"{BASE}/{season_code}/{div_code}.csv"
     timeout = httpx.Timeout(30.0, connect=10.0)
-    with httpx.Client(timeout=timeout, headers={"User-Agent": "footy-predictor/0.1"}) as c:
-        r = c.get(url)
-        r.raise_for_status()
-        # some files contain non-utf8 characters; latin1 is safe fallback
-        text = r.content.decode("utf-8", errors="ignore")
-        if "Div,Date" not in text[:200]:
-            text = r.content.decode("latin-1", errors="ignore")
+
+    def _do_request():
+        with httpx.Client(timeout=timeout, headers={"User-Agent": "footy-predictor/0.1"}) as c:
+            r = c.get(url)
+            r.raise_for_status()
+            return r
+
+    r = retry_request(_do_request, label=f"fdcuk/{season_code}/{div_code}")
+    # some files contain non-utf8 characters; latin1 is safe fallback
+    text = r.content.decode("utf-8", errors="ignore")
+    if "Div,Date" not in text[:200]:
+        text = r.content.decode("latin-1", errors="ignore")
     return pd.read_csv(io.StringIO(text), on_bad_lines="skip")

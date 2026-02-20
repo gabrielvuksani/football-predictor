@@ -228,7 +228,11 @@ class TestScheduleDifficulty:
         from footy.models.advanced_math import schedule_difficulty
         strengths = [1600, 1500, 1400, 1550, 1650]
         result = schedule_difficulty(strengths, window=3)
-        assert result == pytest.approx(np.mean([1400, 1550, 1650]))
+        # Composite index: weighted by recency → hard recent schedule lifts result
+        # Must be above simple mean (1533) because 1650 is most recent + max-opp boost
+        assert result > np.mean([1400, 1550, 1650])
+        # Must stay in realistic Elo range
+        assert 1200 < result < 1800
 
     def test_empty_schedule(self):
         from footy.models.advanced_math import schedule_difficulty

@@ -398,51 +398,6 @@ Return JSON:
 
 
 # ============================================================================
-# Batch Operations: Process multiple matches efficiently
-# ============================================================================
-
-
-def explain_matches_batch(
-    matches: list[dict],
-    model_version: str = "v10_council"
-) -> list[dict]:
-    """
-    Generate explanations for multiple matches.
-    
-    Args:
-        matches: [{"match_id": int, "home_team": str, "away_team": str,
-                   "home_prob": float, "draw_prob": float, "away_prob": float}, ...]
-        model_version: Model being explained
-    
-    Returns:
-        List of explanation dicts
-    """
-    results = []
-    for match in matches:
-        try:
-            explanation = explain_match(
-                match_id=match["match_id"],
-                home_team=match["home_team"],
-                away_team=match["away_team"],
-                home_pred=match["home_prob"],
-                draw_pred=match["draw_prob"],
-                away_pred=match["away_prob"],
-                model_version=model_version
-            )
-            results.append(explanation)
-        except Exception as e:
-            log.error(f"Batch explanation failed for match {match.get('match_id')}: {e}")
-            results.append({
-                "match_id": match.get("match_id"),
-                "explanation": f"Error: {e}",
-                "key_factors": [],
-                "confidence_level": "Low"
-            })
-    
-    return results
-
-
-# ============================================================================
 # Status & Monitoring
 # ============================================================================
 

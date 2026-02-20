@@ -648,6 +648,9 @@ a { color: inherit; text-decoration: none; }
   .st-team { font-size: 0.75rem; }
   .btts-grid { grid-template-columns: 1fr; }
   .nav-tabs { flex-wrap: wrap; gap: 0.2rem; }
+  .elo-xg-row { flex-direction: column; }
+  .model-compare-header, .model-compare-row { grid-template-columns: 110px repeat(3, 1fr); }
+  .opta-probs-row { flex-direction: column; gap: 0.4rem; }
 }
 @media (max-width: 640px) {
   .nav-right { gap: 0.5rem; }
@@ -660,4 +663,232 @@ a { color: inherit; text-decoration: none; }
   .container { padding: 0 0.75rem; }
   .nav-tabs { gap: 0.15rem; }
   .nav-tab { padding: 0.25rem 0.4rem; font-size: 0.65rem; }
+  .model-compare-header, .model-compare-row { grid-template-columns: 90px repeat(3, 1fr); font-size: 0.68rem; }
+  .mc-model-name { font-size: 0.62rem; }
 }
+
+/* ═══════ OPTA COMPARISON ═══════ */
+.opta-comparison {
+  padding: 1rem 1.15rem;
+  margin-bottom: 1.25rem;
+  border: 1px solid rgba(6,182,212,0.15);
+  background: linear-gradient(135deg, rgba(6,182,212,0.04), rgba(99,102,241,0.04));
+}
+.opta-vs-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.72rem;
+}
+.opta-source-tag {
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--r-full);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--cyan-dim);
+  color: var(--cyan);
+  border: 1px solid rgba(6,182,212,0.2);
+}
+.opta-source-tag.model {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: rgba(99,102,241,0.2);
+}
+.opta-probs-row {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+.opta-prob-item {
+  flex: 1;
+  text-align: center;
+  padding: 0.6rem 0.3rem;
+  background: var(--surface-0);
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+}
+.opta-label {
+  font-size: 0.62rem;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.4rem;
+}
+.opta-vals {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+.opta-val {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+.opta-val.opta-tag { color: var(--cyan); }
+.opta-val.model-tag { color: var(--accent); }
+.opta-diff {
+  font-size: 0.62rem;
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.opta-scraped {
+  text-align: center;
+  margin-top: 0.5rem;
+  font-size: 0.6rem;
+}
+
+/* ═══════ MODEL ANALYSIS PANEL ═══════ */
+.model-analysis-panel {
+  padding: 0.6rem 0.75rem;
+}
+.model-compare-table {
+  width: 100%;
+}
+.model-compare-header {
+  display: grid;
+  grid-template-columns: 140px repeat(3, 1fr);
+  padding: 0.4rem 0.5rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+.model-compare-row {
+  display: grid;
+  grid-template-columns: 140px repeat(3, 1fr);
+  padding: 0.5rem 0.5rem;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--dur) var(--ease);
+  align-items: center;
+}
+.model-compare-row:last-child { border-bottom: none; }
+.model-compare-row:hover { background: var(--surface-1); }
+.model-row-highlight {
+  background: var(--accent-dim);
+  border: 1px solid rgba(99,102,241,0.15);
+  border-radius: var(--r-xs);
+  margin-bottom: 2px;
+}
+.model-row-opta {
+  background: var(--cyan-dim);
+  border-radius: var(--r-xs);
+}
+.model-row-market {
+  background: var(--surface-1);
+  border-radius: var(--r-xs);
+}
+.mc-model-name {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.mc-badge {
+  font-size: 0.52rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--r-full);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mc-badge.final { background: var(--accent-dim); color: var(--accent); }
+.mc-badge.opta { background: var(--cyan-dim); color: var(--cyan); }
+.mc-badge.market { background: var(--amber-dim); color: var(--amber); }
+.mc-val {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: var(--text-2);
+  text-align: center;
+}
+.mc-val.mc-best {
+  color: var(--green);
+  font-weight: 800;
+}
+.skellam-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  margin-top: 0.3rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+}
+.skellam-val {
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+/* ═══════ BTTS COMPARISON PANEL ═══════ */
+.btts-compare-panel {
+  padding: 0.6rem 0.75rem;
+}
+.btts-compare-table {
+  width: 100%;
+}
+.btts-compare-header {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+.btts-compare-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px;
+  padding: 0.45rem 0.5rem;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--dur) var(--ease);
+  align-items: center;
+}
+.btts-compare-row:last-child { border-bottom: none; }
+.btts-compare-row:hover { background: var(--surface-1); }
+.bc-source {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.bc-val {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+/* ═══════ ELO + XG side-by-side ═══════ */
+.elo-xg-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+/* ═══════ MATCH CARD MINI TAGS ═══════ */
+.card-mini-tag {
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 0.12rem 0.35rem;
+  border-radius: var(--r-full);
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+}
+.mini-yes { background: var(--green-dim); color: var(--green); }
+.mini-no { background: var(--surface-2); color: var(--text-3); }
+
+/* ═══════ UTILITY CLASSES ═══════ */
+.glass-padded { padding: 1rem; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem; }

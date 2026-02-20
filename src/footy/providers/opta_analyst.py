@@ -18,7 +18,7 @@ from typing import Optional
 import duckdb
 import httpx
 
-from footy.providers.ratelimit import RateLimiter
+from footy.providers.ratelimit import RateLimiter, TRANSIENT_ERRORS
 from footy.team_mapping import get_canonical_name
 
 log = logging.getLogger(__name__)
@@ -205,7 +205,8 @@ def _fetch_page(url: str, client: httpx.Client) -> Optional[str]:
         if resp.status_code == 200:
             return resp.text
         log.warning("Opta page %s returned HTTP %d", url, resp.status_code)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.TimeoutException, httpx.ConnectError,
+            httpx.RemoteProtocolError, ConnectionResetError, OSError) as exc:
         log.warning("Opta request failed for %s: %s", url, exc)
     return None
 

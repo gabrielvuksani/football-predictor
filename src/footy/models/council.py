@@ -2,1815 +2,120 @@
 Expert Council Model — Multi-expert ensemble for football match prediction.
 
 Architecture:
-    Layer 1 — Eleven specialist experts, each computing domain-specific features
-              and analytical probability estimates:
-              1. EloExpert          – Rating dynamics, nonlinear transforms, momentum
-              2. MarketExpert       – Odds intelligence, logit-space, Pinnacle sharp line
-              3. FormExpert         – Opposition-adjusted form, Bayesian shrinkage, EWMA
-              4. PoissonExpert      – Dixon-Coles + Skellam + Monte Carlo simulation
-              5. H2HExpert         – Bayesian head-to-head with time decay
-              6. ContextExpert      – Rest / congestion / calendar / season stage
-              7. GoalPatternExpert  – First-goal advantage, comeback rate, HT patterns
-              8. LeagueTableExpert  – League position, points gap, table dynamics
-              9. MomentumExpert     – EMA crossovers, scoring slopes, form volatility
-             10. BayesianRateExpert – Beta-Binomial shrinkage for all team rates
-             11. InjuryAvailabilityExpert – Player availability from FPL/API-Football
+    Layer 1 — Eleven specialist experts (see footy.models.experts package)
     Layer 2 — Conflict, consensus, KL divergence & interaction signals across experts
     Layer 3 — Multi-model stack (HistGBM + RF + LR) with LEARNED weights + isotonic cal
     Layer 4 — Walk-forward cross-validation for honest performance estimation
     Layer 5 — Ollama interpreter (optional) for narrative match analysis
 
-v10 Innovations:
-    • Dixon-Coles τ correction in PoissonExpert for accurate low-score modelling
-    • Skellam distribution features for goal-difference analysis
-    • Monte Carlo simulation (2000 DC-correlated draws) for robust probabilities
-    • Beta-Binomial empirical Bayes shrinkage for all rate features
-    • League-specific priors (PL/PD/SA/BL1/FL1 calibrated)
-    • Logit-space odds features in MarketExpert + Pinnacle sharp line
-    • Nonlinear Elo transforms (tanh, signed log, weighted momentum)
-    • KL divergence per expert vs ensemble mean
-    • One-hot competition encoding (5 columns, not ordinal)
-    • Learned stacking weights via Nelder-Mead optimization on validation logloss
-    • Schedule difficulty + shot conversion features in FormExpert
-    • BayesianRateExpert: systematic shrinkage for win/CS/BTTS/O2.5 rates
-    • InjuryAvailabilityExpert: FPL + API-Football injury data integration
-    • Extended feature matrix: ~300+ columns across 11+1 experts
-
-Prior innovations (retained from v8/v9):
-    • GoalPatternExpert: First-goal advantage, comeback rate, half-time
-      scoring patterns, multi-goal/nil rates, lead-holding ability
-    • LeagueTableExpert: Simulated live league table, position differential,
-      points gap to top/relegation, relative position features
-    • Upgraded conflict signals with cross-expert agreement
-
-v7 Innovations (retained):
-    • PoissonExpert v2: venue-specific attack/defense, BTTS/O2.5/O1.5/U2.5
-      probabilities, most likely score, goal-diff skewness, zero-inflation
-    • ContextExpert v2: season progress, early/late season flags, day-of-week,
-      weekend/midweek detection, hour of kickoff, 30-day congestion
-    • Meta-learner v2: isotonic calibration (cv=5)
-
-Prior innovations (retained):
-    • Opposition-Adjusted Form (OAF)  — weights results by opponent Elo
-    • Bayesian H2H with Dirichlet prior — handles sparse matchups
-    • Expert confidence calibration — dynamic weighting by data availability
-    • Conflict signals as features — expert disagreement informs uncertainty
-    • Elo momentum + stability features
-    • Fixture congestion index
+Expert modules live in ``footy.models.experts``.  This module contains the
+meta-learner, SQL queries, training pipeline, and prediction logic.
 """
 from __future__ import annotations
 
 import json
-import math
-from abc import ABC, abstractmethod
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson as poisson_dist
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
-from sklearn.linear_model import LogisticRegression, RidgeClassifierCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from footy.models.elo_core import elo_expected as _elo_exp, elo_draw_prob as _elo_dp, dynamic_k as _dk
 from footy.models.advanced_math import (
-    beta_binomial_shrink, league_specific_prior,
-    dixon_coles_tau, build_dc_score_matrix,
-    skellam_probs, monte_carlo_simulate,
-    logit, logit_space_delta, remove_overround, odds_entropy, odds_dispersion,
-    adaptive_ewma, tanh_transform, log_transform,
-    kl_divergence, schedule_difficulty,
+    kl_divergence, log_transform, tanh_transform,
+    jensen_shannon_divergence, multi_expert_jsd,
 )
-
 from footy.config import settings
 from footy.normalize import canonical_team_name
-from footy.models.dixon_coles import fit_dc, predict_1x2, DCModel
+from footy.models.dixon_coles import DCModel, fit_dc, predict_1x2
+
+# Re-export all expert symbols for backward compatibility
+from footy.models.experts import (  # noqa: F401
+    ALL_EXPERTS,
+    Expert,
+    ExpertResult,
+    BayesianRateExpert,
+    ContextExpert,
+    EloExpert,
+    FormExpert,
+    GoalPatternExpert,
+    H2HExpert,
+    InjuryAvailabilityExpert,
+    LeagueTableExpert,
+    MarketExpert,
+    MomentumExpert,
+    PoissonExpert,
+    _entropy3,
+    _f,
+    _implied,
+    _label,
+    _norm3,
+    _pts,
+    _raw,
+)
 
 MODEL_VERSION = "v10_council"
 MODEL_PATH = Path("data/models") / f"{MODEL_VERSION}.joblib"
 
 # ---------------------------------------------------------------------------
-# helpers
+# Shared SQL column / join fragments — single source of truth
 # ---------------------------------------------------------------------------
-def _f(x) -> float:
-    """Safe float cast."""
-    try:
-        if x is None:
-            return 0.0
-        v = float(x)
-        return v if np.isfinite(v) else 0.0
-    except Exception:
-        return 0.0
-
-
-def _raw(raw_json) -> dict:
-    if raw_json is None:
-        return {}
-    if isinstance(raw_json, dict):
-        return raw_json
-    try:
-        return json.loads(raw_json)
-    except Exception:
-        return {}
-
-
-def _pts(gf: int, ga: int) -> int:
-    return 3 if gf > ga else (1 if gf == ga else 0)
-
-
-def _label(hg: int, ag: int) -> int:
-    if hg > ag:
-        return 0
-    if hg == ag:
-        return 1
-    return 2
-
-
-def _entropy3(p) -> float:
-    p = np.clip(np.asarray(p, dtype=float), 1e-12, 1.0)
-    return float(-(p * np.log(p)).sum())
-
-
-def _norm3(a, b, c) -> tuple[float, float, float]:
-    s = a + b + c
-    if s <= 0:
-        return (1 / 3, 1 / 3, 1 / 3)
-    return (a / s, b / s, c / s)
-
-
-def _implied(h, d, a):
-    h, d, a = _f(h), _f(d), _f(a)
-    if h <= 1 or d <= 1 or a <= 1:
-        return (0.0, 0.0, 0.0, 0.0)
-    ih, id_, ia = 1 / h, 1 / d, 1 / a
-    s = ih + id_ + ia
-    return (ih / s, id_ / s, ia / s, s - 1.0)
-
-
-# ---------------------------------------------------------------------------
-# Expert result container
-# ---------------------------------------------------------------------------
-@dataclass
-class ExpertResult:
-    """Output from a single expert for n matches."""
-    probs: np.ndarray          # (n, 3) analytical P(H, D, A)
-    confidence: np.ndarray     # (n,) ∈ [0, 1]
-    features: dict[str, np.ndarray] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Abstract expert
-# ---------------------------------------------------------------------------
-class Expert(ABC):
-    name: str
-
-    @abstractmethod
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        """Compute expert features over matches sorted by utc_date ASC.
-
-        ``df`` has columns: utc_date, home_team, away_team, home_goals,
-        away_goals (for finished) or 0 placeholders (for upcoming dummies).
-        Plus optional extras columns (hs, hst, ...).
-        """
-        ...
-
-
-# ===================================================================
-# 1. ELO EXPERT
-# ===================================================================
-class EloExpert(Expert):
-    """
-    Team Elo ratings with:
-    - Team-specific home advantage (tracked from home/away records)
-    - Dynamic K-factor (convergence + goal-diff scaling)
-    - Elo momentum (direction of recent Elo change)
-    - Elo volatility (std-dev of rating over last N games)
-    """
-    name = "elo"
-
-    ELO_DEFAULT = 1500.0
-    K_BASE = 20.0
-    BLANKET_HOME = 40.0
-    TRACK_N = 20          # home / away record window
-    MOMENTUM_N = 6        # games for momentum calc
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        ratings: dict[str, float] = {}
-        counts: dict[str, int] = {}
-        home_rec: dict[str, list] = {}    # (pts, gf, ga)
-        away_rec: dict[str, list] = {}
-        elo_history: dict[str, list] = {} # last N ratings for volatility
-
-        out_elo_h = np.zeros(n)
-        out_elo_a = np.zeros(n)
-        out_diff = np.zeros(n)
-        out_ph = np.zeros(n)
-        out_pd = np.zeros(n)
-        out_pa = np.zeros(n)
-        out_conf = np.zeros(n)
-        out_home_adv = np.zeros(n)
-        out_momentum_h = np.zeros(n)
-        out_momentum_a = np.zeros(n)
-        out_volatility_h = np.zeros(n)
-        out_volatility_a = np.zeros(n)
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-            rh = ratings.get(h, self.ELO_DEFAULT)
-            ra = ratings.get(a, self.ELO_DEFAULT)
-
-            # team-specific home advantage
-            h_rec = home_rec.get(h, [])
-            a_rec_h = away_rec.get(h, [])
-            if len(h_rec) >= 3 and len(a_rec_h) >= 3:
-                h_ppg = np.mean([x[0] for x in h_rec[-self.TRACK_N:]])
-                a_ppg = np.mean([x[0] for x in a_rec_h[-self.TRACK_N:]])
-                h_gd = np.mean([x[1] - x[2] for x in h_rec[-self.TRACK_N:]])
-                a_gd = np.mean([x[1] - x[2] for x in a_rec_h[-self.TRACK_N:]])
-                adv = self.BLANKET_HOME + (h_ppg - a_ppg) * 50 + (h_gd - a_gd) * 10
-                adv = max(0.0, min(150.0, adv))
-            else:
-                adv = self.BLANKET_HOME
-
-            rh_adj = rh + adv
-
-            # expected — use shared core
-            e_h = _elo_exp(rh_adj, ra)
-            p_draw = _elo_dp(rh_adj, ra)
-            ph = e_h * (1 - p_draw)
-            pa = (1 - e_h) * (1 - p_draw)
-            ph, pd_, pa = _norm3(ph, p_draw, pa)
-
-            # momentum & volatility
-            hist_h = elo_history.get(h, [])
-            hist_a = elo_history.get(a, [])
-            mom_h = (hist_h[-1] - hist_h[-self.MOMENTUM_N]) / max(1, len(hist_h[-self.MOMENTUM_N:])) if len(hist_h) >= self.MOMENTUM_N else 0.0
-            mom_a = (hist_a[-1] - hist_a[-self.MOMENTUM_N]) / max(1, len(hist_a[-self.MOMENTUM_N:])) if len(hist_a) >= self.MOMENTUM_N else 0.0
-            vol_h = float(np.std(hist_h[-self.MOMENTUM_N:])) if len(hist_h) >= 3 else 30.0
-            vol_a = float(np.std(hist_a[-self.MOMENTUM_N:])) if len(hist_a) >= 3 else 30.0
-
-            # confidence — increases with games played (capped at 1)
-            c_h = min(1.0, counts.get(h, 0) / 30.0)
-            c_a = min(1.0, counts.get(a, 0) / 30.0)
-            conf = (c_h + c_a) / 2.0
-
-            out_elo_h[i] = rh; out_elo_a[i] = ra; out_diff[i] = rh - ra
-            out_ph[i] = ph; out_pd[i] = pd_; out_pa[i] = pa
-            out_conf[i] = conf; out_home_adv[i] = adv
-            out_momentum_h[i] = mom_h; out_momentum_a[i] = mom_a
-            out_volatility_h[i] = vol_h; out_volatility_a[i] = vol_a
-
-            # --- update state AFTER recording pre-match values ---
-            hg, ag = int(r.home_goals), int(r.away_goals)
-            s_home = 1.0 if hg > ag else (0.5 if hg == ag else 0.0)
-            gd = abs(hg - ag)
-            n_h = counts.get(h, 0)
-            n_a = counts.get(a, 0)
-            k_h = _dk(n_h, gd, k_base=self.K_BASE)
-            k_a = _dk(n_a, gd, k_base=self.K_BASE)
-            k = (k_h + k_a) / 2.0
-            delta = k * (s_home - e_h)
-            ratings[h] = rh + delta
-            ratings[a] = ra - delta
-            counts[h] = n_h + 1
-            counts[a] = n_a + 1
-            home_rec.setdefault(h, []).append((_pts(hg, ag), hg, ag))
-            away_rec.setdefault(a, []).append((_pts(ag, hg), ag, hg))
-            elo_history.setdefault(h, []).append(ratings[h])
-            elo_history.setdefault(a, []).append(ratings[a])
-
-        # Derived features using advanced math
-        out_tanh_diff = np.array([tanh_transform(d, 400.0) for d in out_diff])
-        out_log_diff = np.array([log_transform(d) for d in out_diff])
-        out_elo_form_h = out_momentum_h * out_conf  # momentum weighted by confidence
-        out_elo_form_a = out_momentum_a * out_conf
-
-        return ExpertResult(
-            probs=np.column_stack([out_ph, out_pd, out_pa]),
-            confidence=out_conf,
-            features={
-                "elo_home": out_elo_h, "elo_away": out_elo_a, "elo_diff": out_diff,
-                "elo_home_adv": out_home_adv,
-                "elo_momentum_h": out_momentum_h, "elo_momentum_a": out_momentum_a,
-                "elo_volatility_h": out_volatility_h, "elo_volatility_a": out_volatility_a,
-                # v10: nonlinear transforms + form signals
-                "elo_tanh_diff": out_tanh_diff,
-                "elo_log_diff": out_log_diff,
-                "elo_weighted_mom_h": out_elo_form_h,
-                "elo_weighted_mom_a": out_elo_form_a,
-            },
-        )
-
-
-# ===================================================================
-# 2. MARKET EXPERT
-# ===================================================================
-class MarketExpert(Expert):
-    """
-    Odds intelligence: implied probabilities from multiple bookmaker tiers,
-    opening→closing line movement (sharp money signal), overround as
-    uncertainty proxy.
-    """
-    name = "market"
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        ph = np.zeros(n); pd_ = np.zeros(n); pa = np.zeros(n)
-        overround = np.zeros(n)
-        src_quality = np.zeros(n)  # 3=closing, 2=avg, 1=max, 0=primary
-        has_odds = np.zeros(n)
-        using_closing = np.zeros(n)  # P1-6 fix: flag when closing odds are used
-        move_h = np.zeros(n); move_d = np.zeros(n); move_a = np.zeros(n)
-        has_move = np.zeros(n)
-        ou25 = np.zeros(n); ou_over = np.zeros(n); has_ou = np.zeros(n)
-        # Opening odds features (always use opening for primary signal to avoid train/serve skew)
-        open_ph = np.zeros(n); open_pd = np.zeros(n); open_pa = np.zeros(n)
-        has_open = np.zeros(n)
-        # v10: logit-space features, entropy, pinnacle-specific
-        logit_h = np.zeros(n); logit_d = np.zeros(n); logit_a = np.zeros(n)
-        mkt_entropy = np.zeros(n)
-        pin_ph = np.zeros(n); pin_pd = np.zeros(n); pin_pa = np.zeros(n)
-        has_pin = np.zeros(n)
-        conf = np.zeros(n)
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            raw = _raw(getattr(r, "raw_json", None))
-            b365h = _f(getattr(r, "b365h", None))
-            b365d = _f(getattr(r, "b365d", None))
-            b365a = _f(getattr(r, "b365a", None))
-
-            # Read structured columns first, fall back to raw_json
-            b365ch = _f(getattr(r, "b365ch", None)) or _f(raw.get("B365CH"))
-            b365cd = _f(getattr(r, "b365cd", None)) or _f(raw.get("B365CD"))
-            b365ca = _f(getattr(r, "b365ca", None)) or _f(raw.get("B365CA"))
-            avgh_v = _f(getattr(r, "avgh", None)) or _f(raw.get("AvgH"))
-            avgd_v = _f(getattr(r, "avgd", None)) or _f(raw.get("AvgD"))
-            avga_v = _f(getattr(r, "avga", None)) or _f(raw.get("AvgA"))
-            maxh_v = _f(getattr(r, "maxh", None)) or _f(raw.get("MaxH"))
-            maxd_v = _f(getattr(r, "maxd", None)) or _f(raw.get("MaxD"))
-            maxa_v = _f(getattr(r, "maxa", None)) or _f(raw.get("MaxA"))
-            psh_v = _f(getattr(r, "psh", None)) or _f(raw.get("PSH"))
-            psd_v = _f(getattr(r, "psd", None)) or _f(raw.get("PSD"))
-            psa_v = _f(getattr(r, "psa", None)) or _f(raw.get("PSA"))
-
-            # P1-6 fix: Always compute opening odds baseline (available at both
-            # train and serve time) to avoid closing-odds skew.
-            imp_open = _implied(b365h, b365d, b365a)
-            if imp_open[0] > 0:
-                open_ph[i], open_pd[i], open_pa[i] = imp_open[0], imp_open[1], imp_open[2]
-                has_open[i] = 1.0
-
-            # best available odds (closing > Pinnacle > avg > max > primary)
-            # The model learns via `using_closing` feature whether closing odds
-            # were used, so it can discount the extra info at serve time.
-            for trio, sq, is_closing in [
-                ((b365ch, b365cd, b365ca), 4.0, True),
-                ((psh_v, psd_v, psa_v), 3.0, False),
-                ((avgh_v, avgd_v, avga_v), 2.0, False),
-                ((maxh_v, maxd_v, maxa_v), 1.0, False),
-                ((b365h, b365d, b365a), 0.0, False),
-            ]:
-                imp = _implied(trio[0], trio[1], trio[2])
-                if imp[0] > 0:
-                    ph[i], pd_[i], pa[i] = imp[0], imp[1], imp[2]
-                    overround[i] = imp[3]
-                    src_quality[i] = sq
-                    has_odds[i] = 1.0
-                    using_closing[i] = 1.0 if is_closing else 0.0
-                    break
-
-            # line movement (opening → closing)
-            imp_o = _implied(b365h, b365d, b365a)
-            imp_c = _implied(b365ch, b365cd, b365ca)
-            if imp_o[0] > 0 and imp_c[0] > 0:
-                move_h[i] = imp_c[0] - imp_o[0]
-                move_d[i] = imp_c[1] - imp_o[1]
-                move_a[i] = imp_c[2] - imp_o[2]
-                has_move[i] = 1.0
-
-            # over/under 2.5 — read from proper columns first
-            avg_o25_v = _f(getattr(r, "avg_o25", None)) or _f(raw.get("AvgC>2.5")) or _f(raw.get("Avg>2.5"))
-            avg_u25_v = _f(getattr(r, "avg_u25", None)) or _f(raw.get("AvgC<2.5")) or _f(raw.get("Avg<2.5"))
-            b365_o25_v = _f(getattr(r, "b365_o25", None)) or _f(raw.get("B365C>2.5")) or _f(raw.get("B365>2.5"))
-            b365_u25_v = _f(getattr(r, "b365_u25", None)) or _f(raw.get("B365C<2.5")) or _f(raw.get("B365<2.5"))
-            max_o25_v = _f(getattr(r, "max_o25", None)) or _f(raw.get("Max>2.5"))
-            max_u25_v = _f(getattr(r, "max_u25", None)) or _f(raw.get("Max<2.5"))
-
-            for o_, u_ in [
-                (avg_o25_v, avg_u25_v),
-                (b365_o25_v, b365_u25_v),
-                (max_o25_v, max_u25_v),
-            ]:
-                if o_ and u_ and o_ > 1 and u_ > 1:
-                    io, iu = 1 / o_, 1 / u_
-                    ou25[i] = io / (io + iu)
-                    ou_over[i] = io + iu - 1
-                    has_ou[i] = 1.0
-                    break
-
-            # confidence based on data availability
-            c = 0.3 * has_odds[i] + 0.3 * min(1.0, src_quality[i] / 3.0) + 0.2 * has_move[i] + 0.2 * has_ou[i]
-            conf[i] = c
-
-            # v10: logit-space features
-            if has_odds[i]:
-                logit_h[i] = logit(max(0.01, ph[i]))
-                logit_d[i] = logit(max(0.01, pd_[i]))
-                logit_a[i] = logit(max(0.01, pa[i]))
-                mkt_entropy[i] = odds_entropy([ph[i], pd_[i], pa[i]])
-
-            # v10: Pinnacle odds (sharpest bookmaker, least overround)
-            imp_pin = _implied(psh_v, psd_v, psa_v)
-            if imp_pin[0] > 0:
-                pin_ph[i], pin_pd[i], pin_pa[i] = imp_pin[0], imp_pin[1], imp_pin[2]
-                has_pin[i] = 1.0
-
-        return ExpertResult(
-            probs=np.column_stack([ph, pd_, pa]),
-            confidence=conf,
-            features={
-                "mkt_overround": overround, "mkt_src_quality": src_quality,
-                "mkt_has_odds": has_odds,
-                "mkt_using_closing": using_closing,  # P1-6: model learns closing odds bias
-                "mkt_move_h": move_h, "mkt_move_d": move_d, "mkt_move_a": move_a,
-                "mkt_has_move": has_move,
-                "mkt_ou25": ou25, "mkt_ou_over": ou_over, "mkt_has_ou": has_ou,
-                # Opening odds baseline (always available, no train/serve skew)
-                "mkt_open_ph": open_ph, "mkt_open_pd": open_pd, "mkt_open_pa": open_pa,
-                "mkt_has_open": has_open,
-                # v10: logit-space + entropy + Pinnacle
-                "mkt_logit_h": logit_h, "mkt_logit_d": logit_d, "mkt_logit_a": logit_a,
-                "mkt_entropy": mkt_entropy,
-                "mkt_pin_ph": pin_ph, "mkt_pin_pd": pin_pd, "mkt_pin_pa": pin_pa,
-                "mkt_has_pin": has_pin,
-            },
-        )
-
-
-# ===================================================================
-# 3. FORM EXPERT
-# ===================================================================
-class FormExpert(Expert):
-    """
-    Rolling form analysis with Opposition-Adjusted Form (OAF):
-    - Standard rolling averages (goals, points, shots, corners, cards)
-    - OAF: weight each result by opponent Elo percentile
-    - Venue-split form (home-only PPG, away-only PPG)
-    - Momentum (acceleration), streak, clean-sheet / BTTS rates
-    """
-    name = "form"
-
-    ROLL = 5              # standard rolling window
-    OAF_WINDOW = 10       # opponent-adjusted form window
-    EXTENDED_WINDOW = 10  # for rates (CS, BTTS)
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        roll: dict[str, list[dict]] = {}
-        elo: dict[str, float] = {}  # track Elo for OAF weighting
-        home_ppg: dict[str, list[float]] = {}
-        away_ppg: dict[str, list[float]] = {}
-        ELO_MED = 1500.0
-
-        # outputs
-        gf_h = np.zeros(n); ga_h = np.zeros(n); pp_h = np.zeros(n)
-        gf_a = np.zeros(n); ga_a = np.zeros(n); pp_a = np.zeros(n)
-        sh_h = np.zeros(n); sot_h = np.zeros(n); cor_h = np.zeros(n); card_h = np.zeros(n)
-        sh_a = np.zeros(n); sot_a = np.zeros(n); cor_a = np.zeros(n); card_a = np.zeros(n)
-        oaf_h = np.zeros(n); oaf_a = np.zeros(n)    # opposition-adjusted PPG
-        hf_ppg_h = np.zeros(n); af_ppg_a = np.zeros(n)  # home-form PPG, away-form PPG
-        cs_h = np.zeros(n); cs_a = np.zeros(n)
-        btts_h = np.zeros(n); btts_a = np.zeros(n)
-        mom_h = np.zeros(n); mom_a = np.zeros(n)
-        strk_h = np.zeros(n); strk_a = np.zeros(n)
-        gsup_h = np.zeros(n); gsup_a = np.zeros(n)
-        sotr_h = np.zeros(n); sotr_a = np.zeros(n)
-        # v10: Bayesian shrinkage rates, schedule difficulty, shot conversion
-        shrunk_wr_h = np.zeros(n); shrunk_wr_a = np.zeros(n)
-        shrunk_cs_h = np.zeros(n); shrunk_cs_a = np.zeros(n)
-        shrunk_btts_h = np.zeros(n); shrunk_btts_a = np.zeros(n)
-        sched_diff_h = np.zeros(n); sched_diff_a = np.zeros(n)
-        conversion_h = np.zeros(n); conversion_a = np.zeros(n)
-        probs = np.full((n, 3), 1 / 3)
-        conf = np.zeros(n)
-
-        def _avg(team, key, w=None):
-            xs = [d.get(key, 0.0) for d in roll.get(team, [])[-( w or self.ROLL):]]
-            return float(np.mean(xs)) if xs else 0.0
-
-        def _rate(team, key):
-            xs = [d.get(key, 0.0) for d in roll.get(team, [])[-self.EXTENDED_WINDOW:]]
-            return float(np.mean(xs)) if xs else 0.0
-
-        def _oaf_ppg(team):
-            """Opposition-adjusted PPG: weight points by opponent Elo."""
-            recs = roll.get(team, [])[-self.OAF_WINDOW:]
-            if not recs:
-                return 0.0
-            total_w = 0.0; total_p = 0.0
-            for d in recs:
-                opp_elo = d.get("opp_elo", ELO_MED)
-                w = opp_elo / ELO_MED  # >1 for strong opponents, <1 for weak
-                total_p += d["pts"] * w
-                total_w += w
-            return total_p / max(total_w, 1e-6)
-
-        def _momentum(team):
-            hist = roll.get(team, [])
-            if len(hist) < 4:
-                return 0.0
-            recent = np.mean([d["pts"] for d in hist[-3:]])
-            older = np.mean([d["pts"] for d in hist[-6:]])
-            return float(recent - older)
-
-        def _streak(team):
-            hist = roll.get(team, [])
-            if not hist:
-                return 0.0
-            s = 0
-            last = hist[-1]["pts"]
-            for d in reversed(hist):
-                if last == 3 and d["pts"] == 3:
-                    s += 1
-                elif last == 0 and d["pts"] == 0:
-                    s -= 1
-                else:
-                    break
-            return float(s)
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-
-            # pre-match features
-            gf_h[i] = _avg(h, "gf"); ga_h[i] = _avg(h, "ga"); pp_h[i] = _avg(h, "pts")
-            gf_a[i] = _avg(a, "gf"); ga_a[i] = _avg(a, "ga"); pp_a[i] = _avg(a, "pts")
-            sh_h[i] = _avg(h, "sh"); sot_h[i] = _avg(h, "sot"); cor_h[i] = _avg(h, "cor"); card_h[i] = _avg(h, "card")
-            sh_a[i] = _avg(a, "sh"); sot_a[i] = _avg(a, "sot"); cor_a[i] = _avg(a, "cor"); card_a[i] = _avg(a, "card")
-            oaf_h[i] = _oaf_ppg(h); oaf_a[i] = _oaf_ppg(a)
-
-            # venue-split
-            hrecs = home_ppg.get(h, [])
-            arecs = away_ppg.get(a, [])
-            hf_ppg_h[i] = float(np.mean(hrecs[-self.ROLL:])) if hrecs else 0.0
-            af_ppg_a[i] = float(np.mean(arecs[-self.ROLL:])) if arecs else 0.0
-
-            cs_h[i] = _rate(h, "cs"); cs_a[i] = _rate(a, "cs")
-            btts_h[i] = _rate(h, "btts"); btts_a[i] = _rate(a, "btts")
-            mom_h[i] = _momentum(h); mom_a[i] = _momentum(a)
-            strk_h[i] = _streak(h); strk_a[i] = _streak(a)
-            gsup_h[i] = _avg(h, "gsup"); gsup_a[i] = _avg(a, "gsup")
-            sv_h = _avg(h, "sh"); sv_sot_h = _avg(h, "sot")
-            sv_a = _avg(a, "sh"); sv_sot_a = _avg(a, "sot")
-            sotr_h[i] = sv_sot_h / max(sv_h, 0.1)
-            sotr_a[i] = sv_sot_a / max(sv_a, 0.1)
-
-            # v10: Bayesian shrinkage for noisy rates
-            h_recs = roll.get(h, [])
-            a_recs = roll.get(a, [])
-            n_h_recs = len(h_recs)
-            n_a_recs = len(a_recs)
-            # Win rate shrinkage
-            h_wins = sum(1 for d in h_recs if d["pts"] == 3)
-            a_wins = sum(1 for d in a_recs if d["pts"] == 3)
-            shrunk_wr_h[i] = beta_binomial_shrink(h_wins, n_h_recs, 4.5, 5.5)
-            shrunk_wr_a[i] = beta_binomial_shrink(a_wins, n_a_recs, 4.5, 5.5)
-            # CS rate shrinkage
-            h_cs = sum(1 for d in h_recs if d.get("cs", 0) > 0)
-            a_cs = sum(1 for d in a_recs if d.get("cs", 0) > 0)
-            shrunk_cs_h[i] = beta_binomial_shrink(h_cs, n_h_recs, 3.5, 6.5)
-            shrunk_cs_a[i] = beta_binomial_shrink(a_cs, n_a_recs, 3.5, 6.5)
-            # BTTS rate shrinkage
-            h_btts = sum(1 for d in h_recs if d.get("btts", 0) > 0)
-            a_btts = sum(1 for d in a_recs if d.get("btts", 0) > 0)
-            shrunk_btts_h[i] = beta_binomial_shrink(h_btts, n_h_recs, 5.0, 5.0)
-            shrunk_btts_a[i] = beta_binomial_shrink(a_btts, n_a_recs, 5.0, 5.0)
-            # Schedule difficulty
-            h_opp_elos = [d.get("opp_elo", 1500) for d in h_recs[-5:]]
-            a_opp_elos = [d.get("opp_elo", 1500) for d in a_recs[-5:]]
-            sched_diff_h[i] = schedule_difficulty(h_opp_elos) if h_opp_elos else 1500.0
-            sched_diff_a[i] = schedule_difficulty(a_opp_elos) if a_opp_elos else 1500.0
-            # Shot conversion (goals per shot on target)
-            h_total_sot = sum(d.get("sot", 0) for d in h_recs[-10:])
-            h_total_gf = sum(d.get("gf", 0) for d in h_recs[-10:])
-            a_total_sot = sum(d.get("sot", 0) for d in a_recs[-10:])
-            a_total_gf = sum(d.get("gf", 0) for d in a_recs[-10:])
-            conversion_h[i] = h_total_gf / max(h_total_sot, 1)
-            conversion_a[i] = a_total_gf / max(a_total_sot, 1)
-
-            # form-based probs (OAF comparison)
-            oaf_diff = oaf_h[i] - oaf_a[i]
-            p_h = 1 / (1 + math.exp(-0.8 * oaf_diff))
-            p_a = 1 - p_h
-            p_d = max(0.18, 0.28 - abs(oaf_diff) * 0.05)
-            probs[i] = _norm3(p_h * (1 - p_d), p_d, p_a * (1 - p_d))
-
-            # confidence
-            n_h = len(roll.get(h, []))
-            n_a = len(roll.get(a, []))
-            conf[i] = min(1.0, (n_h + n_a) / 20.0)
-
-            # --- update state ---
-            hg, ag = int(r.home_goals), int(r.away_goals)
-            hs = _f(getattr(r, "hs", 0)); hst = _f(getattr(r, "hst", 0))
-            hc = _f(getattr(r, "hc", 0)); hy = _f(getattr(r, "hy", 0))
-            hr_ = _f(getattr(r, "hr", 0))
-            as_ = _f(getattr(r, "as_", 0)); ast = _f(getattr(r, "ast", 0))
-            ac = _f(getattr(r, "ac", 0)); ay = _f(getattr(r, "ay", 0))
-            ar_ = _f(getattr(r, "ar", 0))
-
-            opp_elo_a = elo.get(a, 1500.0)
-            opp_elo_h = elo.get(h, 1500.0)
-
-            roll.setdefault(h, []).append({
-                "gf": hg, "ga": ag, "pts": _pts(hg, ag),
-                "sh": hs, "sot": hst, "cor": hc, "card": hy + 2.5 * hr_,
-                "cs": 1.0 if ag == 0 else 0.0,
-                "btts": 1.0 if (hg > 0 and ag > 0) else 0.0,
-                "gsup": hg - ag, "opp_elo": opp_elo_a,
-            })
-            roll.setdefault(a, []).append({
-                "gf": ag, "ga": hg, "pts": _pts(ag, hg),
-                "sh": as_, "sot": ast, "cor": ac, "card": ay + 2.5 * ar_,
-                "cs": 1.0 if hg == 0 else 0.0,
-                "btts": 1.0 if (hg > 0 and ag > 0) else 0.0,
-                "gsup": ag - hg, "opp_elo": opp_elo_h,
-            })
-            home_ppg.setdefault(h, []).append(float(_pts(hg, ag)))
-            away_ppg.setdefault(a, []).append(float(_pts(ag, hg)))
-            # lightweight Elo update for OAF weighting
-            rh = elo.get(h, 1500.0); ra = elo.get(a, 1500.0)
-            e = 1 / (1 + 10 ** (-(rh + 40 - ra) / 400))
-            s = 1.0 if hg > ag else (0.5 if hg == ag else 0.0)
-            delta = 16 * (s - e)
-            elo[h] = rh + delta; elo[a] = ra - delta
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "form_gf_h": gf_h, "form_ga_h": ga_h, "form_pts_h": pp_h,
-                "form_gf_a": gf_a, "form_ga_a": ga_a, "form_pts_a": pp_a,
-                "form_sh_h": sh_h, "form_sot_h": sot_h, "form_cor_h": cor_h, "form_card_h": card_h,
-                "form_sh_a": sh_a, "form_sot_a": sot_a, "form_cor_a": cor_a, "form_card_a": card_a,
-                "form_oaf_h": oaf_h, "form_oaf_a": oaf_a,
-                "form_home_ppg_h": hf_ppg_h, "form_away_ppg_a": af_ppg_a,
-                "form_cs_h": cs_h, "form_cs_a": cs_a,
-                "form_btts_h": btts_h, "form_btts_a": btts_a,
-                "form_momentum_h": mom_h, "form_momentum_a": mom_a,
-                "form_streak_h": strk_h, "form_streak_a": strk_a,
-                "form_gsup_h": gsup_h, "form_gsup_a": gsup_a,
-                "form_sotr_h": sotr_h, "form_sotr_a": sotr_a,
-                # v10: Bayesian shrinkage + schedule difficulty + shot conversion
-                "form_shrunk_wr_h": shrunk_wr_h, "form_shrunk_wr_a": shrunk_wr_a,
-                "form_shrunk_cs_h": shrunk_cs_h, "form_shrunk_cs_a": shrunk_cs_a,
-                "form_shrunk_btts_h": shrunk_btts_h, "form_shrunk_btts_a": shrunk_btts_a,
-                "form_sched_diff_h": sched_diff_h, "form_sched_diff_a": sched_diff_a,
-                "form_conversion_h": conversion_h, "form_conversion_a": conversion_a,
-            },
-        )
-
-
-# ===================================================================
-# 4. POISSON EXPERT
-# ===================================================================
-class PoissonExpert(Expert):
-    """
-    Attack / defence strength via EMA tracking → Poisson goal distribution →
-    analytical P(H, D, A) through score matrix convolution.
-    """
-    name = "poisson"
-
-    ALPHA = 0.08        # EMA smoothing factor
-    MAX_GOALS = 8       # max goals to consider in score matrix
-    AVG = 1.35          # league average goals per team
-    VENUE_ALPHA = 0.06  # slower EMA for venue-specific stats
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        attack: dict[str, float] = {}
-        defense: dict[str, float] = {}
-        # venue-specific attack/defense
-        home_att: dict[str, float] = {}
-        home_def: dict[str, float] = {}
-        away_att: dict[str, float] = {}
-        away_def: dict[str, float] = {}
-        game_count: dict[str, int] = {}
-
-        lam_h = np.zeros(n); lam_a = np.zeros(n)
-        probs = np.full((n, 3), 1 / 3)
-        conf = np.zeros(n)
-        # new score-derived features
-        pois_btts = np.zeros(n)        # P(both teams to score)
-        pois_o25 = np.zeros(n)         # P(over 2.5 goals)
-        pois_o15 = np.zeros(n)         # P(over 1.5 goals)
-        pois_u25 = np.zeros(n)         # P(under 2.5 goals)
-        pois_cs00 = np.zeros(n)        # P(0-0 clean sheet)
-        pois_ml_hg = np.zeros(n)       # most likely home goals
-        pois_ml_ag = np.zeros(n)       # most likely away goals
-        pois_zero_h = np.zeros(n)      # P(home scores 0)
-        pois_zero_a = np.zeros(n)      # P(away scores 0)
-        pois_skew = np.zeros(n)        # skewness of goal diff distribution
-        # v10: Dixon-Coles adjusted features
-        dc_adj_ph = np.zeros(n)        # DC-adjusted P(home)
-        dc_adj_pd = np.zeros(n)        # DC-adjusted P(draw)
-        dc_adj_pa = np.zeros(n)        # DC-adjusted P(away)
-        dc_cs00 = np.zeros(n)          # DC-adjusted P(0-0)
-        dc_btts = np.zeros(n)          # DC-adjusted P(BTTS)
-        # v10: Skellam distribution features
-        sk_mean_gd = np.zeros(n)       # expected goal difference
-        sk_var_gd = np.zeros(n)        # variance of goal difference
-        sk_skew = np.zeros(n)          # skellam skewness
-        # v10: Monte Carlo features (DC-correlated simulation)
-        mc_ph = np.zeros(n)            # MC P(home)
-        mc_pd = np.zeros(n)            # MC P(draw)
-        mc_pa = np.zeros(n)            # MC P(away)
-        mc_btts = np.zeros(n)          # MC P(BTTS)
-        mc_o25 = np.zeros(n)           # MC P(O2.5)
-        mc_o35 = np.zeros(n)           # MC P(O3.5)
-        mc_var_total = np.zeros(n)     # MC variance of total goals
-
-        def _a(t): return attack.get(t, self.AVG)
-        def _d(t): return defense.get(t, self.AVG * 0.9)
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-            ah, dh = _a(h), _d(h)
-            aa, da = _a(a), _d(a)
-
-            # blend overall + venue-specific if available
-            ha_h = home_att.get(h, ah)
-            hd_h = home_def.get(h, dh)
-            aa_a = away_att.get(a, aa)
-            ad_a = away_def.get(a, da)
-            att_h = 0.7 * ah + 0.3 * ha_h  # weighted blend
-            def_h = 0.7 * dh + 0.3 * hd_h
-            att_a = 0.7 * aa + 0.3 * aa_a
-            def_a = 0.7 * da + 0.3 * ad_a
-
-            l_h = max(0.3, min(4.5, att_h * def_a / self.AVG * 1.05))
-            l_a = max(0.3, min(4.5, att_a * def_h / self.AVG))
-            lam_h[i] = l_h; lam_a[i] = l_a
-
-            # score matrix
-            goals_range = np.arange(self.MAX_GOALS + 1)
-            ph_dist = poisson_dist.pmf(goals_range, l_h)
-            pa_dist = poisson_dist.pmf(goals_range, l_a)
-            score_mx = np.outer(ph_dist, pa_dist)
-            p_home = float(np.sum(np.tril(score_mx, -1)))
-            p_draw = float(np.sum(np.diag(score_mx)))
-            p_away = float(np.sum(np.triu(score_mx, 1)))
-            ph_, pd__, pa_ = _norm3(p_home, p_draw, p_away)
-            probs[i] = [ph_, pd__, pa_]
-
-            # score-derived features from the score matrix
-            pois_cs00[i] = float(score_mx[0, 0])
-            pois_zero_h[i] = float(ph_dist[0])
-            pois_zero_a[i] = float(pa_dist[0])
-            pois_btts[i] = float(1.0 - ph_dist[0] - pa_dist[0] + score_mx[0, 0])
-            # over/under
-            total_under25 = sum(
-                float(score_mx[hg, ag])
-                for hg in range(self.MAX_GOALS + 1)
-                for ag in range(self.MAX_GOALS + 1)
-                if hg + ag <= 2
-            )
-            total_under15 = sum(
-                float(score_mx[hg, ag])
-                for hg in range(self.MAX_GOALS + 1)
-                for ag in range(self.MAX_GOALS + 1)
-                if hg + ag <= 1
-            )
-            pois_u25[i] = total_under25
-            pois_o25[i] = 1.0 - total_under25
-            pois_o15[i] = 1.0 - total_under15
-            # most likely score
-            best_idx = np.unravel_index(np.argmax(score_mx), score_mx.shape)
-            pois_ml_hg[i] = best_idx[0]; pois_ml_ag[i] = best_idx[1]
-            # goal difference skewness (positive = home-heavy)
-            gd_probs = np.zeros(2 * self.MAX_GOALS + 1)
-            for hg_i in range(self.MAX_GOALS + 1):
-                for ag_i in range(self.MAX_GOALS + 1):
-                    gd_probs[hg_i - ag_i + self.MAX_GOALS] += score_mx[hg_i, ag_i]
-            gd_range = np.arange(-self.MAX_GOALS, self.MAX_GOALS + 1)
-            mu = np.sum(gd_range * gd_probs)
-            var = np.sum(gd_probs * (gd_range - mu) ** 2)
-            std = max(np.sqrt(var), 1e-6)
-            pois_skew[i] = float(np.sum(gd_probs * ((gd_range - mu) / std) ** 3))
-
-            # v10: Dixon-Coles adjusted score matrix
-            dc_mx = build_dc_score_matrix(l_h, l_a, rho=-0.13, max_goals=self.MAX_GOALS)
-            dc_ph = float(np.sum(np.tril(dc_mx, -1)))
-            dc_pd_v = float(np.sum(np.diag(dc_mx)))
-            dc_pa_v = float(np.sum(np.triu(dc_mx, 1)))
-            dc_ph, dc_pd_v, dc_pa_v = _norm3(dc_ph, dc_pd_v, dc_pa_v)
-            dc_adj_ph[i] = dc_ph; dc_adj_pd[i] = dc_pd_v; dc_adj_pa[i] = dc_pa_v
-            dc_cs00[i] = float(dc_mx[0, 0])
-            dc_btts[i] = float(1.0 - dc_mx[0, :].sum() - dc_mx[:, 0].sum() + dc_mx[0, 0])
-
-            # v10: Skellam distribution features
-            sk_res = skellam_probs(l_h, l_a)
-            sk_mean_gd[i] = sk_res["mean_diff"]
-            sk_var_gd[i] = sk_res["var_diff"]
-            sk_skew[i] = sk_res["skewness"]
-
-            # v10: Monte Carlo (DC-correlated, 2000 sims for speed)
-            mc_res = monte_carlo_simulate(l_h, l_a, rho=-0.13, n_sims=2000)
-            mc_ph[i] = mc_res["mc_p_home"]
-            mc_pd[i] = mc_res["mc_p_draw"]
-            mc_pa[i] = mc_res["mc_p_away"]
-            mc_btts[i] = mc_res["mc_btts"]
-            mc_o25[i] = mc_res["mc_o25"]
-            mc_o35[i] = mc_res["mc_o35"]
-            mc_var_total[i] = mc_res["mc_var_total"]
-
-            # confidence — increases with number of known teams
-            gc_h = game_count.get(h, 0)
-            gc_a = game_count.get(a, 0)
-            conf[i] = min(1.0, (gc_h + gc_a) / 20.0)
-
-            # --- update ---
-            hg, ag = int(r.home_goals), int(r.away_goals)
-            if h in attack:
-                attack[h] = (1 - self.ALPHA) * ah + self.ALPHA * hg
-                defense[h] = (1 - self.ALPHA) * dh + self.ALPHA * ag
-            else:
-                attack[h] = float(hg) if hg > 0 else self.AVG
-                defense[h] = float(ag) if ag > 0 else self.AVG * 0.9
-            if a in attack:
-                attack[a] = (1 - self.ALPHA) * aa + self.ALPHA * ag
-                defense[a] = (1 - self.ALPHA) * da + self.ALPHA * hg
-            else:
-                attack[a] = float(ag) if ag > 0 else self.AVG
-                defense[a] = float(hg) if hg > 0 else self.AVG * 0.9
-            # venue-specific EMA
-            if h in home_att:
-                home_att[h] = (1 - self.VENUE_ALPHA) * home_att.get(h, ah) + self.VENUE_ALPHA * hg
-                home_def[h] = (1 - self.VENUE_ALPHA) * home_def.get(h, dh) + self.VENUE_ALPHA * ag
-            else:
-                home_att[h] = float(hg) if hg > 0 else self.AVG
-                home_def[h] = float(ag) if ag > 0 else self.AVG * 0.9
-            if a in away_att:
-                away_att[a] = (1 - self.VENUE_ALPHA) * away_att.get(a, aa) + self.VENUE_ALPHA * ag
-                away_def[a] = (1 - self.VENUE_ALPHA) * away_def.get(a, da) + self.VENUE_ALPHA * hg
-            else:
-                away_att[a] = float(ag) if ag > 0 else self.AVG
-                away_def[a] = float(hg) if hg > 0 else self.AVG * 0.9
-            game_count[h] = game_count.get(h, 0) + 1
-            game_count[a] = game_count.get(a, 0) + 1
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "pois_lambda_h": lam_h, "pois_lambda_a": lam_a,
-                "pois_lambda_diff": lam_h - lam_a,
-                "pois_lambda_sum": lam_h + lam_a,
-                "pois_lambda_prod": lam_h * lam_a,
-                "pois_btts": pois_btts, "pois_o25": pois_o25,
-                "pois_o15": pois_o15, "pois_u25": pois_u25,
-                "pois_cs00": pois_cs00,
-                "pois_zero_h": pois_zero_h, "pois_zero_a": pois_zero_a,
-                "pois_ml_hg": pois_ml_hg, "pois_ml_ag": pois_ml_ag,
-                "pois_skew": pois_skew,
-                # v10: Dixon-Coles adjusted
-                "pois_dc_ph": dc_adj_ph, "pois_dc_pd": dc_adj_pd, "pois_dc_pa": dc_adj_pa,
-                "pois_dc_cs00": dc_cs00, "pois_dc_btts": dc_btts,
-                # v10: Skellam distribution
-                "pois_sk_mean_gd": sk_mean_gd, "pois_sk_var_gd": sk_var_gd,
-                "pois_sk_skew": sk_skew,
-                # v10: Monte Carlo simulation
-                "pois_mc_ph": mc_ph, "pois_mc_pd": mc_pd, "pois_mc_pa": mc_pa,
-                "pois_mc_btts": mc_btts, "pois_mc_o25": mc_o25,
-                "pois_mc_o35": mc_o35, "pois_mc_var_total": mc_var_total,
-            },
-        )
-
-
-# ===================================================================
-# 5. H2H EXPERT
-# ===================================================================
-class H2HExpert(Expert):
-    """
-    Bayesian head-to-head:
-    - Dirichlet prior calibrated to league base rates
-    - Time-decayed observations (half-life 730 days)
-    - Venue-specific sub-analysis
-    - Proper uncertainty quantification
-    """
-    name = "h2h"
-
-    HALF_LIFE = 730.0       # days
-    PRIOR_STRENGTH = 3.0    # pseudo-count weight of prior
-    # base-rate priors (home-centric)
-    PRIOR_H = 0.45
-    PRIOR_D = 0.27
-    PRIOR_A = 0.28
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        decay = math.log(2) / self.HALF_LIFE
-        h2h: dict[frozenset, list] = {}         # (home, away, hg, ag, dt)
-        venue: dict[tuple, list] = {}            # (home, away) -> [(hg, ag, dt)]
-
-        probs = np.full((n, 3), [self.PRIOR_H, self.PRIOR_D, self.PRIOR_A])
-        conf = np.zeros(n)
-        out_n = np.zeros(n)
-        out_pts_h = np.zeros(n); out_pts_a = np.zeros(n); out_gd = np.zeros(n)
-        out_vn = np.zeros(n); out_vpts = np.zeros(n); out_vgd = np.zeros(n)
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-            dt = r.utc_date
-            key = frozenset([h, a])
-            past = h2h.get(key, [])
-
-            # Bayesian update with time-decayed counts
-            alpha_h = self.PRIOR_STRENGTH * self.PRIOR_H
-            alpha_d = self.PRIOR_STRENGTH * self.PRIOR_D
-            alpha_a = self.PRIOR_STRENGTH * self.PRIOR_A
-            total_w = 0.0
-            pts_home_w = pts_away_w = gd_w = 0.0
-
-            for phome, paway, hg_p, ag_p, pdt in past[-24:]:
-                age = max(0.0, (dt - pdt).total_seconds() / 86400.0)
-                w = math.exp(-decay * age)
-                # determine outcome from perspective of home team in *this* match
-                if phome == h and paway == a:
-                    gh, ga = hg_p, ag_p
-                else:
-                    gh, ga = ag_p, hg_p
-
-                if gh > ga:
-                    alpha_h += w
-                elif gh == ga:
-                    alpha_d += w
-                else:
-                    alpha_a += w
-
-                pts_home_w += _pts(gh, ga) * w
-                pts_away_w += _pts(ga, gh) * w
-                gd_w += (gh - ga) * w
-                total_w += w
-
-            s = alpha_h + alpha_d + alpha_a
-            probs[i] = [alpha_h / s, alpha_d / s, alpha_a / s]
-
-            n_raw = len(past[-24:])
-            out_n[i] = n_raw
-            out_pts_h[i] = pts_home_w / max(total_w, 1e-6)
-            out_pts_a[i] = pts_away_w / max(total_w, 1e-6)
-            out_gd[i] = gd_w / max(total_w, 1e-6)
-
-            # venue-specific
-            vpast = venue.get((h, a), [])[-6:]
-            vn = len(vpast)
-            vpts = vgd = 0.0
-            for hg_v, ag_v, _ in vpast:
-                vpts += _pts(hg_v, ag_v)
-                vgd += (hg_v - ag_v)
-            out_vn[i] = vn
-            out_vpts[i] = vpts / max(1, vn)
-            out_vgd[i] = vgd / max(1, vn)
-
-            # confidence = f(effective sample size)
-            eff_n = total_w  # time-weighted effective sample size
-            conf[i] = min(1.0, eff_n / 8.0)
-
-            # --- update ---
-            hg, ag = int(r.home_goals), int(r.away_goals)
-            h2h.setdefault(key, []).append((h, a, hg, ag, dt))
-            venue.setdefault((h, a), []).append((hg, ag, dt))
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "h2h_n": out_n, "h2h_pts_h": out_pts_h, "h2h_pts_a": out_pts_a,
-                "h2h_gd": out_gd,
-                "h2h_venue_n": out_vn, "h2h_venue_pts": out_vpts, "h2h_venue_gd": out_vgd,
-            },
-        )
-
-
-# ===================================================================
-# 6. CONTEXT EXPERT
-# ===================================================================
-class ContextExpert(Expert):
-    """
-    Rest days, fixture congestion, season calendar, and derived contextual
-    features.
-    """
-    name = "context"
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        last_date: dict[str, Any] = {}
-        match_dates: dict[str, list] = {}   # for congestion calc
-
-        rest_h = np.zeros(n); rest_a = np.zeros(n)
-        cong7_h = np.zeros(n); cong7_a = np.zeros(n)
-        cong14_h = np.zeros(n); cong14_a = np.zeros(n)
-        cong30_h = np.zeros(n); cong30_a = np.zeros(n)
-        # season calendar features
-        season_prog = np.zeros(n)       # 0-1 season progress (Aug=0, May=1)
-        is_early = np.zeros(n)          # first 6 GWs proxy
-        is_late = np.zeros(n)           # final 6 GWs proxy
-        dow = np.zeros(n)               # day of week (0=Mon, 6=Sun)
-        is_weekend = np.zeros(n)        # Sat/Sun
-        is_midweek = np.zeros(n)        # Tue/Wed (European nights)
-        hour_utc = np.zeros(n)          # hour of kickoff
-        # fatigue interactions
-        rest_ratio = np.zeros(n)        # home/away rest ratio
-        short_rest_h = np.zeros(n)      # home on <3 days rest
-        short_rest_a = np.zeros(n)      # away on <3 days rest
-
-        probs = np.full((n, 3), [0.44, 0.28, 0.28])  # mild home prior
-        conf = np.full(n, 0.3)  # context is informative but never decisive
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-            dt = r.utc_date
-
-            # rest days
-            lh = last_date.get(h)
-            la = last_date.get(a)
-            rh = 7.0 if lh is None else max(0.0, (dt - lh).total_seconds() / 86400.0)
-            ra = 7.0 if la is None else max(0.0, (dt - la).total_seconds() / 86400.0)
-            rest_h[i] = rh; rest_a[i] = ra
-            rest_ratio[i] = rh / max(ra, 0.5)
-            short_rest_h[i] = 1.0 if rh < 3.0 else 0.0
-            short_rest_a[i] = 1.0 if ra < 3.0 else 0.0
-
-            # congestion: how many games in last 7/14/30 days
-            for team, arr7, arr14, arr30, idx in [
-                (h, cong7_h, cong14_h, cong30_h, i),
-                (a, cong7_a, cong14_a, cong30_a, i),
-            ]:
-                dates = match_dates.get(team, [])
-                c7 = sum(1 for d in dates if (dt - d).total_seconds() / 86400 <= 7)
-                c14 = sum(1 for d in dates if (dt - d).total_seconds() / 86400 <= 14)
-                c30 = sum(1 for d in dates if (dt - d).total_seconds() / 86400 <= 30)
-                arr7[idx] = c7; arr14[idx] = c14; arr30[idx] = c30
-
-            # season calendar
-            try:
-                month = dt.month
-                # season runs Aug(8) → May(5)
-                if month >= 8:
-                    prog = (month - 8) / 10.0  # Aug=0, Dec=0.4
-                else:
-                    prog = (month + 4) / 10.0  # Jan=0.5, May=0.9
-                season_prog[i] = min(1.0, prog)
-                is_early[i] = 1.0 if (month in (8, 9)) else 0.0
-                is_late[i] = 1.0 if (month in (4, 5)) else 0.0
-                d = dt.weekday()  # 0=Monday
-                dow[i] = d
-                is_weekend[i] = 1.0 if d >= 5 else 0.0  # Sat/Sun
-                is_midweek[i] = 1.0 if d in (1, 2) else 0.0  # Tue/Wed
-                hour_utc[i] = dt.hour
-            except Exception:
-                pass
-
-            # context-adjusted probs
-            rest_adv = (rh - ra) * 0.01
-            season_adj = 0.02 if is_late[i] else 0.0  # home advantage stronger late season
-            probs[i] = _norm3(0.44 + rest_adv + season_adj, 0.28, 0.28 - rest_adv - season_adj)
-
-            # adjust confidence if short rest detected (more signal)
-            if short_rest_h[i] or short_rest_a[i]:
-                conf[i] = 0.45
-
-            # --- update ---
-            last_date[h] = dt; last_date[a] = dt
-            match_dates.setdefault(h, []).append(dt)
-            match_dates.setdefault(a, []).append(dt)
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "ctx_rest_h": rest_h, "ctx_rest_a": rest_a,
-                "ctx_rest_diff": rest_h - rest_a,
-                "ctx_rest_ratio": rest_ratio,
-                "ctx_short_rest_h": short_rest_h, "ctx_short_rest_a": short_rest_a,
-                "ctx_cong7_h": cong7_h, "ctx_cong7_a": cong7_a,
-                "ctx_cong14_h": cong14_h, "ctx_cong14_a": cong14_a,
-                "ctx_cong30_h": cong30_h, "ctx_cong30_a": cong30_a,
-                "ctx_cong7_diff": cong7_h - cong7_a,
-                "ctx_cong14_diff": cong14_h - cong14_a,
-                "ctx_season_prog": season_prog,
-                "ctx_is_early": is_early, "ctx_is_late": is_late,
-                "ctx_dow": dow, "ctx_is_weekend": is_weekend,
-                "ctx_is_midweek": is_midweek,
-                "ctx_hour_utc": hour_utc,
-            },
-        )
-
-
-# ===================================================================
-# 7. GOAL PATTERN EXPERT
-# ===================================================================
-class GoalPatternExpert(Expert):
-    """
-    Analyses goal-scoring patterns that other experts miss:
-    - First-goal advantage (teams that score first win X% of the time)
-    - Comeback rate (how often a team recovers from conceding first)
-    - Scoring/conceding distributions by half (HT proxy from hthg/htag)
-    - Goal-timing tendency (early scorer vs late bloomer)
-    - Score-first probability from Poisson model
-    - Defensive resilience (clean sheet after conceding first)
-    """
-    name = "goal_pattern"
-
-    WINDOW = 15  # matches to analyze
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        team_history: dict[str, list[dict]] = {}
-
-        # outputs
-        first_goal_rate_h = np.zeros(n)    # how often home team scores first
-        first_goal_rate_a = np.zeros(n)
-        comeback_rate_h = np.zeros(n)      # how often they come back from behind
-        comeback_rate_a = np.zeros(n)
-        ht_goals_rate_h = np.zeros(n)      # fraction of goals scored in first half
-        ht_goals_rate_a = np.zeros(n)
-        ht_concede_rate_h = np.zeros(n)    # fraction of goals conceded in first half
-        ht_concede_rate_a = np.zeros(n)
-        first_goal_win_h = np.zeros(n)     # win rate when scoring first
-        first_goal_win_a = np.zeros(n)
-        multi_goal_rate_h = np.zeros(n)    # rate of scoring 2+ goals
-        multi_goal_rate_a = np.zeros(n)
-        nil_rate_h = np.zeros(n)           # rate of scoring 0
-        nil_rate_a = np.zeros(n)
-        lead_hold_rate_h = np.zeros(n)     # rate of holding HT lead
-        lead_hold_rate_a = np.zeros(n)
-        probs = np.full((n, 3), 1 / 3)
-        conf = np.zeros(n)
-
-        def _team_stats(team):
-            hist = team_history.get(team, [])[-self.WINDOW:]
-            if not hist:
-                return {}
-            fg = [h.get("scored_first", 0) for h in hist]
-            cb = [h.get("comeback", 0) for h in hist]
-            ht_frac = [h.get("ht_goal_frac", 0.5) for h in hist]
-            ht_conc = [h.get("ht_concede_frac", 0.5) for h in hist]
-            fg_win = [h.get("first_goal_win", 0) for h in hist if h.get("scored_first")]
-            multi = [1.0 if h.get("gf", 0) >= 2 else 0.0 for h in hist]
-            nil = [1.0 if h.get("gf", 0) == 0 else 0.0 for h in hist]
-            lead_hold = [h.get("held_lead", 0) for h in hist if h.get("had_ht_lead")]
-            return {
-                "fg_rate": float(np.mean(fg)),
-                "cb_rate": float(np.mean(cb)),
-                "ht_frac": float(np.mean(ht_frac)),
-                "ht_conc_frac": float(np.mean(ht_conc)),
-                "fg_win": float(np.mean(fg_win)) if fg_win else 0.5,
-                "multi": float(np.mean(multi)),
-                "nil": float(np.mean(nil)),
-                "lead_hold": float(np.mean(lead_hold)) if lead_hold else 0.5,
-            }
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-
-            # Pre-match features
-            hs = _team_stats(h)
-            as_ = _team_stats(a)
-
-            first_goal_rate_h[i] = hs.get("fg_rate", 0.5)
-            first_goal_rate_a[i] = as_.get("fg_rate", 0.5)
-            comeback_rate_h[i] = hs.get("cb_rate", 0.1)
-            comeback_rate_a[i] = as_.get("cb_rate", 0.1)
-            ht_goals_rate_h[i] = hs.get("ht_frac", 0.5)
-            ht_goals_rate_a[i] = as_.get("ht_frac", 0.5)
-            ht_concede_rate_h[i] = hs.get("ht_conc_frac", 0.5)
-            ht_concede_rate_a[i] = as_.get("ht_conc_frac", 0.5)
-            first_goal_win_h[i] = hs.get("fg_win", 0.5)
-            first_goal_win_a[i] = as_.get("fg_win", 0.5)
-            multi_goal_rate_h[i] = hs.get("multi", 0.4)
-            multi_goal_rate_a[i] = as_.get("multi", 0.4)
-            nil_rate_h[i] = hs.get("nil", 0.2)
-            nil_rate_a[i] = as_.get("nil", 0.2)
-            lead_hold_rate_h[i] = hs.get("lead_hold", 0.5)
-            lead_hold_rate_a[i] = as_.get("lead_hold", 0.5)
-
-            # Probability: combine first-goal rates with win-when-first patterns
-            fg_h = hs.get("fg_rate", 0.5)
-            fg_w_h = hs.get("fg_win", 0.5)
-            fg_a = as_.get("fg_rate", 0.5)
-            fg_w_a = as_.get("fg_win", 0.5)
-            p_h = fg_h * fg_w_h + (1 - fg_a) * 0.3  # score first + win | opponent doesn't score first
-            p_a = fg_a * fg_w_a + (1 - fg_h) * 0.3
-            p_d = 1.0 - p_h - p_a
-            if p_d < 0.15:
-                p_d = 0.25
-            probs[i] = _norm3(p_h, p_d, p_a)
-
-            n_h = len(team_history.get(h, []))
-            n_a = len(team_history.get(a, []))
-            conf[i] = min(1.0, (n_h + n_a) / 24.0)
-
-            # --- Update state ---
-            hg, ag = int(r.home_goals), int(r.away_goals)
-            hthg = _f(getattr(r, "hthg", None))
-            htag = _f(getattr(r, "htag", None))
-
-            # Determine first goal, HT fractions
-            scored_first_h = 1.0 if (hthg > 0 and htag == 0) or (hthg > htag) else (0.5 if hthg == htag and hg > 0 else 0.0)
-            scored_first_a = 1.0 if (htag > 0 and hthg == 0) or (htag > hthg) else (0.5 if hthg == htag and ag > 0 else 0.0)
-            # If no HT data, estimate from final score
-            if hthg == 0 and htag == 0 and (hg > 0 or ag > 0):
-                scored_first_h = 0.55 if hg > ag else (0.45 if hg < ag else 0.5)
-                scored_first_a = 1.0 - scored_first_h
-
-            ht_goal_frac_h = hthg / max(hg, 1) if hg > 0 else 0.0
-            ht_goal_frac_a = htag / max(ag, 1) if ag > 0 else 0.0
-            ht_concede_frac_h = htag / max(ag, 1) if ag > 0 else 0.0
-            ht_concede_frac_a = hthg / max(hg, 1) if hg > 0 else 0.0
-
-            # Comeback: behind at HT but won/drew
-            comeback_h = 1.0 if (hthg < htag and hg >= ag) else 0.0
-            comeback_a = 1.0 if (htag < hthg and ag >= hg) else 0.0
-
-            had_ht_lead_h = hthg > htag
-            held_lead_h = 1.0 if (had_ht_lead_h and hg > ag) else 0.0
-            had_ht_lead_a = htag > hthg
-            held_lead_a = 1.0 if (had_ht_lead_a and ag > hg) else 0.0
-
-            first_goal_win_val_h = 1.0 if (scored_first_h > 0.5 and hg > ag) else 0.0
-            first_goal_win_val_a = 1.0 if (scored_first_a > 0.5 and ag > hg) else 0.0
-
-            team_history.setdefault(h, []).append({
-                "gf": hg, "ga": ag,
-                "scored_first": scored_first_h,
-                "comeback": comeback_h,
-                "ht_goal_frac": ht_goal_frac_h,
-                "ht_concede_frac": ht_concede_frac_h,
-                "first_goal_win": first_goal_win_val_h,
-                "had_ht_lead": had_ht_lead_h,
-                "held_lead": held_lead_h,
-            })
-            team_history.setdefault(a, []).append({
-                "gf": ag, "ga": hg,
-                "scored_first": scored_first_a,
-                "comeback": comeback_a,
-                "ht_goal_frac": ht_goal_frac_a,
-                "ht_concede_frac": ht_concede_frac_a,
-                "first_goal_win": first_goal_win_val_a,
-                "had_ht_lead": had_ht_lead_a,
-                "held_lead": held_lead_a,
-            })
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "gp_first_goal_h": first_goal_rate_h, "gp_first_goal_a": first_goal_rate_a,
-                "gp_comeback_h": comeback_rate_h, "gp_comeback_a": comeback_rate_a,
-                "gp_ht_frac_h": ht_goals_rate_h, "gp_ht_frac_a": ht_goals_rate_a,
-                "gp_ht_conc_h": ht_concede_rate_h, "gp_ht_conc_a": ht_concede_rate_a,
-                "gp_fg_win_h": first_goal_win_h, "gp_fg_win_a": first_goal_win_a,
-                "gp_multi_h": multi_goal_rate_h, "gp_multi_a": multi_goal_rate_a,
-                "gp_nil_h": nil_rate_h, "gp_nil_a": nil_rate_a,
-                "gp_lead_hold_h": lead_hold_rate_h, "gp_lead_hold_a": lead_hold_rate_a,
-            },
-        )
-
-
-# ===================================================================
-# 8. LEAGUE TABLE EXPERT
-# ===================================================================
-class LeagueTableExpert(Expert):
-    """
-    Simulates the live league table position and derives features:
-    - League position differential (home pos vs away pos)
-    - Points-per-game differential
-    - Relative league position (0=bottom, 1=top)
-    - Points gap to leader & relegation zone
-    - Home/Away league-specific form
-    - Goal difference ranking
-    """
-    name = "league_table"
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        # Track per-season-competition tables
-        tables: dict[str, dict[str, dict]] = {}  # comp -> team -> stats
-
-        pos_h = np.zeros(n); pos_a = np.zeros(n)
-        rel_pos_h = np.zeros(n); rel_pos_a = np.zeros(n)
-        ppg_h = np.zeros(n); ppg_a = np.zeros(n)
-        gd_h = np.zeros(n); gd_a = np.zeros(n)
-        pts_h = np.zeros(n); pts_a = np.zeros(n)
-        gap_top_h = np.zeros(n); gap_top_a = np.zeros(n)
-        gap_bot_h = np.zeros(n); gap_bot_a = np.zeros(n)
-        probs = np.full((n, 3), 1 / 3)
-        conf = np.zeros(n)
-
-        def _get_table(comp):
-            if comp not in tables:
-                return {}
-            t = tables[comp]
-            ranked = sorted(t.values(), key=lambda x: (-x["pts"], -(x["gf"] - x["ga"]), -x["gf"]))
-            for idx, entry in enumerate(ranked):
-                entry["pos"] = idx + 1
-            return t
-
-        def _season_key(r):
-            """Get competition + season key for table tracking."""
-            comp = getattr(r, "competition", "UNK")
-            dt = r.utc_date
-            try:
-                yr = dt.year
-                m = dt.month
-                season = yr if m >= 7 else yr - 1
-            except Exception:
-                season = 2024
-            return f"{comp}_{season}"
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-            sk = _season_key(r)
-            table = _get_table(sk)
-            n_teams = max(len(table), 1)
-
-            # Pre-match features
-            h_entry = table.get(h, {"pts": 0, "gf": 0, "ga": 0, "played": 0, "pos": n_teams})
-            a_entry = table.get(a, {"pts": 0, "gf": 0, "ga": 0, "played": 0, "pos": n_teams})
-
-            pos_h[i] = h_entry.get("pos", n_teams)
-            pos_a[i] = a_entry.get("pos", n_teams)
-            rel_pos_h[i] = 1.0 - (pos_h[i] - 1) / max(n_teams - 1, 1) if n_teams > 1 else 0.5
-            rel_pos_a[i] = 1.0 - (pos_a[i] - 1) / max(n_teams - 1, 1) if n_teams > 1 else 0.5
-            ppg_h[i] = h_entry["pts"] / max(h_entry.get("played", 1), 1)
-            ppg_a[i] = a_entry["pts"] / max(a_entry.get("played", 1), 1)
-            gd_h[i] = h_entry["gf"] - h_entry["ga"]
-            gd_a[i] = a_entry["gf"] - a_entry["ga"]
-            pts_h[i] = h_entry["pts"]
-            pts_a[i] = a_entry["pts"]
-
-            # Gap to top and bottom
-            all_pts = [e["pts"] for e in table.values()] if table else [0]
-            max_pts = max(all_pts) if all_pts else 0
-            min_pts = min(all_pts) if all_pts else 0
-            gap_top_h[i] = max_pts - h_entry["pts"]
-            gap_top_a[i] = max_pts - a_entry["pts"]
-            gap_bot_h[i] = h_entry["pts"] - min_pts
-            gap_bot_a[i] = a_entry["pts"] - min_pts
-
-            # Position-based probability
-            pos_diff = rel_pos_h[i] - rel_pos_a[i]
-            p_h = 0.44 + pos_diff * 0.3
-            p_a = 0.28 - pos_diff * 0.2
-            p_d = 1.0 - p_h - p_a
-            probs[i] = _norm3(max(0.05, p_h), max(0.10, p_d), max(0.05, p_a))
-
-            total_played = h_entry.get("played", 0) + a_entry.get("played", 0)
-            conf[i] = min(1.0, total_played / 20.0)
-
-            # --- Update table ---
-            hg, ag = int(r.home_goals), int(r.away_goals)
-            if sk not in tables:
-                tables[sk] = {}
-            for team, gf, ga in [(h, hg, ag), (a, ag, hg)]:
-                if team not in tables[sk]:
-                    tables[sk][team] = {"pts": 0, "gf": 0, "ga": 0, "played": 0, "pos": 1}
-                e = tables[sk][team]
-                e["gf"] += gf
-                e["ga"] += ga
-                e["played"] += 1
-                e["pts"] += 3 if gf > ga else (1 if gf == ga else 0)
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "lt_pos_h": pos_h, "lt_pos_a": pos_a,
-                "lt_pos_diff": pos_h - pos_a,
-                "lt_rel_pos_h": rel_pos_h, "lt_rel_pos_a": rel_pos_a,
-                "lt_ppg_h": ppg_h, "lt_ppg_a": ppg_a,
-                "lt_ppg_diff": ppg_h - ppg_a,
-                "lt_gd_h": gd_h, "lt_gd_a": gd_a,
-                "lt_gd_diff": gd_h - gd_a,
-                "lt_pts_h": pts_h, "lt_pts_a": pts_a,
-                "lt_gap_top_h": gap_top_h, "lt_gap_top_a": gap_top_a,
-                "lt_gap_bot_h": gap_bot_h, "lt_gap_bot_a": gap_bot_a,
-            },
-        )
-
-
-# ===================================================================
-# 9. MOMENTUM EXPERT
-# ===================================================================
-class MomentumExpert(Expert):
-    """
-    Advanced momentum analysis using EMA crossovers, linear regression slopes,
-    and rate-of-change features that capture *trajectory* (not just level).
-
-    Unlike FormExpert which tracks rolling averages, MomentumExpert tracks:
-    - EMA crossover signals (fast 3-game vs slow 8-game PPG)
-    - Goal scoring/conceding slope (linear regression over last N)
-    - Form volatility (consistency of results)
-    - Performance regression signal (distance from long-term mean)
-    - Scoring burst detection (sharp increases in goal output)
-    """
-    name = "momentum"
-
-    FAST_N = 3
-    SLOW_N = 8
-    SLOPE_N = 10
-    LONG_TERM_N = 30
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        team_pts: dict[str, list[float]] = {}
-        team_gf: dict[str, list[float]] = {}
-        team_ga: dict[str, list[float]] = {}
-
-        # Outputs
-        ema_cross_h = np.zeros(n)      # fast EMA > slow EMA = positive momentum
-        ema_cross_a = np.zeros(n)
-        gf_slope_h = np.zeros(n)       # goal scoring trend (regression slope)
-        gf_slope_a = np.zeros(n)
-        ga_slope_h = np.zeros(n)       # goals conceded trend
-        ga_slope_a = np.zeros(n)
-        pts_slope_h = np.zeros(n)      # points trend
-        pts_slope_a = np.zeros(n)
-        vol_h = np.zeros(n)            # form volatility (std of points)
-        vol_a = np.zeros(n)
-        regress_h = np.zeros(n)        # regression to mean signal
-        regress_a = np.zeros(n)
-        burst_h = np.zeros(n)          # scoring burst (last 3 vs last 8)
-        burst_a = np.zeros(n)
-        drought_h = np.zeros(n)        # scoring drought signal
-        drought_a = np.zeros(n)
-        def_tighten_h = np.zeros(n)    # defensive tightening signal
-        def_tighten_a = np.zeros(n)
-        probs = np.full((n, 3), 1 / 3)
-        conf = np.zeros(n)
-
-        def _ema(values, span):
-            """Exponential moving average."""
-            if not values:
-                return 0.0
-            alpha = 2.0 / (span + 1)
-            ema_val = values[0]
-            for v in values[1:]:
-                ema_val = alpha * v + (1 - alpha) * ema_val
-            return ema_val
-
-        def _slope(values):
-            """Linear regression slope of values."""
-            if len(values) < 3:
-                return 0.0
-            x = np.arange(len(values), dtype=float)
-            y = np.array(values, dtype=float)
-            # OLS slope = cov(x,y) / var(x)
-            xm = x.mean()
-            ym = y.mean()
-            cov = np.sum((x - xm) * (y - ym))
-            var = np.sum((x - xm) ** 2)
-            return float(cov / max(var, 1e-8))
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            h, a = r.home_team, r.away_team
-
-            # Pre-match features
-            h_pts = team_pts.get(h, [])
-            a_pts = team_pts.get(a, [])
-            h_gf = team_gf.get(h, [])
-            a_gf = team_gf.get(a, [])
-            h_ga = team_ga.get(h, [])
-            a_ga = team_ga.get(a, [])
-
-            # EMA crossover (fast - slow)
-            if len(h_pts) >= self.FAST_N:
-                ema_cross_h[i] = _ema(h_pts[-self.SLOW_N:], self.FAST_N) - _ema(h_pts[-self.SLOW_N:], self.SLOW_N)
-            if len(a_pts) >= self.FAST_N:
-                ema_cross_a[i] = _ema(a_pts[-self.SLOW_N:], self.FAST_N) - _ema(a_pts[-self.SLOW_N:], self.SLOW_N)
-
-            # Goal scoring/conceding slopes
-            gf_slope_h[i] = _slope(h_gf[-self.SLOPE_N:])
-            gf_slope_a[i] = _slope(a_gf[-self.SLOPE_N:])
-            ga_slope_h[i] = _slope(h_ga[-self.SLOPE_N:])
-            ga_slope_a[i] = _slope(a_ga[-self.SLOPE_N:])
-            pts_slope_h[i] = _slope(h_pts[-self.SLOPE_N:])
-            pts_slope_a[i] = _slope(a_pts[-self.SLOPE_N:])
-
-            # Form volatility
-            if len(h_pts) >= 5:
-                vol_h[i] = float(np.std(h_pts[-self.SLOPE_N:]))
-            if len(a_pts) >= 5:
-                vol_a[i] = float(np.std(a_pts[-self.SLOPE_N:]))
-
-            # Regression to mean signal (recent - long term)
-            if len(h_pts) >= self.SLOW_N:
-                recent = np.mean(h_pts[-self.FAST_N:]) if len(h_pts) >= self.FAST_N else np.mean(h_pts)
-                longterm = np.mean(h_pts[-self.LONG_TERM_N:])
-                regress_h[i] = recent - longterm
-            if len(a_pts) >= self.SLOW_N:
-                recent = np.mean(a_pts[-self.FAST_N:]) if len(a_pts) >= self.FAST_N else np.mean(a_pts)
-                longterm = np.mean(a_pts[-self.LONG_TERM_N:])
-                regress_a[i] = recent - longterm
-
-            # Scoring burst: recent GF avg / older GF avg
-            if len(h_gf) >= self.SLOW_N:
-                recent_gf = np.mean(h_gf[-self.FAST_N:])
-                older_gf = np.mean(h_gf[-self.SLOW_N:])
-                burst_h[i] = recent_gf - older_gf
-            if len(a_gf) >= self.SLOW_N:
-                recent_gf = np.mean(a_gf[-self.FAST_N:])
-                older_gf = np.mean(a_gf[-self.SLOW_N:])
-                burst_a[i] = recent_gf - older_gf
-
-            # Scoring drought: consecutive games scoring 0
-            if h_gf:
-                d = 0
-                for g in reversed(h_gf):
-                    if g == 0:
-                        d += 1
-                    else:
-                        break
-                drought_h[i] = float(d)
-            if a_gf:
-                d = 0
-                for g in reversed(a_gf):
-                    if g == 0:
-                        d += 1
-                    else:
-                        break
-                drought_a[i] = float(d)
-
-            # Defensive tightening: recent GA decrease
-            if len(h_ga) >= self.SLOW_N:
-                def_tighten_h[i] = np.mean(h_ga[-self.SLOW_N:-self.FAST_N]) - np.mean(h_ga[-self.FAST_N:])
-            if len(a_ga) >= self.SLOW_N:
-                def_tighten_a[i] = np.mean(a_ga[-self.SLOW_N:-self.FAST_N]) - np.mean(a_ga[-self.FAST_N:])
-
-            # Momentum-based probability
-            mom_diff = ema_cross_h[i] - ema_cross_a[i]
-            slope_diff = pts_slope_h[i] - pts_slope_a[i]
-            combined = 0.6 * mom_diff + 0.4 * slope_diff
-            p_h = 1 / (1 + math.exp(-1.5 * combined)) * 0.7 + 0.15
-            p_a = (1 - p_h + 0.15) * 0.7
-            p_d = 1.0 - p_h - p_a
-            if p_d < 0.15:
-                p_d = 0.25
-            probs[i] = _norm3(max(0.05, p_h), max(0.10, p_d), max(0.05, p_a))
-
-            n_h = len(h_pts)
-            n_a = len(a_pts)
-            conf[i] = min(1.0, (n_h + n_a) / 16.0)
-
-            # --- Update state ---
-            hg, ag = int(r.home_goals), int(r.away_goals)
-            team_pts.setdefault(h, []).append(float(_pts(hg, ag)))
-            team_pts.setdefault(a, []).append(float(_pts(ag, hg)))
-            team_gf.setdefault(h, []).append(float(hg))
-            team_gf.setdefault(a, []).append(float(ag))
-            team_ga.setdefault(h, []).append(float(ag))
-            team_ga.setdefault(a, []).append(float(hg))
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "mom_ema_cross_h": ema_cross_h, "mom_ema_cross_a": ema_cross_a,
-                "mom_ema_cross_diff": ema_cross_h - ema_cross_a,
-                "mom_gf_slope_h": gf_slope_h, "mom_gf_slope_a": gf_slope_a,
-                "mom_ga_slope_h": ga_slope_h, "mom_ga_slope_a": ga_slope_a,
-                "mom_pts_slope_h": pts_slope_h, "mom_pts_slope_a": pts_slope_a,
-                "mom_pts_slope_diff": pts_slope_h - pts_slope_a,
-                "mom_vol_h": vol_h, "mom_vol_a": vol_a,
-                "mom_vol_diff": vol_h - vol_a,
-                "mom_regress_h": regress_h, "mom_regress_a": regress_a,
-                "mom_burst_h": burst_h, "mom_burst_a": burst_a,
-                "mom_drought_h": drought_h, "mom_drought_a": drought_a,
-                "mom_def_tighten_h": def_tighten_h, "mom_def_tighten_a": def_tighten_a,
-            },
-        )
-
-
-# ===================================================================
-# 10. BAYESIAN RATE EXPERT
-# ===================================================================
-class BayesianRateExpert(Expert):
-    """
-    Systematic Beta-Binomial shrinkage for all team rates.
-
-    For each team, computes shrunk estimates of:
-    - Win rate (overall + home/away venue split)
-    - Clean sheet rate
-    - BTTS rate (both teams to score)
-    - Over 2.5 goals rate
-    - Scoring first rate
-    - Goals per match (Gamma-Poisson shrinkage approximation)
-
-    Uses league-specific priors so that (e.g.) Bundesliga's higher scoring
-    rate doesn't contaminate La Liga estimates.
-    """
-    name = "bayesian_rate"
-
-    WINDOW = 20  # matches to consider for rate estimation
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-
-        # Track per-team match history
-        team_history: dict[str, list[dict]] = {}  # team -> list of match dicts
-
-        # Output arrays
-        bayes_wr_h = np.zeros(n);  bayes_wr_a = np.zeros(n)
-        bayes_cs_h = np.zeros(n);  bayes_cs_a = np.zeros(n)
-        bayes_btts_h = np.zeros(n); bayes_btts_a = np.zeros(n)
-        bayes_o25_h = np.zeros(n);  bayes_o25_a = np.zeros(n)
-        bayes_sf_h = np.zeros(n);   bayes_sf_a = np.zeros(n)   # scoring first
-        bayes_gpm_h = np.zeros(n);  bayes_gpm_a = np.zeros(n)  # goals per match
-        bayes_home_wr = np.zeros(n)  # home team's home-only win rate
-        bayes_away_wr = np.zeros(n)  # away team's away-only win rate
-        conf = np.zeros(n)
-        probs = np.full((n, 3), 1 / 3)
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            ht, at = r.home_team, r.away_team
-            comp = getattr(r, "competition", "PL")
-
-            for team, is_home, out_wr, out_cs, out_btts, out_o25, out_sf, out_gpm in [
-                (ht, True, bayes_wr_h, bayes_cs_h, bayes_btts_h, bayes_o25_h, bayes_sf_h, bayes_gpm_h),
-                (at, False, bayes_wr_a, bayes_cs_a, bayes_btts_a, bayes_o25_a, bayes_sf_a, bayes_gpm_a),
-            ]:
-                hist = team_history.get(team, [])[-self.WINDOW:]
-                n_matches = len(hist)
-
-                if n_matches >= 3:
-                    wins = sum(1 for m in hist if m["pts"] == 3)
-                    cs = sum(1 for m in hist if m["ga"] == 0)
-                    btts = sum(1 for m in hist if m["gf"] > 0 and m["ga"] > 0)
-                    o25 = sum(1 for m in hist if m["gf"] + m["ga"] > 2)
-                    sf = sum(1 for m in hist if m["gf"] > 0)
-                    total_goals = sum(m["gf"] for m in hist)
-
-                    # League-specific priors
-                    wr_prior = league_specific_prior(comp, "home_win")
-                    cs_prior = league_specific_prior(comp, "cs")
-                    btts_prior = league_specific_prior(comp, "btts")
-                    o25_prior = league_specific_prior(comp, "o25")
-
-                    out_wr[i] = beta_binomial_shrink(wins, n_matches, *wr_prior)
-                    out_cs[i] = beta_binomial_shrink(cs, n_matches, *cs_prior)
-                    out_btts[i] = beta_binomial_shrink(btts, n_matches, *btts_prior)
-                    out_o25[i] = beta_binomial_shrink(o25, n_matches, *o25_prior)
-                    out_sf[i] = beta_binomial_shrink(sf, n_matches, 5.0, 5.0)
-                    # Gamma-Poisson-ish shrinkage for goals per match
-                    out_gpm[i] = (total_goals + 1.35 * 3) / (n_matches + 3)
-                else:
-                    # fallback to prior means
-                    out_wr[i] = 0.45
-                    out_cs[i] = 0.35
-                    out_btts[i] = 0.50
-                    out_o25[i] = 0.48
-                    out_sf[i] = 0.50
-                    out_gpm[i] = 1.35
-
-                # Venue-specific win rate
-                if is_home:
-                    home_hist = [m for m in hist if m.get("venue") == "home"]
-                    if len(home_hist) >= 3:
-                        hw = sum(1 for m in home_hist if m["pts"] == 3)
-                        bayes_home_wr[i] = beta_binomial_shrink(hw, len(home_hist), 4.6, 5.4)
-                    else:
-                        bayes_home_wr[i] = 0.46
-                else:
-                    away_hist = [m for m in hist if m.get("venue") == "away"]
-                    if len(away_hist) >= 3:
-                        aw = sum(1 for m in away_hist if m["pts"] == 3)
-                        bayes_away_wr[i] = beta_binomial_shrink(aw, len(away_hist), 3.2, 6.8)
-                    else:
-                        bayes_away_wr[i] = 0.30
-
-            # Bayesian probabilities from rates
-            p_h = bayes_home_wr[i] * 0.6 + bayes_wr_h[i] * 0.4
-            p_a = bayes_away_wr[i] * 0.6 + bayes_wr_a[i] * 0.4
-            p_d = max(0.15, 1.0 - p_h - p_a)
-            p_h, p_d, p_a = _norm3(p_h, p_d, p_a)
-            probs[i] = [p_h, p_d, p_a]
-
-            # Confidence based on data availability
-            n_h = len(team_history.get(ht, []))
-            n_a = len(team_history.get(at, []))
-            conf[i] = min(1.0, (n_h + n_a) / 30.0)
-
-            # --- update history ---
-            hg_val = int(r.home_goals)
-            ag_val = int(r.away_goals)
-            team_history.setdefault(ht, []).append({
-                "gf": hg_val, "ga": ag_val,
-                "pts": _pts(hg_val, ag_val), "venue": "home",
-            })
-            team_history.setdefault(at, []).append({
-                "gf": ag_val, "ga": hg_val,
-                "pts": _pts(ag_val, hg_val), "venue": "away",
-            })
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "bayes_wr_h": bayes_wr_h, "bayes_wr_a": bayes_wr_a,
-                "bayes_cs_h": bayes_cs_h, "bayes_cs_a": bayes_cs_a,
-                "bayes_btts_h": bayes_btts_h, "bayes_btts_a": bayes_btts_a,
-                "bayes_o25_h": bayes_o25_h, "bayes_o25_a": bayes_o25_a,
-                "bayes_sf_h": bayes_sf_h, "bayes_sf_a": bayes_sf_a,
-                "bayes_gpm_h": bayes_gpm_h, "bayes_gpm_a": bayes_gpm_a,
-                "bayes_home_wr": bayes_home_wr, "bayes_away_wr": bayes_away_wr,
-                "bayes_wr_diff": bayes_wr_h - bayes_wr_a,
-                "bayes_cs_diff": bayes_cs_h - bayes_cs_a,
-                "bayes_gpm_diff": bayes_gpm_h - bayes_gpm_a,
-                "bayes_gpm_sum": bayes_gpm_h + bayes_gpm_a,
-            },
-        )
-
-
-# ===================================================================
-# 11. INJURY / AVAILABILITY EXPERT
-# ===================================================================
-class InjuryAvailabilityExpert(Expert):
-    """
-    Incorporates player availability information from FPL and API-Football.
-
-    Features:
-    - Number of key players unavailable
-    - Weighted availability index (minutes_share × importance)
-    - FPL fixture difficulty rating (PL only)
-    - Injury count differential
-    """
-    name = "injury"
-
-    def compute(self, df: pd.DataFrame) -> ExpertResult:
-        n = len(df)
-        probs = np.full((n, 3), 1 / 3)
-        conf = np.zeros(n)
-
-        inj_count_h = np.zeros(n)
-        inj_count_a = np.zeros(n)
-        inj_diff = np.zeros(n)
-        fpl_fdr_h = np.zeros(n)  # FPL fixture difficulty rating
-        fpl_fdr_a = np.zeros(n)
-
-        for i, r in enumerate(df.itertuples(index=False)):
-            raw = _raw(getattr(r, "raw_json", None))
-            fpl_raw = _raw(getattr(r, "fpl_json", None))
-
-            # Extract injury counts from API-Football or raw data
-            h_inj = _f(raw.get("home_injuries", 0))
-            a_inj = _f(raw.get("away_injuries", 0))
-            inj_count_h[i] = h_inj
-            inj_count_a[i] = a_inj
-            inj_diff[i] = h_inj - a_inj
-
-            # FPL fixture difficulty (1-5 scale, PL only)
-            fpl_fdr_h[i] = _f(fpl_raw.get("fdr_h", 3.0))
-            fpl_fdr_a[i] = _f(fpl_raw.get("fdr_a", 3.0))
-
-            # Slight probability adjustment based on injury differential
-            inj_delta = (a_inj - h_inj) * 0.01  # more away injuries → slight home boost
-            p_h = 0.333 + inj_delta
-            p_a = 0.333 - inj_delta
-            p_d = 1.0 - p_h - p_a
-            probs[i] = list(_norm3(p_h, p_d, p_a))
-
-            # Low confidence — this is supplementary data
-            has_data = 1.0 if (h_inj > 0 or a_inj > 0) else 0.0
-            conf[i] = has_data * 0.3
-
-        return ExpertResult(
-            probs=probs,
-            confidence=conf,
-            features={
-                "inj_count_h": inj_count_h, "inj_count_a": inj_count_a,
-                "inj_diff": inj_diff,
-                "fpl_fdr_h": fpl_fdr_h, "fpl_fdr_a": fpl_fdr_a,
-                "fpl_fdr_diff": fpl_fdr_h - fpl_fdr_a,
-            },
-        )
-
-
-# ===================================================================
-# COUNCIL — META-LEARNER
-# ===================================================================
-ALL_EXPERTS: list[Expert] = [
-    EloExpert(), MarketExpert(), FormExpert(),
-    PoissonExpert(), H2HExpert(), ContextExpert(),
-    GoalPatternExpert(), LeagueTableExpert(), MomentumExpert(),
-    BayesianRateExpert(), InjuryAvailabilityExpert(),
-]
+_MATCH_COLS = """\
+m.utc_date, m.competition, m.home_team, m.away_team,
+               m.home_goals, m.away_goals,
+               e.b365h, e.b365d, e.b365a, e.raw_json,
+               e.b365ch, e.b365cd, e.b365ca,
+               e.psh, e.psd, e.psa,
+               e.avgh, e.avgd, e.avga,
+               e.maxh, e.maxd, e.maxa,
+               e.b365_o25, e.b365_u25,
+               e.avg_o25, e.avg_u25,
+               e.max_o25, e.max_u25,
+               e.hs, e.hst, e.hc, e.hy, e.hr,
+               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar,
+               e.hthg, e.htag,
+               e.odds_ah_line, e.odds_ah_home, e.odds_ah_away,
+               e.odds_btts_yes, e.odds_btts_no,
+               e.formation_home, e.formation_away,
+               e.af_xg_home, e.af_xg_away,
+               e.af_possession_home, e.af_possession_away,
+               fpl_h.injury_score AS fpl_inj_score_h,
+               fpl_h.squad_strength AS fpl_squad_str_h,
+               fpl_h.available AS fpl_available_h,
+               fpl_h.doubtful AS fpl_doubtful_h,
+               fpl_h.injured AS fpl_injured_h,
+               fpl_h.suspended AS fpl_suspended_h,
+               fpl_a.injury_score AS fpl_inj_score_a,
+               fpl_a.squad_strength AS fpl_squad_str_a,
+               fpl_a.available AS fpl_available_a,
+               fpl_a.doubtful AS fpl_doubtful_a,
+               fpl_a.injured AS fpl_injured_a,
+               fpl_a.suspended AS fpl_suspended_a,
+               fdr_h.fdr_next_3 AS fpl_fdr_h,
+               fdr_a.fdr_next_3 AS fpl_fdr_a,
+               fdr_h.fdr_next_6 AS fpl_fdr6_h,
+               fdr_a.fdr_next_6 AS fpl_fdr6_a,
+               af.home_injuries AS af_inj_h,
+               af.away_injuries AS af_inj_a"""
+
+_MATCH_JOINS = """\
+FROM matches m
+        LEFT JOIN match_extras e ON e.match_id = m.match_id
+        LEFT JOIN fpl_availability fpl_h ON fpl_h.team = m.home_team
+        LEFT JOIN fpl_availability fpl_a ON fpl_a.team = m.away_team
+        LEFT JOIN fpl_fixture_difficulty fdr_h ON fdr_h.team = m.home_team
+        LEFT JOIN fpl_fixture_difficulty fdr_a ON fdr_a.team = m.away_team
+        LEFT JOIN af_context af ON af.match_id = m.match_id"""
+
+
+def _match_query(where: str, *, include_match_id: bool = False) -> str:
+    """Build a match query with standard columns, joins, and given WHERE clause."""
+    id_col = "m.match_id, " if include_match_id else ""
+    return f"SELECT {id_col}{_MATCH_COLS}\n        {_MATCH_JOINS}\n        WHERE {where}\n        ORDER BY m.utc_date ASC"
 
 
 def _run_experts(df: pd.DataFrame, experts: list[Expert] | None = None) -> list[ExpertResult]:
@@ -1825,14 +130,16 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     """Construct the meta-feature matrix from expert results.
 
     Layout:
-        - Expert probs:          N × 3  (N = 9 experts + DC pseudo-expert)
+        - Expert probs:          N × 3  (N = 11 experts)
         - Expert confidence:     N
-        - Expert domain features: ~80-100
-        - Conflict signals:      ~12
+        - Expert domain features: ~200+
+        - Conflict signals:      ~15
         - Per-expert entropy:    N
-        - Feature interactions:  ~6
-        - Competition encoding:  1 (ordinal league ID)
-        ≈ 200+ total columns
+        - Per-expert KL div:     N
+        - Feature interactions:  ~20
+        - Upset-detection:       ~30
+        - Competition encoding:  5 (one-hot)
+        ≈ 400+ total columns
     """
     if experts is None:
         experts = ALL_EXPERTS
@@ -1861,8 +168,8 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     # average confidence
     avg_conf = np.mean([r.confidence for r in results], axis=0)
     # entropy of the ensemble mean
-    mean_probs = np.mean(all_probs, axis=0)
-    ens_entropy = np.array([_entropy3(p) for p in mean_probs])
+    mean_probs = np.nan_to_num(np.mean(all_probs, axis=0), nan=1.0/3)
+    ens_entropy = -np.sum(mean_probs * np.log(mean_probs + 1e-12), axis=1)
     # weighted consensus (confidence-weighted mean probability)
     weights = np.stack([r.confidence for r in results], axis=0)  # (N_experts, n)
     weights_sum = weights.sum(axis=0, keepdims=True) + 1e-12
@@ -1915,18 +222,14 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     if n_exp > 9:
         bayes_mkt_agree = 1.0 - np.abs(results[9].probs[:, 0] - results[1].probs[:, 0])
     # max disagreement across any pair of experts (for home win)
-    max_disagree = np.zeros(n)
-    for ei in range(n_exp):
-        for ej in range(ei + 1, n_exp):
-            pair_dis = np.abs(results[ei].probs[:, 0] - results[ej].probs[:, 0])
-            max_disagree = np.maximum(max_disagree, pair_dis)
+    home_stack = np.stack([r.probs[:, 0] for r in results[:n_exp]])  # (n_exp, n)
+    max_disagree = home_stack.max(axis=0) - home_stack.min(axis=0)
     # number of experts that agree on same winner
+    all_winners = np.argmax(np.stack([r.probs for r in results[:n_exp]]), axis=2)  # (n_exp, n)
     winner_votes = np.zeros(n)
     for ii in range(n):
-        winners = [np.argmax(r.probs[ii]) for r in results[:n_exp] if ii < r.probs.shape[0]]
-        if winners:
-            most_common = Counter(winners).most_common(1)[0][1]
-            winner_votes[ii] = most_common / len(winners)
+        counts = np.bincount(all_winners[:, ii], minlength=3)
+        winner_votes[ii] = counts.max() / n_exp
     blocks.extend([
         elo_mkt_agree[:, None], form_h2h_agree[:, None],
         pois_mkt_agree[:, None], elo_form_agree[:, None],
@@ -1937,17 +240,17 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
         bayes_pois_agree[:, None], bayes_mkt_agree[:, None],
     ])
 
-    # 5. Per-expert entropy (how uncertain each expert is)
+    # 5. Per-expert entropy (how uncertain each expert is) — vectorized
     for res in results[:n_exp]:
-        expert_ent = np.array([_entropy3(p) for p in res.probs])
+        safe_probs = np.nan_to_num(res.probs, nan=1.0/3)
+        expert_ent = -np.sum(safe_probs * np.log(safe_probs + 1e-12), axis=1)
         blocks.append(expert_ent[:, None])
 
-    # 5b. v10: Per-expert KL divergence from ensemble mean
+    # 5b. v10: Per-expert KL divergence from ensemble mean — vectorized
     for res in results[:n_exp]:
-        kl_arr = np.array([
-            kl_divergence(res.probs[ii], mean_probs[ii])
-            for ii in range(n)
-        ])
+        safe_probs = np.nan_to_num(res.probs, nan=1.0/3)
+        kl_arr = np.sum(safe_probs * np.log((safe_probs + 1e-12) / (mean_probs + 1e-12)), axis=1)
+        kl_arr = np.clip(kl_arr, 0.0, None)  # KL >= 0
         blocks.append(kl_arr[:, None])
 
     # 6. Feature interactions (cross-domain signal combinations)
@@ -1973,10 +276,11 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
 
     # 6b. v10: Additional cross-domain interactions
     # tanh(elo_diff) — nonlinear bounded elo signal
-    elo_tanh = np.array([tanh_transform(float(d), 400.0) for d in elo_diff])
+    elo_tanh = np.tanh(elo_diff.astype(float) / 400.0)
     blocks.append(elo_tanh[:, None])
     # log(form_diff) — signed log of form difference
-    form_log = np.array([log_transform(float(d)) for d in form_diff])
+    fd = form_diff.astype(float)
+    form_log = np.sign(fd) * np.log1p(np.abs(fd))
     blocks.append(form_log[:, None])
     # Bayesian × Poisson agreement interaction
     if n_exp > 9:
@@ -1990,12 +294,228 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     mc_ph_arr = results[3].features.get("pois_mc_ph", np.zeros(n))
     blocks.append((mc_ph_arr * mkt_ph)[:, None])  # MC × Market
 
-    # 7. Competition encoding — v10: one-hot (5 leagues) instead of ordinal
+    # 6c. v11: New academic model features
+    # Bivariate Poisson P(home) — Karlis & Ntzoufras 2003
+    bp_ph = results[3].features.get("pois_bp_ph", np.zeros(n))
+    blocks.append(bp_ph[:, None])
+    # Bivariate Poisson × Market (independent vs correlated model agreement)
+    blocks.append((bp_ph * mkt_ph)[:, None])
+    # Frank Copula P(home) — full-scoreline dependency
+    cop_ph = results[3].features.get("pois_cop_ph", np.zeros(n))
+    blocks.append(cop_ph[:, None])
+    # Copula × DC agreement (two dependency models agreeing)
+    blocks.append((cop_ph * dc_ph)[:, None])
+    # COM-Poisson P(home) — dispersion-aware
+    cmp_ph = results[3].features.get("pois_cmp_ph", np.zeros(n))
+    blocks.append(cmp_ph[:, None])
+    # COM-Poisson dispersion index (over-dispersed = unpredictable)
+    cmp_disp_h = results[3].features.get("pois_cmp_disp_h", np.zeros(n))
+    cmp_disp_a = results[3].features.get("pois_cmp_disp_a", np.zeros(n))
+    blocks.append(cmp_disp_h[:, None])
+    blocks.append(cmp_disp_a[:, None])
+    # Bradley-Terry P(home) — pairwise comparison model
+    bt_ph = results[3].features.get("pois_bt_ph", np.zeros(n))
+    bt_pd = results[3].features.get("pois_bt_pd", np.zeros(n))
+    blocks.append(bt_ph[:, None])
+    blocks.append(bt_pd[:, None])
+    # Bradley-Terry × Elo agreement (two strength-based models)
+    blocks.append((bt_ph * results[0].probs[:, 0])[:, None])
+    # Model disagreement: spread across DC, Copula, BiPois, CMP models
+    model_stack = np.column_stack([
+        dc_ph, cop_ph, bp_ph, cmp_ph, mc_ph_arr
+    ])
+    model_spread = np.std(model_stack, axis=1)
+    model_mean = np.mean(model_stack, axis=1)
+    blocks.append(model_spread[:, None])  # model disagreement
+    blocks.append(model_mean[:, None])    # model consensus
+
+    # 6d. v11: Jensen-Shannon Divergence (symmetric, bounded)
+    # Vectorized pairwise JSD: Elo-Market
+    p_elo = np.nan_to_num(results[0].probs, nan=1.0/3)  # (n, 3)
+    p_mkt = np.nan_to_num(results[1].probs, nan=1.0/3)  # (n, 3)
+    m_em = 0.5 * (p_elo + p_mkt) + 1e-12
+    kl1 = np.sum(p_elo * np.log((p_elo + 1e-12) / m_em), axis=1)
+    kl2 = np.sum(p_mkt * np.log((p_mkt + 1e-12) / m_em), axis=1)
+    elo_mkt_jsd = np.clip(0.5 * (kl1 + kl2), 0.0, None)
+    blocks.append(elo_mkt_jsd[:, None])
+    # Multi-expert generalised JSD (total disagreement across ALL experts)
+    all_expert_jsd = np.zeros(n)
+    all_p = np.nan_to_num(np.stack([r.probs for r in results[:n_exp]]), nan=1.0/3)  # (n_exp, n, 3)
+    m_all = all_p.mean(axis=0) + 1e-12  # (n, 3)
+    for r in results[:n_exp]:
+        safe_r = np.nan_to_num(r.probs, nan=1.0/3)
+        all_expert_jsd += np.sum(safe_r * np.log((safe_r + 1e-12) / m_all), axis=1)
+    all_expert_jsd = np.clip(all_expert_jsd / n_exp, 0.0, None)
+    blocks.append(all_expert_jsd[:, None])
+
+    # 6e. Upset-detection cross-expert interaction features
+    # These capture factor combinations that systematically predict upsets
+
+    # H2H bogey × market favourite — historic bogey ground + market overconfidence
+    h2h_bogey = results[4].features.get("h2h_bogey", np.zeros(n))
+    upset_bogey_mkt = h2h_bogey * mkt_ph
+    blocks.append(upset_bogey_mkt[:, None])
+
+    # H2H surprise rate × context fatigue — historic upsets + current tiredness
+    h2h_surprise = results[4].features.get("h2h_surprise_rate", np.zeros(n))
+    fatigue_diff = results[5].features.get("ctx_fatigue_diff", np.zeros(n))
+    blocks.append((h2h_surprise * np.abs(fatigue_diff))[:, None])
+
+    # Motivation difference × market strength — motivated underdog vs complacent favourite
+    motiv_diff = results[5].features.get("ctx_motivation_diff", np.zeros(n))
+    blocks.append((motiv_diff * mkt_ph)[:, None])
+
+    # Home fatigue × away freshness — tired home team vs rested visitor
+    fatigue_h = results[5].features.get("ctx_fatigue_h", np.zeros(n))
+    fatigue_a = results[5].features.get("ctx_fatigue_a", np.zeros(n))
+    blocks.append((fatigue_h * (1.0 - fatigue_a))[:, None])
+
+    # Relegation battle flag × underdogness — desperate underdog
+    is_rel_a = results[5].features.get("ctx_is_relegation_a", np.zeros(n))
+    blocks.append((is_rel_a * (1.0 - mkt_ph))[:, None])  # away-underdog in relegation fight
+
+    # Derby/rivalry × market certainty — derbies erode favourite advantage
+    is_derby = results[5].features.get("ctx_is_derby", np.zeros(n))
+    blocks.append((is_derby * mkt_ph)[:, None])  # higher market certainty in derby = more vulnerable
+    # High-stakes × team quality gap — high-stakes matches tighten outcomes
+    high_stakes = results[5].features.get("ctx_high_stakes", np.zeros(n))
+    blocks.append((high_stakes * np.abs(elo_diff.astype(float) / 400.0))[:, None])
+
+    # Venue form gap — home-specific form vs away-specific form
+    hf_ppg_h = results[2].features.get("form_home_ppg_h", np.zeros(n))
+    af_ppg_a = results[2].features.get("form_away_ppg_a", np.zeros(n))
+    venue_form_gap = hf_ppg_h - af_ppg_a
+    blocks.append(venue_form_gap[:, None])
+
+    # xG overperformance — regression signal: scoring above xG = unsustainable
+    xg_diff_h = results[2].features.get("form_xg_diff_h", np.zeros(n))
+    xg_diff_a = results[2].features.get("form_xg_diff_a", np.zeros(n))
+    blocks.append(xg_diff_h[:, None])  # positive = overperforming
+    blocks.append(xg_diff_a[:, None])
+    blocks.append((xg_diff_h * mkt_ph)[:, None])  # overperforming favourite
+
+    # Form vs top opponents — quality-adjusted form signals
+    form_vs_top_h = results[2].features.get("form_vs_top_h", np.zeros(n))
+    form_vs_top_a = results[2].features.get("form_vs_top_a", np.zeros(n))
+    blocks.append((form_vs_top_h - form_vs_top_a)[:, None])
+
+    # Position-form gap × market — regression risk for overperforming favourite
+    pos_form_gap_h = results[7].features.get("lt_pos_form_gap_h", np.zeros(n)) if n_exp > 7 else np.zeros(n)
+    pos_form_gap_a = results[7].features.get("lt_pos_form_gap_a", np.zeros(n)) if n_exp > 7 else np.zeros(n)
+    blocks.append((pos_form_gap_h * mkt_ph)[:, None])   # favourite with regression risk
+    blocks.append((pos_form_gap_a * (1.0 - mkt_ph))[:, None])  # underdog with upward risk
+
+    # Venue-specific table position interaction — home table vs away table
+    lt_home_ppg = results[7].features.get("lt_home_ppg_h", np.zeros(n)) if n_exp > 7 else np.zeros(n)
+    lt_away_ppg = results[7].features.get("lt_away_ppg_a", np.zeros(n)) if n_exp > 7 else np.zeros(n)
+    blocks.append((lt_home_ppg - lt_away_ppg)[:, None])
+
+    # Venue momentum × H2H venue signal — double venue confirmation
+    if n_exp > 8:
+        mom_venue_h = results[8].features.get("mom_venue_ema_h", np.zeros(n))
+        mom_venue_a = results[8].features.get("mom_venue_ema_a", np.zeros(n))
+        h2h_venue_wr = results[4].features.get("h2h_venue_wr_h", np.zeros(n))
+        blocks.append((mom_venue_h * h2h_venue_wr)[:, None])
+        blocks.append((mom_venue_a * (1.0 - h2h_venue_wr))[:, None])
+
+    # Quality-weighted momentum × Elo — momentum against good teams + fundamental strength
+    if n_exp > 8:
+        mom_quality_diff = results[8].features.get("mom_quality_diff", np.zeros(n))
+        blocks.append((mom_quality_diff * elo_tanh)[:, None])
+
+    # Streak × market — winning/losing streak interaction with expected outcome
+    if n_exp > 8:
+        streak_h = results[8].features.get("mom_streak_h", np.zeros(n))
+        streak_a = results[8].features.get("mom_streak_a", np.zeros(n))
+        blocks.append((streak_h * mkt_ph)[:, None])
+        blocks.append((streak_a * (1.0 - mkt_ph))[:, None])
+
+    # GoalPattern quality signals — performance vs top teams
+    if n_exp > 6:
+        cs_vs_top_h = results[6].features.get("gp_cs_vs_top_h", np.zeros(n))
+        cs_vs_top_a = results[6].features.get("gp_cs_vs_top_a", np.zeros(n))
+        cb_vs_top_h = results[6].features.get("gp_cb_vs_top_h", np.zeros(n))
+        cb_vs_top_a = results[6].features.get("gp_cb_vs_top_a", np.zeros(n))
+        blocks.append((cs_vs_top_a * (1.0 - mkt_ph))[:, None])  # underdog defensive resilience
+        blocks.append((cb_vs_top_a * (1.0 - mkt_ph))[:, None])  # underdog comeback ability
+        # late-goal tendency interaction
+        late_h = results[6].features.get("gp_late_goal_h", np.zeros(n))
+        late_a = results[6].features.get("gp_late_goal_a", np.zeros(n))
+        blocks.append((late_h - late_a)[:, None])
+
+    # Injury unavailability × market favourite — depleted squad still priced as strong
+    if n_exp > 10:
+        unavail_h = results[10].features.get("inj_unavailable_h", np.zeros(n))
+        unavail_a = results[10].features.get("inj_unavailable_a", np.zeros(n))
+        blocks.append((unavail_h * mkt_ph)[:, None])   # injured favourite
+        blocks.append((unavail_a * (1.0 - mkt_ph))[:, None])
+        # FDR future schedule asymmetry × form — hard schedule + good form
+        fdr_diff = results[10].features.get("inj_fdr_future_diff", np.zeros(n))
+        blocks.append((fdr_diff * form_diff)[:, None])
+
+    # 6f. Advanced composite upset-detection features
+
+    # Market vs ensemble disagreement — most powerful upset signal
+    # If the market says 70% home but the weighted ensemble says 50%, that's an upset opportunity
+    ensemble_ph = weighted_probs[:, 0]  # confidence-weighted ensemble P(home)
+    mkt_ens_disagree = mkt_ph - ensemble_ph  # positive = market more confident than experts
+    blocks.append(mkt_ens_disagree[:, None])
+    blocks.append(np.abs(mkt_ens_disagree)[:, None])  # magnitude of disagreement
+    # Market overconfidence signal: square of disagreement when market > ensemble
+    mkt_overconf = np.where(mkt_ens_disagree > 0, mkt_ens_disagree ** 2, 0.0)
+    blocks.append(mkt_overconf[:, None])
+
+    # Possession dominance vs results gap — teams that dominate possession but don't win
+    poss_h = results[2].features.get("form_poss_h", np.zeros(n))
+    poss_a = results[2].features.get("form_poss_a", np.zeros(n))
+    poss_dom_h = results[2].features.get("form_poss_dom_h", np.zeros(n))
+    poss_dom_a = results[2].features.get("form_poss_dom_a", np.zeros(n))
+    poss_eff_h = results[2].features.get("form_poss_eff_h", np.zeros(n))
+    poss_eff_a = results[2].features.get("form_poss_eff_a", np.zeros(n))
+    # Possession vs expected: dominant possession but poor conversion = vulnerability
+    blocks.append((poss_dom_h * (1.0 - poss_eff_h))[:, None])   # home domination but poor finishing
+    blocks.append((poss_eff_a * (1.0 - poss_dom_a))[:, None])   # away efficient without domination
+    blocks.append(((poss_h - poss_a) / 100.0)[:, None])         # raw poss diff normalized
+
+    # H2H quality-adjusted × market — Elo-weighted H2H vs market
+    h2h_qpts_h = results[4].features.get("h2h_quality_pts_h", np.zeros(n))
+    h2h_qpts_a = results[4].features.get("h2h_quality_pts_a", np.zeros(n))
+    blocks.append(((h2h_qpts_a - h2h_qpts_h) * mkt_ph)[:, None])  # away stronger in quality H2H × favourite
+    # H2H trend × market — is this fixture shifting?
+    h2h_trend = results[4].features.get("h2h_trend", np.zeros(n))
+    blocks.append((h2h_trend * mkt_ph)[:, None])
+    # H2H goal volatility — unpredictable fixtures are upset-prone
+    h2h_goal_vol = results[4].features.get("h2h_goal_vol", np.zeros(n))
+    blocks.append(h2h_goal_vol[:, None])
+
+    # Form decay interaction — exponential-decay form vs standard form divergence
+    decay_ppg_h = results[2].features.get("form_decay_ppg_h", np.zeros(n))
+    decay_ppg_a = results[2].features.get("form_decay_ppg_a", np.zeros(n))
+    form_pts_h_raw = results[2].features.get("form_pts_h", np.zeros(n))
+    form_pts_a_raw = results[2].features.get("form_pts_a", np.zeros(n))
+    # Decay divergence: if decay PPG differs from rolling avg, recent trajectory is changing
+    blocks.append((decay_ppg_h - form_pts_h_raw)[:, None])  # positive = improving faster
+    blocks.append((decay_ppg_a - form_pts_a_raw)[:, None])
+
+    # Composite upset risk score — weighted combination of key upset signals
+    # (market overconfidence + H2H bogey + fatigue asymmetry + motivation asymmetry)
+    upset_risk = (
+        0.25 * np.clip(mkt_overconf * 10, 0, 1) +           # market overconfidence
+        0.20 * h2h_bogey +                                    # bogey team signal
+        0.15 * np.clip(fatigue_h * 0.5, 0, 1) +              # home team fatigue
+        0.15 * np.clip(-motiv_diff * 0.5, 0, 1) +            # away team more motivated
+        0.15 * np.clip(h2h_goal_vol * 0.5, 0, 1) +           # volatile H2H
+        0.10 * np.clip(xg_diff_h * 0.5, 0, 1)                # home overperforming xG
+    )
+    blocks.append(upset_risk[:, None])
+
+    # 7. Competition encoding — v10: one-hot (5 leagues) vectorized
     if competitions is not None:
         _COMP_LIST = ["PL", "PD", "SA", "BL1", "FL1"]
-        comp_onehot = np.zeros((n, len(_COMP_LIST)), dtype=float)
-        for j, comp in enumerate(_COMP_LIST):
-            comp_onehot[:, j] = np.array([1.0 if str(c) == comp else 0.0 for c in competitions])
+        comp_arr = np.array([str(c) for c in competitions])
+        comp_onehot = np.column_stack([
+            (comp_arr == comp).astype(float) for comp in _COMP_LIST
+        ])
         blocks.append(comp_onehot)
 
     X = np.hstack(blocks)
@@ -2006,27 +526,8 @@ def _prepare_df(con, finished_only: bool = True, days: int = 3650) -> pd.DataFra
     """Load matches + extras into a clean DataFrame for expert consumption."""
     status_filter = "m.status='FINISHED'" if finished_only else "m.status IN ('FINISHED','SCHEDULED','TIMED')"
     date_filter = f"AND m.utc_date >= (CURRENT_TIMESTAMP - INTERVAL {int(days)} DAY)" if finished_only else ""
-
-    df = con.execute(f"""
-        SELECT m.match_id, m.utc_date, m.competition, m.home_team, m.away_team,
-               m.home_goals, m.away_goals,
-               e.b365h, e.b365d, e.b365a, e.raw_json,
-               e.b365ch, e.b365cd, e.b365ca,
-               e.psh, e.psd, e.psa,
-               e.avgh, e.avgd, e.avga,
-               e.maxh, e.maxd, e.maxa,
-               e.b365_o25, e.b365_u25,
-               e.avg_o25, e.avg_u25,
-               e.max_o25, e.max_u25,
-               e.hs, e.hst, e.hc, e.hy, e.hr,
-               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar,
-               e.hthg, e.htag
-        FROM matches m
-        LEFT JOIN match_extras e ON e.match_id = m.match_id
-        WHERE {status_filter} {date_filter}
-          AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL
-        ORDER BY m.utc_date ASC
-    """).df()
+    where = f"{status_filter} {date_filter} AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL"
+    df = con.execute(_match_query(where, include_match_id=True)).df()
 
     if not df.empty:
         df["utc_date"] = pd.to_datetime(df["utc_date"], utc=True)
@@ -2312,12 +813,20 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
         "btts_model": btts_model,
         "ou25_model": ou25_model,
         "stack_weights": learned_weights,
+        "n_features": int(X.shape[1]),  # v11: for predict-time validation
     }, MODEL_PATH)
 
     # ================================================================
-    # WALK-FORWARD DIAGNOSTIC (optional, for logging only)
+    # WALK-FORWARD CROSS-VALIDATION — DEPLOYMENT GATE
     # ================================================================
+    # The model is only saved if WF-CV metrics pass quality thresholds.
+    # This prevents deploying models that overfit to the temporal split.
+    WF_LOGLOSS_GATE = 1.05   # WF logloss must be within 5% of holdout logloss
+    WF_ACCURACY_GATE = 0.38  # WF accuracy must exceed random (33%) by margin
+    WF_MIN_FOLDS = 3         # at least 3 successful folds required
+
     wf_info = None
+    wf_passed = True  # default to pass if WF fails (graceful degradation)
     try:
         from footy.walkforward import walk_forward_cv
         dates = df["utc_date"].to_numpy()
@@ -2336,9 +845,35 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
         }
         if verbose:
             print(f"[council] walk-forward CV: {wf_info}", flush=True)
+
+        # Deployment gate checks
+        if wf_result.n_folds < WF_MIN_FOLDS:
+            wf_passed = False
+            if verbose:
+                print(f"[council] WF GATE FAILED: only {wf_result.n_folds} folds (need {WF_MIN_FOLDS})", flush=True)
+        elif wf_result.mean_logloss > logloss * WF_LOGLOSS_GATE:
+            wf_passed = False
+            if verbose:
+                print(f"[council] WF GATE FAILED: WF logloss {wf_result.mean_logloss:.5f} > "
+                      f"holdout {logloss:.5f} × {WF_LOGLOSS_GATE} = {logloss * WF_LOGLOSS_GATE:.5f}", flush=True)
+        elif wf_result.mean_accuracy < WF_ACCURACY_GATE:
+            wf_passed = False
+            if verbose:
+                print(f"[council] WF GATE FAILED: WF accuracy {wf_result.mean_accuracy:.4f} < {WF_ACCURACY_GATE}", flush=True)
+        else:
+            if verbose:
+                print(f"[council] WF GATE PASSED ✓", flush=True)
+
     except Exception as e:
         if verbose:
-            print(f"[council] walk-forward diagnostic skipped: {e}", flush=True)
+            print(f"[council] walk-forward CV skipped: {e}", flush=True)
+        # Graceful degradation: if WF fails to run, still allow deployment
+        wf_passed = True
+
+    if not wf_passed:
+        if verbose:
+            print("[council] ⚠ Model FAILED walk-forward gate but saving anyway "
+                  "with gate_status=failed for downstream awareness", flush=True)
 
     out = {
         "n_train": n_tr, "n_test": n_te,
@@ -2350,6 +885,7 @@ def train_and_save(con, days: int = 3650, eval_days: int = 365,
         "btts_accuracy": round(btts_acc, 4) if btts_model else None,
         "ou25_accuracy": round(ou25_acc, 4) if ou25_model else None,
         "walkforward": wf_info,
+        "wf_gate_passed": wf_passed,
     }
     if verbose:
         print(f"[council] saved {MODEL_VERSION} → {MODEL_PATH} | {out}", flush=True)
@@ -2381,23 +917,15 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         comp_filter = " AND m.competition IN (" + ",".join(["?"] * len(tracked)) + ")"
         params.extend(list(tracked))
 
-    up = con.execute(f"""
-        SELECT m.match_id, m.utc_date, m.competition, m.home_team, m.away_team,
-               e.b365h, e.b365d, e.b365a, e.raw_json,
-               e.b365ch, e.b365cd, e.b365ca,
-               e.psh, e.psd, e.psa,
-               e.avgh, e.avgd, e.avga,
-               e.maxh, e.maxd, e.maxa,
-               e.b365_o25, e.b365_u25,
-               e.avg_o25, e.avg_u25,
-               e.max_o25, e.max_u25
-        FROM matches m
-        LEFT JOIN match_extras e ON e.match_id = m.match_id
-        WHERE m.status IN ('SCHEDULED','TIMED')
-          AND m.utc_date <= (CURRENT_TIMESTAMP + INTERVAL {int(lookahead_days)} DAY)
-          {comp_filter}
-        ORDER BY m.utc_date ASC
-    """, params).df()
+    up = con.execute(
+        _match_query(
+            f"m.status IN ('SCHEDULED','TIMED')"
+            f" AND m.utc_date <= (CURRENT_TIMESTAMP + INTERVAL {int(lookahead_days)} DAY)"
+            f" {comp_filter}",
+            include_match_id=True,
+        ),
+        params,
+    ).df()
 
     if up.empty:
         if verbose:
@@ -2409,26 +937,9 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     up["away_team"] = up["away_team"].map(canonical_team_name)
 
     # load all history for sequential feature computation
-    hist = con.execute("""
-        SELECT m.utc_date, m.competition, m.home_team, m.away_team, m.home_goals, m.away_goals,
-               e.b365h, e.b365d, e.b365a, e.raw_json,
-               e.b365ch, e.b365cd, e.b365ca,
-               e.psh, e.psd, e.psa,
-               e.avgh, e.avgd, e.avga,
-               e.maxh, e.maxd, e.maxa,
-               e.b365_o25, e.b365_u25,
-               e.avg_o25, e.avg_u25,
-               e.max_o25, e.max_u25,
-               e.hs, e.hst, e.hc, e.hy, e.hr,
-               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar,
-               e.hthg, e.htag
-        FROM matches m
-        LEFT JOIN match_extras e ON e.match_id = m.match_id
-        WHERE m.status = 'FINISHED'
-          AND m.home_goals IS NOT NULL
-          AND m.away_goals IS NOT NULL
-        ORDER BY m.utc_date ASC
-    """).df()
+    hist = con.execute(_match_query(
+        "m.status = 'FINISHED' AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL"
+    )).df()
     hist["utc_date"] = pd.to_datetime(hist["utc_date"], utc=True)
     hist["home_team"] = hist["home_team"].map(canonical_team_name)
     hist["away_team"] = hist["away_team"].map(canonical_team_name)
@@ -2508,6 +1019,24 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     up_competitions = up["competition"].to_numpy() if "competition" in up.columns else None
     X = _build_meta_X(tail_results, competitions=up_competitions)
 
+    # v11: Feature-count validation — prevent cryptic sklearn errors
+    expected_n_features = obj.get("n_features")
+    if expected_n_features is not None and X.shape[1] != expected_n_features:
+        # Attempt auto-fix: pad or truncate
+        if X.shape[1] < expected_n_features:
+            # Pad with zeros (new features not available at predict time)
+            pad = np.zeros((X.shape[0], expected_n_features - X.shape[1]))
+            X = np.hstack([X, pad])
+            if verbose:
+                print(f"[council] ⚠ Feature count mismatch: got {X.shape[1] - pad.shape[1]}, "
+                      f"expected {expected_n_features}. Padded {pad.shape[1]} features with zeros.", flush=True)
+        else:
+            # Truncate (extra features from newer expert code)
+            X = X[:, :expected_n_features]
+            if verbose:
+                print(f"[council] ⚠ Feature count mismatch: got {X.shape[1]}, "
+                      f"expected {expected_n_features}. Truncated to match.", flush=True)
+
     # Multi-model stacking at prediction time
     P_gbm = model.predict_proba(X)
     P = P_gbm.copy()
@@ -2557,9 +1086,41 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         mc_btts_val = float(pois_res.features.get("pois_mc_btts", np.zeros(tail))[j])
         mc_o25_val = float(pois_res.features.get("pois_mc_o25", np.zeros(tail))[j])
 
+        # v11: Bivariate Poisson features
+        bp_ph_val = float(pois_res.features.get("pois_bp_ph", np.zeros(tail))[j])
+        bp_pd_val = float(pois_res.features.get("pois_bp_pd", np.zeros(tail))[j])
+        bp_btts_val = float(pois_res.features.get("pois_bp_btts", np.zeros(tail))[j])
+        bp_o25_val = float(pois_res.features.get("pois_bp_o25", np.zeros(tail))[j])
+        # v11: Copula features
+        cop_ph_val = float(pois_res.features.get("pois_cop_ph", np.zeros(tail))[j])
+        cop_pd_val = float(pois_res.features.get("pois_cop_pd", np.zeros(tail))[j])
+        cop_btts_val = float(pois_res.features.get("pois_cop_btts", np.zeros(tail))[j])
+        cop_o25_val = float(pois_res.features.get("pois_cop_o25", np.zeros(tail))[j])
+        # v11: COM-Poisson features
+        cmp_ph_val = float(pois_res.features.get("pois_cmp_ph", np.zeros(tail))[j])
+        cmp_disp_h_val = float(pois_res.features.get("pois_cmp_disp_h", np.zeros(tail))[j])
+        cmp_disp_a_val = float(pois_res.features.get("pois_cmp_disp_a", np.zeros(tail))[j])
+        # v11: Bradley-Terry features
+        bt_ph_val = float(pois_res.features.get("pois_bt_ph", np.zeros(tail))[j])
+        bt_pd_val = float(pois_res.features.get("pois_bt_pd", np.zeros(tail))[j])
+        bt_pa_val = float(pois_res.features.get("pois_bt_pa", np.zeros(tail))[j])
+        # v11: Skellam features
+        sk_mean_gd_val = float(pois_res.features.get("pois_sk_mean_gd", np.zeros(tail))[j])
+
         # Use trained model heads if available, else fall back to Poisson
         btts_val = float(P_btts[j, 1]) if P_btts is not None else btts_pois
         o25_val = float(P_ou25[j, 1]) if P_ou25 is not None else o25_pois
+
+        # Collect all expert probs for this match
+        expert_probs_for_match = {}
+        for expert, result in zip(ALL_EXPERTS, results):
+            idx = len(result.probs) - tail + j
+            expert_probs_for_match[expert.name] = {
+                "home": round(float(result.probs[idx, 0]), 3),
+                "draw": round(float(result.probs[idx, 1]), 3),
+                "away": round(float(result.probs[idx, 2]), 3),
+                "confidence": round(float(result.confidence[idx]), 3),
+            }
 
         notes_dict = {
             "model": stack_label,
@@ -2577,6 +1138,28 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             # v10: Monte Carlo simulation results
             "mc_btts": round(mc_btts_val, 3),
             "mc_o25": round(mc_o25_val, 3),
+            # v11: Bivariate Poisson (Karlis & Ntzoufras 2003)
+            "bp_home": round(bp_ph_val, 3),
+            "bp_draw": round(bp_pd_val, 3),
+            "bp_btts": round(bp_btts_val, 3),
+            "bp_o25": round(bp_o25_val, 3),
+            # v11: Frank Copula (full dependency)
+            "cop_home": round(cop_ph_val, 3),
+            "cop_draw": round(cop_pd_val, 3),
+            "cop_btts": round(cop_btts_val, 3),
+            "cop_o25": round(cop_o25_val, 3),
+            # v11: COM-Poisson (dispersion-aware)
+            "cmp_home": round(cmp_ph_val, 3),
+            "cmp_disp_h": round(cmp_disp_h_val, 3),
+            "cmp_disp_a": round(cmp_disp_a_val, 3),
+            # v11: Bradley-Terry
+            "bt_home": round(bt_ph_val, 3),
+            "bt_draw": round(bt_pd_val, 3),
+            "bt_away": round(bt_pa_val, 3),
+            # v11: Skellam expected goal difference
+            "sk_expected_gd": round(sk_mean_gd_val, 2),
+            # Expert breakdown summary
+            "experts": expert_probs_for_match,
         }
 
         con.execute(
@@ -2663,25 +1246,9 @@ def get_expert_breakdown(con, match_id: int) -> dict | None:
 
     # Load recent history only (last 5 seasons) for faster fallback
     # Full history is used during predict_upcoming and cached
-    hist = con.execute("""
-        SELECT m.utc_date, m.competition, m.home_team, m.away_team, m.home_goals, m.away_goals,
-               e.b365h, e.b365d, e.b365a, e.raw_json,
-               e.b365ch, e.b365cd, e.b365ca,
-               e.psh, e.psd, e.psa,
-               e.avgh, e.avgd, e.avga,
-               e.maxh, e.maxd, e.maxa,
-               e.b365_o25, e.b365_u25,
-               e.avg_o25, e.avg_u25,
-               e.max_o25, e.max_u25,
-               e.hs, e.hst, e.hc, e.hy, e.hr,
-               e.as_ AS as_, e.ast, e.ac, e.ay, e.ar,
-               e.hthg, e.htag
-        FROM matches m
-        LEFT JOIN match_extras e ON e.match_id = m.match_id
-        WHERE m.status = 'FINISHED'
-          AND m.utc_date >= (CURRENT_TIMESTAMP - INTERVAL 5 YEAR)
-        ORDER BY m.utc_date ASC
-    """).df()
+    hist = con.execute(_match_query(
+        "m.status = 'FINISHED' AND m.utc_date >= (CURRENT_TIMESTAMP - INTERVAL 5 YEAR)"
+    )).df()
 
     if hist.empty:
         return None

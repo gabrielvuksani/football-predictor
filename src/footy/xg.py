@@ -472,12 +472,30 @@ def compute_xg_for_upcoming_match(
     away_xg = 0.0
     confidence = 0.0
     
-    # Method 1: From stats
-    if total_shots_home > 0 or total_shots_away > 0:
-        home_xg = compute_xg_from_stats(total_sot_home, total_shots_home)
-        away_xg = compute_xg_from_stats(total_sot_away, total_shots_away)
-        method = "stats"
-        confidence = 0.7
+    # Method 0: Real xG from API-Football (highest quality)
+    try:
+        af_xg = con.execute("""
+            SELECT af_xg_home, af_xg_away
+            FROM match_extras
+            WHERE match_id = ?
+              AND af_xg_home IS NOT NULL AND af_xg_away IS NOT NULL
+        """, [match_id]).df()
+        if not af_xg.empty:
+            home_xg = float(af_xg.iloc[0]["af_xg_home"])
+            away_xg = float(af_xg.iloc[0]["af_xg_away"])
+            if home_xg > 0 or away_xg > 0:
+                method = "api-football"
+                confidence = 0.95
+    except Exception:
+        pass  # Column may not exist in older DBs
+
+    # Method 1: From stats (shot-based estimate)
+    if method == "none":
+        if total_shots_home > 0 or total_shots_away > 0:
+            home_xg = compute_xg_from_stats(total_sot_home, total_shots_home)
+            away_xg = compute_xg_from_stats(total_sot_away, total_shots_away)
+            method = "stats"
+            confidence = 0.7
     
     # Method 2: Fallback to rolling stats
     if method == "none" or confidence < 0.5:

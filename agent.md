@@ -8,8 +8,13 @@
 
 ML-powered football match prediction system covering 5 European leagues (PL, PD, SA,
 BL1, FL1) with 45,000+ historical matches. Uses an **11-expert council** architecture
-(v10_council) that feeds ~250+ features into a multi-model stacking meta-learner
+(v10_council) that feeds ~270+ features into a multi-model stacking meta-learner
 (HistGradientBoosting + RandomForest + LogisticRegression with Nelder-Mead learned weights).
+
+**v11 upgrade**: MLE-estimated Dixon-Coles ρ per competition, real xG from API-Football,
+Asian Handicap + BTTS markets, FPL data persistence (injuries/availability/FDR), 14-feature
+InjuryAvailabilityExpert, walk-forward CV deployment gating, feature-count validation at
+predict time, composite schedule difficulty index.
 
 ## Tech Stack
 
@@ -76,8 +81,9 @@ Layer 1 — ELEVEN SPECIALIST EXPERTS
 │ Bayesian     │   Injury     │              │
 │ Rate Expert  │ Availability │              │
 │ Beta-Binom   │ FPL injuries │              │
-│ shrinkage    │ fixture      │              │
-│ (18 feats)   │ difficulty   │              │
+│ shrinkage    │ AF injuries, │              │
+│ (18 feats)   │ FDR, squad   │              │
+│              │ strength (14)│              │
 └──────────────┴──────────────┴──────────────┘
                          ↓
 Layer 2 — CONFLICT & CONSENSUS
@@ -120,13 +126,15 @@ The frontend is a single-page app (Alpine.js, no build step) with 10 tabs:
 Key tables — all in `data/footy.duckdb`:
 
 - `matches` — All fixtures (match_id PK, home_team, away_team, home_goals, away_goals, status, competition, season, utc_date)
-- `match_extras` — Odds + match stats (hs, as_, hst, ast, b365h/d/a, hthg, htag, etc.)
+- `match_extras` — Odds + match stats (hs, as_, hst, ast, b365h/d/a, hthg, htag, AH line/prices, BTTS yes/no, formations, lineups, AF xG/possession/stats)
 - `match_xg` — Computed expected goals
 - `predictions` — Model outputs (p_home, p_draw, p_away, eg_home, eg_away, notes JSON)
 - `prediction_scores` — Scored predictions (outcome, logloss, brier, correct)
 - `elo_state` — Current Elo ratings per team
 - `h2h_stats` — Any-venue H2H aggregates
 - `h2h_venue_stats` — Venue-specific H2H
+- `fpl_availability` — FPL injury/availability data per team (total_players, available, doubtful, injured, suspended, injury_score, squad_strength, key_absences_json)
+- `fpl_fixture_difficulty` — FPL fixture difficulty ratings per team (fdr_next_3, fdr_next_6, upcoming_json)
 - `opta_predictions` — Scraped Opta win probabilities
 - `team_mappings` — Canonical team name mapping
 - `metrics` — Aggregated model performance
@@ -203,11 +211,14 @@ Required:
 - `FOOTBALL_DATA_ORG_TOKEN` — football-data.org API key (free tier)
 
 Optional:
-- `API_FOOTBALL_KEY` — api-football.com (lineups, injuries)
-- `THE_ODDS_API_KEY` — external odds
+- `API_FOOTBALL_KEY` — api-football.com (lineups, injuries, xG, possession, statistics, H2H)
+- `THE_ODDS_API_KEY` — multi-bookmaker odds (h2h, totals, Asian Handicap, BTTS)
 - `OLLAMA_HOST` / `OLLAMA_MODEL` — local LLM for AI narratives
 - `DB_PATH` — override database path (default: `./data/footy.duckdb`)
 - `TRACKED_COMPETITIONS` — comma-separated league codes (default: PL,PD,SA,BL1,FL1)
+- `WF_LOGLOSS_GATE` — walk-forward logloss threshold for deployment (default: 1.05)
+- `WF_ACCURACY_GATE` — walk-forward accuracy threshold for deployment (default: 0.38)
+- `WF_MIN_FOLDS` — minimum WF-CV folds required for gating (default: 3)
 
 ## Common Tasks for Agents
 

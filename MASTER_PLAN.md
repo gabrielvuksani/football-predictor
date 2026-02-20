@@ -2,17 +2,20 @@
 
 ## Current State (February 2026)
 
-**Primary Model**: v10_council — Expert Council with 8 specialists + meta-learner
-- Logloss: 0.951 | Brier: 0.563 | Accuracy: 55.1% | ECE: 0.040 | ~170 features
+**Primary Model**: v10_council — Expert Council with 11 specialists + multi-model meta-learner
+- Logloss: 0.951 | Brier: 0.563 | Accuracy: 55.1% | ECE: 0.040 | ~270+ features
 - Trained on 11,745 matches across 5 leagues (PL, PD, SA, BL1, FL1)
 - Web UI: FastAPI + Alpine.js dark glassmorphism frontend
+- **v11 upgrade**: MLE Dixon-Coles ρ, real xG from API-Football, AH+BTTS markets, FPL persistence, WF-CV deployment gating, 14-feature injury expert, feature-count validation
 
 ## Data Sources
-- football-data.org — fixtures, results, status (API key required)
+- football-data.org — fixtures, results, status, HT scores, formations, lineups, bookings (API key required, X-Unfold headers)
 - football-data.co.uk — multi-season finished results + odds/stats (free CSVs)
 - GDELT — team news headlines (free)
 - Ollama — local LLM for AI analysis (local, no key)
-- API-Football — lineups, injuries, context (API key required)
+- API-Football — lineups, injuries, xG, possession, formations, statistics, H2H (API key required)
+- The Odds API — h2h, totals, Asian Handicap (spreads), BTTS markets from 40+ bookmakers (API key required)
+- FPL API — player injuries, availability, squad strength, fixture difficulty ratings (free, no key)
 
 ## Model Lineage
 
@@ -31,19 +34,22 @@ Dixon-Coles    ─────────────────────�
 | v3_gbdt_form | GBDT + rolling form | 33 | 0.984 | Base layer |
 | v4_super_ensemble | Calibrated ensemble | 50 | 1.019 | Retired |
 | v5_ultimate | GBDT all signals | 94 | 0.949 | Superseded |
-| **v10_council** | **Expert Council** | **~170** | **0.951** | **Primary** |
+| **v10_council** | **Expert Council** | **~270+** | **0.951** | **Primary** |
 
-## v8 Council Architecture
+## v10 Council Architecture
 
-**8 Specialist Experts**:
+**11 Specialist Experts**:
 1. **EloExpert** — Team-specific home advantage, dynamic K-factor, momentum, volatility
-2. **MarketExpert** — Multi-tier odds (closing > avg > max), line movement, O/U 2.5, source quality
-3. **FormExpert** — OAF (Opposition-Adjusted Form), venue-split PPG, BTTS, CS, streaks, shot-on-target ratio
-4. **PoissonExpert** — Venue-split attack/defense EMA, BTTS/O2.5/O1.5 from score matrix, most-likely-score, goal-diff skewness
+2. **MarketExpert** — Multi-tier odds (closing > avg > max), line movement, O/U 2.5, AH line/prices, BTTS yes/no/implied, source quality, Shannon entropy
+3. **FormExpert** — OAF (Opposition-Adjusted Form), venue-split PPG, BTTS, CS, streaks, shot-on-target ratio, schedule difficulty (composite index)
+4. **PoissonExpert** — Venue-split attack/defense EMA, BTTS/O2.5/O1.5 from score matrix, most-likely-score, goal-diff skewness, **MLE-estimated ρ per competition** (re-estimated every 200 matches)
 5. **H2HExpert** — Bayesian Dirichlet prior, time-decayed observations (half-life 730d), venue-specific sub-analysis
 6. **ContextExpert** — Rest days, congestion (7/14/30d), season progress, day-of-week, weekend/midweek, short-rest flags
 7. **GoalPatternExpert** — First-goal rate, comeback rate, half-time scoring fractions, multi-goal/nil-nil rates, lead-holding ratio
 8. **LeagueTableExpert** — Simulated live standings, position/PPG differential, points gap to top/bottom, zone flags
+9. **MomentumExpert** — EMA crossovers, slope regression, volatility, burst detection
+10. **BayesianRateExpert** — Beta-Binomial shrinkage for noisy rate estimates (18 features)
+11. **InjuryAvailabilityExpert** — 14 features from FPL (injuries, doubts, suspensions, squad strength, FDR) + API-Football injury counts
 
 **Consensus Layer**: Expert variance, spread, 9 pairwise agreements (28 pairs), max disagreement, winner vote concentration, confidence-weighted ensemble, entropy
 
@@ -226,12 +232,16 @@ footy cache-cleanup --full        # Clear entire cache
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/` | Web UI |
-| GET | `/api/matches?days=14` | Upcoming matches + predictions |
-| GET | `/api/matches/{id}` | Match detail (prediction, odds, Elo) |
+| GET | `/api/matches?days=14` | Upcoming matches + predictions + BTTS/O2.5 |
+| GET | `/api/matches/{id}` | Match detail (prediction, odds, Elo, model_analysis, expert_summary, opta) |
 | GET | `/api/matches/{id}/experts` | Expert council breakdown |
 | GET | `/api/matches/{id}/h2h` | Head-to-head history |
 | GET | `/api/matches/{id}/form` | Recent form (W/D/L + PPG) |
 | GET | `/api/matches/{id}/ai` | AI narrative |
+| GET | `/api/matches/{id}/xg` | xG breakdown for match |
+| GET | `/api/matches/{id}/patterns` | Goal pattern analysis |
+| GET | `/api/matches/{id}/opta` | Opta analyst predictions for match |
+| GET | `/api/opta` | All cached Opta predictions |
 | GET | `/api/insights/value-bets` | Value bets + Kelly criterion |
 | GET | `/api/insights/btts-ou` | BTTS & Over/Under 2.5 analysis |
 | GET | `/api/insights/accumulators` | Auto-generated accumulator bets |
@@ -242,21 +252,24 @@ footy cache-cleanup --full        # Clear entire cache
 | GET | `/api/training/status` | Drift detection & retraining status |
 | GET | `/api/stats` | Database statistics |
 | GET | `/api/performance` | Model performance + calibration |
-| GET | `/api/matches/{id}/xg` | xG breakdown for match |
-| GET | `/api/matches/{id}/patterns` | Goal pattern analysis |
 | GET | `/api/league-table/{comp}` | Simulated league standings |
 | GET | `/api/last-updated` | Last prediction timestamp |
 
 ## UI
 - FastAPI + Alpine.js single-page app (dark glassmorphism)
 - League filter pills (PL/PD/SA/BL1/FL1)
-- Match cards with confidence badges, verdict text, kickoff times
+- Match cards with confidence badges, verdict text, kickoff times, BTTS/O2.5 inline tags
 - Full-page match detail view with URL routing (`/match/{id}`)
+- **Opta Analyst comparison**: Side-by-side Opta vs Model probabilities with diff indicators
+- **Multi-Model Analysis table**: Council (final), Dixon-Coles, Bivariate Poisson, Frank Copula, COM-Poisson, Bradley-Terry, Opta, Market — all H/D/A probabilities in a single comparison grid
+- **BTTS/O2.5 multi-model panel**: Model Head, Raw Poisson, Monte Carlo, Bivariate Poisson, Frank Copula side-by-side
+- **Skellam expected GD** and **COM-Poisson dispersion** indicators
 - Expert council grid, consensus meter, form streaks, odds edge indicators
+- Inline cached expert summary fallback (when full expert API loading)
 - League table tab with simulated standings
 - Value bets tab with Kelly criterion
 - Stats tab with model comparison + calibration chart
-- Responsive 2-column layout on desktop
+- Responsive 2-column layout on desktop with side-by-side Elo/xG
 - 10-tab navigation: Matches, Insights, BTTS/O2.5, Accumulators, Form, Tables, Accuracy, Review, Stats, Training
 
 ## Phase 5.2.2: Streamlit Removal
@@ -341,3 +354,58 @@ Next: Phase 6.0 - Advanced Features & Full-Model Upgrade
 9. **Dead Code**: understat.py + fbref.py replaced with 30-line stubs (removed 945 lines of fake data generators), unused imports cleaned across 7 files
 10. **Tests**: `tests/test_upgrades.py` — 11 new tests covering all v8 additions
 11. **Documentation**: `agent.md` context file for AI agents
+
+## Phase 8.0: v11 Deep Audit & Upgrade
+**Status**: ✅ COMPLETE
+
+### Problems Identified (22 issues from 3-pass audit)
+1. FPL data fetched as JSON but never persisted to DB (discarded after fetch)
+2. InjuryAvailabilityExpert read nonexistent columns — always produced zero features
+3. football-data.org didn't use X-Unfold headers — HT scores, formations, lineups, bookings unavailable
+4. The Odds API only fetched h2h+totals — Asian Handicap and BTTS markets unused
+5. API-Football only fetched injuries — statistics, lineups, H2H endpoints unused
+6. Dixon-Coles ρ hardcoded at -0.13 — never estimated from data
+7. MarketExpert had no AH/BTTS features despite odds being partially available
+8. Walk-forward CV was diagnostic-only — never gated deployment
+9. schedule_difficulty used simple np.mean — no decay, variance, or max-opponent
+10. xG computation never checked API-Football real xG data
+11. Feature count mismatch possible between train/predict (no validation)
+12. Dead code: experts.py (1864 lines), council.py.bak — never imported
+13. Config still referenced SPORTAPI_AI_KEY (Sportmonks skipped)
+
+### What Changed
+1. **DB Schema**: Added `fpl_availability` table, `fpl_fixture_difficulty` table, 13 new columns on `match_extras` (AH, BTTS, formations, lineups, AF xG/possession/stats)
+2. **FPL Persistence**: `_ingest_new_apis()` rewritten to persist availability + fixture difficulty with upsert logic
+3. **football-data.org Upgrade**: X-Unfold-Lineups/Goals/Bookings/Subs headers, `normalize_match()` extracts HT scores, formations, lineups, booking counts
+4. **The Odds API Upgrade**: Markets expanded to `h2h,totals,spreads,btts`, parses Asian Handicap (line+prices) and BTTS (yes/no odds + implied probability)
+5. **API-Football Expansion**: Added `fetch_fixture_statistics()`, `fetch_fixture_lineups()`, `fetch_h2h()`, `enrich_match_extras_from_af()` — persists xG, possession, formations
+6. **MLE Dixon-Coles ρ**: `estimate_rho_mle()` via scipy.optimize.minimize_scalar (bounded Brent), PoissonExpert tracks per-competition history and re-estimates every 200 matches
+7. **InjuryAvailabilityExpert Rewrite**: 6 always-zero features → 14 real features from FPL (injuries, doubts, suspensions, squad strength, FDR) + API-Football injury counts
+8. **MarketExpert AH+BTTS**: +8 features (ah_line, ah_home, ah_away, has_ah, btts_yes, btts_no, btts_implied, has_btts)
+9. **WF-CV Deployment Gating**: Configurable thresholds (WF_LOGLOSS_GATE=1.05, WF_ACCURACY_GATE=0.38, WF_MIN_FOLDS=3), gate status in output
+10. **schedule_difficulty Upgrade**: Composite index with exponential decay weights + variance penalty + max-opponent consideration
+11. **Real xG from API-Football**: Method 0 in xG computation chain (confidence=0.95, highest priority)
+12. **Feature-Count Validation**: `n_features` saved in joblib, auto-pad/truncate at predict time
+13. **Dead Code Deletion**: Removed `experts.py` (1864 lines) + `council.py.bak`
+14. **Config Cleanup**: Removed `sportapi_ai_key` from Settings + .env files
+
+## Phase 8.1: v11 Data Exposure & UI Overhaul
+**Status**: ✅ COMPLETE
+
+### What Changed
+1. **predict_upcoming() notes expansion**: Notes dict expanded from ~13 to ~30+ fields — now includes Bivariate Poisson (bp_home/draw/btts/o25), Frank Copula (cop_home/draw/btts/o25), COM-Poisson (cmp_home/disp_h/disp_a), Bradley-Terry (bt_home/draw/away), Skellam (sk_expected_gd), and full expert summary (all 11 experts' probs + confidence)
+2. **Match detail API expanded**: `/api/matches/{id}` now returns `model_analysis`, `expert_summary`, and `opta` alongside existing fields
+3. **Match list API expanded**: `/api/matches` now includes `btts`, `o25`, and `predicted_score` for each match
+4. **New Opta endpoints**: `/api/opta` (all cached) and `/api/matches/{id}/opta` (per-match)
+5. **Dead code removed**: `get_league_next_events()` in thesportsdb.py (23 lines, 0 callers)
+6. **UI: Opta Analyst comparison panel**: Side-by-side Opta vs Model probabilities with color-coded diff indicators
+7. **UI: Multi-Model Analysis table**: All 7 probability sources (Council, Dixon-Coles, Bivariate Poisson, Frank Copula, COM-Poisson, Bradley-Terry, Opta, Market) in a single comparison grid
+8. **UI: BTTS/O2.5 multi-model panel**: 5 BTTS/O2.5 sources compared (Model Head, Raw Poisson, Monte Carlo, Bivariate Poisson, Frank Copula)
+9. **UI: Skellam & dispersion indicators**: Expected goal difference and COM-Poisson dispersion parameters shown inline
+10. **UI: Match card enrichment**: BTTS and O2.5 mini-tags on match cards in list view
+11. **UI: Elo/xG side-by-side**: Combined into a compact horizontal row
+12. **UI: Expert summary fallback**: Cached expert summary from notes shown while full expert API loads
+13. **Refactoring verification**: All 5 refactoring wins confirmed (expert extraction, SQL dedup, dead code, scoring dedup, perf/degradation separation)
+
+### Tests
+- 358 tests passing (all existing tests unaffected)

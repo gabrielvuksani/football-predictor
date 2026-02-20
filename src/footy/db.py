@@ -110,7 +110,25 @@ CREATE TABLE IF NOT EXISTS match_extras (
   hc DOUBLE, ac DOUBLE,
   hy DOUBLE, ay DOUBLE,
   hr DOUBLE, ar DOUBLE,
-  raw_json VARCHAR
+  raw_json VARCHAR,
+  -- The Odds API: Asian Handicap
+  odds_ah_line DOUBLE,
+  odds_ah_home DOUBLE,
+  odds_ah_away DOUBLE,
+  -- The Odds API: Both Teams To Score
+  odds_btts_yes DOUBLE,
+  odds_btts_no DOUBLE,
+  -- football-data.org unfolded lineups/formations
+  formation_home VARCHAR,
+  formation_away VARCHAR,
+  lineup_home VARCHAR,
+  lineup_away VARCHAR,
+  -- API-Football enrichment
+  af_xg_home DOUBLE,
+  af_xg_away DOUBLE,
+  af_possession_home DOUBLE,
+  af_possession_away DOUBLE,
+  af_stats_json VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS news (
@@ -195,6 +213,29 @@ CREATE TABLE IF NOT EXISTS match_xg (
   computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- FPL injury/availability snapshots (Premier League only)
+CREATE TABLE IF NOT EXISTS fpl_availability (
+  team VARCHAR PRIMARY KEY,
+  total_players INT,
+  available INT,
+  doubtful INT,
+  injured INT,
+  suspended INT,
+  injury_score DOUBLE,
+  squad_strength DOUBLE,
+  key_absences_json VARCHAR,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- FPL fixture difficulty ratings
+CREATE TABLE IF NOT EXISTS fpl_fixture_difficulty (
+  team VARCHAR PRIMARY KEY,
+  fdr_next_3 DOUBLE,
+  fdr_next_6 DOUBLE,
+  upcoming_json VARCHAR,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Team mapping and normalization
 CREATE TABLE IF NOT EXISTS team_mappings (
   canonical_id VARCHAR PRIMARY KEY,
@@ -214,6 +255,18 @@ CREATE TABLE IF NOT EXISTS team_name_lookups (
   FOREIGN KEY (canonical_id) REFERENCES team_mappings(canonical_id)
 );
 
+CREATE TABLE IF NOT EXISTS af_context (
+  match_id BIGINT PRIMARY KEY,
+  fixture_id BIGINT,
+  fetched_at TIMESTAMP,
+  fixture_json VARCHAR,
+  injuries_json VARCHAR,
+  home_injuries INTEGER,
+  away_injuries INTEGER,
+  llm_model VARCHAR,
+  llm_summary VARCHAR
+);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_matches_status ON matches(status);
 CREATE INDEX IF NOT EXISTS idx_matches_utc ON matches(utc_date);
@@ -225,6 +278,8 @@ CREATE INDEX IF NOT EXISTS idx_news_seendate ON news(seendate);
 CREATE INDEX IF NOT EXISTS idx_h2h_canonical ON h2h_stats(team_a_canonical, team_b_canonical);
 CREATE INDEX IF NOT EXISTS idx_h2h_venue_canonical ON h2h_venue_stats(home_team_canonical, away_team_canonical);
 CREATE INDEX IF NOT EXISTS idx_match_extras_comp ON match_extras(competition, season_code);
+CREATE INDEX IF NOT EXISTS idx_fpl_avail_team ON fpl_availability(team);
+CREATE INDEX IF NOT EXISTS idx_fpl_fdr_team ON fpl_fixture_difficulty(team);
 """
 
 # Columns that may need adding to older match_extras tables
@@ -238,6 +293,16 @@ _MATCH_EXTRAS_MIGRATIONS = [
     ("max_o25", "DOUBLE"), ("max_u25", "DOUBLE"),
     ("b365ahh", "DOUBLE"), ("b365ahha", "DOUBLE"), ("b365ahaw", "DOUBLE"),
     ("hthg", "INT"), ("htag", "INT"),
+    # The Odds API: Asian Handicap + BTTS
+    ("odds_ah_line", "DOUBLE"), ("odds_ah_home", "DOUBLE"), ("odds_ah_away", "DOUBLE"),
+    ("odds_btts_yes", "DOUBLE"), ("odds_btts_no", "DOUBLE"),
+    # football-data.org unfolded
+    ("formation_home", "VARCHAR"), ("formation_away", "VARCHAR"),
+    ("lineup_home", "VARCHAR"), ("lineup_away", "VARCHAR"),
+    # API-Football stats
+    ("af_xg_home", "DOUBLE"), ("af_xg_away", "DOUBLE"),
+    ("af_possession_home", "DOUBLE"), ("af_possession_away", "DOUBLE"),
+    ("af_stats_json", "VARCHAR"),
 ]
 
 # Columns that may need adding to older prediction_scores tables

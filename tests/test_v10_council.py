@@ -131,8 +131,9 @@ class TestInjuryAvailabilityExpert:
         from footy.models.council import InjuryAvailabilityExpert
         expert = InjuryAvailabilityExpert()
         result = expert.compute(sample_df)
-        expected_keys = ["inj_count_h", "inj_count_a", "inj_diff",
-                        "fpl_fdr_h", "fpl_fdr_a", "fpl_fdr_diff"]
+        expected_keys = ["inj_score_h", "inj_score_a", "inj_injured_h", "inj_injured_a",
+                        "inj_doubtful_h", "inj_doubtful_a", "inj_fdr_h", "inj_fdr_a",
+                        "inj_af_h", "inj_af_a", "inj_diff", "inj_squad_diff"]
         for key in expected_keys:
             assert key in result.features
 

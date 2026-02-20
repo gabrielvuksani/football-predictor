@@ -43,11 +43,45 @@ def compute_metrics(
         eps: small constant for log stability
 
     Returns:
-        dict with logloss, brier, accuracy
+        dict with logloss, brier, accuracy, rps
     """
+    from footy.models.advanced_math import ranked_probability_score
+
     logloss = float(np.mean(-np.log(P[np.arange(len(y)), y] + eps)))
     Y = np.zeros_like(P)
     Y[np.arange(len(y)), y] = 1.0
     brier = float(np.mean(np.sum((P - Y) ** 2, axis=1) / 3))
     accuracy = float(np.mean(np.argmax(P, axis=1) == y))
-    return {"logloss": logloss, "brier": brier, "accuracy": accuracy}
+    # Ranked Probability Score — proper scoring rule for ordered outcomes
+    rps = float(np.mean([
+        ranked_probability_score(P[i].tolist(), int(y[i]))
+        for i in range(len(y))
+    ]))
+    return {"logloss": logloss, "brier": brier, "accuracy": accuracy, "rps": rps}
+
+
+def score_prediction(probs: list[float] | tuple[float, ...], outcome: int) -> dict:
+    """Score a single 1×2 prediction against the actual outcome.
+
+    Args:
+        probs: [p_home, p_draw, p_away] probabilities
+        outcome: 0 = Home win, 1 = Draw, 2 = Away win
+
+    Returns:
+        dict with logloss, brier, rps, predicted (int), correct (bool)
+    """
+    from footy.models.advanced_math import ranked_probability_score
+
+    outcome_prob = probs[outcome]
+    logloss = -math.log(max(outcome_prob, 1e-15))
+    brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2
+                for i, p in enumerate(probs)) / 3
+    rps = ranked_probability_score(list(probs), outcome)
+    predicted = max(range(3), key=lambda i: probs[i])
+    return {
+        "logloss": logloss,
+        "brier": brier,
+        "rps": rps,
+        "predicted": predicted,
+        "correct": predicted == outcome,
+    }

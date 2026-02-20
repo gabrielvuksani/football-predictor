@@ -11,11 +11,6 @@ Scheduled Jobs:
 - predict: Generate predictions for upcoming matches
 - score: Score finished predictions and update metrics
 
-Legacy job types (still supported):
-- train_meta: Train meta-stacker (v2)
-- train_v3: Train GBDT form model
-- train_v4: Alias for train_council
-- train_v5: Train ultimate ensemble
 """
 from __future__ import annotations
 import json
@@ -24,7 +19,6 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 from enum import Enum
-import math
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -33,6 +27,7 @@ from apscheduler.job import Job
 from footy.db import connect
 from footy import pipeline
 from footy.models.council import train_and_save as council_train_and_save, predict_upcoming as council_predict_upcoming
+from footy.utils import score_prediction
 
 log = logging.getLogger(__name__)
 
@@ -301,23 +296,16 @@ class TrainingScheduler:
             else:
                 outcome = 1  # Draw
             
-            # Calculate metrics
+            # Calculate metrics using centralized scorer
             probs = [p_home, p_draw, p_away]
-            outcome_prob = probs[outcome]
-            
-            # Brier score (mean squared error)
-            brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2 for i, p in enumerate(probs)) / 3
-            
-            # Log loss (negative log likelihood)
-            logloss = -math.log(max(outcome_prob, 1e-15))
+            s = score_prediction(probs, outcome)
             
             # Store score
-            predicted_outcome = max(range(3), key=lambda i: probs[i])
             con.execute("""
                 INSERT INTO prediction_scores
                 (match_id, model_version, outcome, logloss, brier, correct)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, [match_id, model_version, outcome, logloss, brier, predicted_outcome == outcome])
+            """, [match_id, model_version, outcome, s["logloss"], s["brier"], s["correct"]])
             
             scored_count += 1
         

@@ -24,14 +24,62 @@ def _ingest_new_apis():
     except Exception as e:
         console.print(f"[yellow]  The Odds API warning:[/yellow] {e}")
 
-    # FPL — Premier League injury / availability data
+    # FPL — Premier League injury / availability + fixture difficulty
     try:
-        from footy.providers.fpl import get_all_teams_availability
+        from footy.providers.fpl import get_all_teams_availability, get_fixture_difficulty
+        from footy.db import connect as _fpl_connect
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+
+        con = _fpl_connect()
+
+        # --- availability ---
         avail = get_all_teams_availability()
         if avail:
-            console.print(f"  FPL: availability data for {len(avail)} teams")
+            now = _dt.now(_tz.utc).isoformat()
+            for team, rpt in avail.items():
+                con.execute(
+                    """INSERT INTO fpl_availability
+                       (team, total_players, available, doubtful, injured,
+                        suspended, injury_score, squad_strength, key_absences_json, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (team) DO UPDATE SET
+                         total_players=excluded.total_players, available=excluded.available,
+                         doubtful=excluded.doubtful, injured=excluded.injured,
+                         suspended=excluded.suspended, injury_score=excluded.injury_score,
+                         squad_strength=excluded.squad_strength,
+                         key_absences_json=excluded.key_absences_json,
+                         updated_at=excluded.updated_at""",
+                    [team, rpt.get("total_players", 0), rpt.get("available", 0),
+                     rpt.get("doubtful", 0), rpt.get("injured", 0),
+                     rpt.get("suspended", 0), rpt.get("injury_score", 0.0),
+                     rpt.get("squad_strength", 1.0),
+                     _json.dumps(rpt.get("key_absences", [])),
+                     now],
+                )
+            console.print(f"  FPL: persisted availability for {len(avail)} teams")
         else:
             console.print("  FPL: no availability data")
+
+        # --- fixture difficulty ---
+        fdr = get_fixture_difficulty()
+        if fdr:
+            now = _dt.now(_tz.utc).isoformat()
+            for team, info in fdr.items():
+                con.execute(
+                    """INSERT INTO fpl_fixture_difficulty
+                       (team, fdr_next_3, fdr_next_6, upcoming_json, updated_at)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT (team) DO UPDATE SET
+                         fdr_next_3=excluded.fdr_next_3, fdr_next_6=excluded.fdr_next_6,
+                         upcoming_json=excluded.upcoming_json,
+                         updated_at=excluded.updated_at""",
+                    [team, info.get("next_3_avg_difficulty", 3.0),
+                     info.get("next_6_avg_difficulty", 3.0),
+                     _json.dumps(info.get("upcoming_fixtures", [])),
+                     now],
+                )
+            console.print(f"  FPL: persisted fixture difficulty for {len(fdr)} teams")
     except Exception as e:
         console.print(f"[yellow]  FPL warning:[/yellow] {e}")
 
@@ -363,8 +411,8 @@ def update():
     from footy.db import connect as _connect
     n_pred = _predict(_connect(), verbose=True)
 
-    console.print("[cyan]Step 4/4[/cyan] metrics (only counts matches that were predicted before finishing)")
-    m = _pipeline().backtest_metrics()
+    console.print("[cyan]Step 4/4[/cyan] score finished predictions")
+    m = _pipeline().score_finished_predictions(verbose=True)
     dt = time.perf_counter() - t0
     console.print(f"[green]update complete[/green] new_elo={new_elo} predicted={n_pred} in {dt:.1f}s")
     console.print(f"[cyan]metrics[/cyan] {m}")

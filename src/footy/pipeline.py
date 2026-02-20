@@ -3,10 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 from datetime import date, timedelta, datetime, timezone
 
-import numpy as np
 import pandas as pd
 
 from footy.db import connect
@@ -16,12 +14,10 @@ from footy.providers.news_gdelt import fetch_team_news
 from footy.providers.fdcuk_history import DIV_MAP, season_codes_last_n, download_division_csv
 from footy.normalize import canonical_team_name
 from footy.models import elo
-from footy.models.poisson import fit_poisson, expected_goals, outcome_probs
-from footy.utils import outcome_label, compute_metrics
+from footy.models.poisson import fit_poisson
+from footy.utils import outcome_label, score_prediction
 
 log = logging.getLogger(__name__)
-
-MODEL_VERSION = "v1_elo_poisson"
 
 # Preferred provider for finished-match training after history is ingested
 TRAIN_PROVIDER = "football-data.co.uk"
@@ -149,24 +145,30 @@ def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
         log.info("total inserted/updated: %d", inserted)
     return inserted
 
-def _features_for_match(con, poisson_state: dict, home: str, away: str):
-    # base probs
-    pE = elo.predict_probs(con, home, away)
-    lam_h, lam_a = expected_goals(poisson_state, home, away)
-    pP = outcome_probs(lam_h, lam_a)
+def _upsert_match_extras_from_api(con, match_id: int, competition: str | None, season: int | None, extras: dict):
+    """Upsert unfolded data from football-data.org into match_extras."""
+    if not extras:
+        return
+    # Build dynamic SET clause from available extras
+    allowed = {
+        "hthg", "htag", "hy", "ay", "hr", "ar",
+        "formation_home", "formation_away", "lineup_home", "lineup_away",
+    }
+    to_set = {k: v for k, v in extras.items() if k in allowed and v is not None}
+    if not to_set:
+        return
 
-    # rating diff (home advantage already baked into elo.predict_probs, but diff still useful)
-    rh = elo.get_rating(con, home)
-    ra = elo.get_rating(con, away)
-    elo_diff = (rh - ra)
+    cols = ["match_id", "provider", "competition", "season_code"] + list(to_set.keys())
+    placeholders = ", ".join(["?"] * len(cols))
+    updates = ", ".join(f"{c}=excluded.{c}" for c in to_set.keys())
+    vals = [match_id, "football-data.org", competition, str(season) if season else None] + list(to_set.values())
 
-    X = [
-        pE[0], pE[1], pE[2],
-        pP[0], pP[1], pP[2],
-        float(elo_diff),
-        float(lam_h), float(lam_a), float(lam_h - lam_a),
-    ]
-    return X, pE, pP, lam_h, lam_a
+    sql = (
+        f"INSERT INTO match_extras ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT (match_id) DO UPDATE SET {updates}"
+    )
+    con.execute(sql, vals)
+
 
 def ingest(days_back: int = 30, days_forward: int = 7, chunk_days: int = 10, verbose: bool = True) -> int:
     con = connect()
@@ -201,6 +203,12 @@ def ingest(days_back: int = 30, days_forward: int = 7, chunk_days: int = 10, ver
                 nm["home_goals"], nm["away_goals"], nm["raw_json"]
             ],
         )
+
+        # Persist unfolded extras (lineups, formations, bookings, HT scores)
+        extras = nm.get("_extras", {})
+        if extras:
+            _upsert_match_extras_from_api(con, nm["match_id"], nm["competition"], nm["season"], extras)
+
         n += 1
 
         if verbose and i % 100 == 0:
@@ -259,41 +267,6 @@ def refit_poisson(verbose: bool = True) -> dict:
 
     return state
 
-def load_poisson() -> dict:
-    con = connect()
-    row = con.execute("SELECT value FROM poisson_state WHERE key='state'").fetchone()
-    if not row:
-        return {"teams": [], "attack": [], "defense": [], "home_adv": 0.0, "mu": 0.0}
-    return json.loads(row[0])
-
-def backtest_metrics() -> dict:
-    con = connect()
-    df = con.execute(
-        """SELECT p.match_id, p.p_home, p.p_draw, p.p_away,
-                  m.home_goals, m.away_goals
-           FROM predictions p
-           JOIN matches m USING(match_id)
-           WHERE p.model_version=? AND m.status='FINISHED'
-             AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL""",
-        [MODEL_VERSION]
-    ).df()
-
-    if df.empty:
-        return {"n": 0, "logloss": None, "brier": None, "accuracy": None}
-
-    P = df[["p_home", "p_draw", "p_away"]].to_numpy()
-    y = np.array([outcome_label(int(hg), int(ag))
-                  for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
-
-    m = compute_metrics(P, y)
-
-    con.execute(
-        "INSERT OR REPLACE INTO metrics(model_version, n_matches, logloss, brier, accuracy) VALUES (?, ?, ?, ?, ?)",
-        [MODEL_VERSION, int(len(y)), m["logloss"], m["brier"], m["accuracy"]]
-    )
-    return {"n": int(len(y)), **m}
-
-
 # ---------------------------------------------------------------------------
 # Prediction scoring — saves individual prediction outcomes so the model
 # can track its own performance over time and detect degradation.
@@ -348,13 +321,10 @@ def score_finished_predictions(verbose: bool = True) -> dict:
     for match_id, hg, ag, model_version, ph, pd_, pa, eg_h, eg_a, notes in rows:
         outcome = outcome_label(int(hg), int(ag))
         probs = [float(ph), float(pd_), float(pa)]
-        outcome_prob = probs[outcome]
-        predicted = max(range(3), key=lambda i: probs[i])
-
-        ll = -math.log(max(outcome_prob, 1e-15))
-        brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2
-                     for i, p in enumerate(probs)) / 3
-        correct = predicted == outcome
+        s = score_prediction(probs, outcome)
+        ll = s["logloss"]
+        brier = s["brier"]
+        correct = s["correct"]
 
         # Goal prediction accuracy
         goals_mae = None
@@ -537,93 +507,3 @@ def ingest_news_for_teams(days_back: int = 2, max_records: int = 10) -> int:
             break
 
     return n
-
-
-# --- Real test you can run immediately (time-split backtest) ---
-
-# Use consolidated Elo core for all in-memory Elo operations
-from footy.models.elo_core import elo_predict as _elo_predict_core, elo_update as _elo_update_core
-
-def _elo_predict_dict(ratings: dict, home: str, away: str) -> tuple[float, float, float]:
-    return _elo_predict_core(ratings, home, away, home_adv=60.0, draw_base=0.26)
-
-def _elo_update_dict(ratings: dict, home: str, away: str, hg: int, ag: int):
-    _elo_update_core(ratings, home, away, hg, ag, home_adv=60.0, k=20.0)
-
-def backtest_time_split(days: int = 180, test_days: int = 14, verbose: bool = True) -> dict:
-    """
-    Proper chronological backtest:
-    - train = older matches
-    - test = most recent `test_days` of finished matches
-    """
-    con = connect()
-    history_cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    df = con.execute(
-        """SELECT home_team, away_team, home_goals, away_goals, utc_date
-            FROM matches
-            WHERE status='FINISHED'
-              AND home_goals IS NOT NULL AND away_goals IS NOT NULL
-              AND utc_date >= ?
-            ORDER BY utc_date ASC""",
-        [history_cutoff]
-    ).df()
-
-    if df.empty or len(df) < 50:
-        return {"error": "Not enough finished matches in DB yet. Ingest more history or wait for results."}
-
-    df["utc_date"] = pd.to_datetime(df["utc_date"], utc=True)
-    cutoff = df["utc_date"].max() - pd.Timedelta(days=test_days)
-
-    train = df[df["utc_date"] < cutoff].copy()
-    test = df[df["utc_date"] >= cutoff].copy()
-
-    if verbose:
-        log.info("total finished in window: %d", len(df))
-        log.info("train: %d | test: %d | cutoff: %s", len(train), len(test), cutoff)
-
-    if len(train) < 30 or len(test) < 10:
-        return {"error": "Train/test split too small. Increase days or reduce test_days."}
-
-    # Fit Poisson only on TRAIN
-    poisson_state = fit_poisson(train)
-
-    # Build Elo sequentially over TRAIN only
-    ratings: dict[str, float] = {}
-    for _, r in train.iterrows():
-        _elo_update_dict(ratings, r["home_team"], r["away_team"], int(r["home_goals"]), int(r["away_goals"]))
-
-    # Predict TEST
-    P = []
-    y = []
-    for i, r in enumerate(test.itertuples(index=False), start=1):
-        home = r.home_team
-        away = r.away_team
-        hg = int(r.home_goals)
-        ag = int(r.away_goals)
-
-        pE = _elo_predict_dict(ratings, home, away)
-        lam_h, lam_a = expected_goals(poisson_state, home, away)
-        pP = outcome_probs(lam_h, lam_a)
-
-        p_home = 0.45 * pE[0] + 0.55 * pP[0]
-        p_draw = 0.45 * pE[1] + 0.55 * pP[1]
-        p_away = 0.45 * pE[2] + 0.55 * pP[2]
-        ssum = p_home + p_draw + p_away
-        p_home, p_draw, p_away = p_home / ssum, p_draw / ssum, p_away / ssum
-        P.append([p_home, p_draw, p_away])
-
-        y.append(outcome_label(hg, ag))
-
-        if verbose and i % 25 == 0:
-            log.debug("predicted %d/%d…", i, len(test))
-
-        # Update Elo with the *observed* result as we roll forward (realistic sequential backtest)
-        _elo_update_dict(ratings, home, away, hg, ag)
-
-    P = np.array(P, dtype=float)
-    y = np.array(y, dtype=int)
-
-    result = {"n": int(len(y)), **compute_metrics(P, y)}
-    if verbose:
-        log.info("result: %s", result)
-    return result

@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from footy.providers.ratelimit import RateLimiter
+from footy.providers.ratelimit import RateLimiter, TRANSIENT_ERRORS
 from footy.normalize import canonical_team_name
 
 log = logging.getLogger(__name__)
@@ -81,6 +81,9 @@ def _get(path: str, params: dict[str, Any] | None = None) -> dict | list | None:
         except httpx.TimeoutException:
             log.warning("The Odds API timeout (attempt %d)", attempt + 1)
             time.sleep(2)
+        except TRANSIENT_ERRORS as e:
+            log.warning("The Odds API network error (attempt %d): %s", attempt + 1, e)
+            time.sleep(2)
         except httpx.HTTPStatusError as e:
             log.warning("The Odds API HTTP error: %s", e)
             return None
@@ -89,7 +92,7 @@ def _get(path: str, params: dict[str, Any] | None = None) -> dict | list | None:
 
 def fetch_odds(
     competition: str = "PL",
-    markets: str = "h2h,totals",
+    markets: str = "h2h,totals,spreads,btts",
     regions: str = "uk,eu",
 ) -> list[dict]:
     """
@@ -156,6 +159,8 @@ def parse_odds_for_match(
     bookmakers = event.get("bookmakers", [])
     h2h_odds: list[dict] = []
     totals_odds: list[dict] = []
+    spreads_odds: list[dict] = []
+    btts_odds: list[dict] = []
 
     for bm in bookmakers:
         bm_name = bm.get("title", bm.get("key", "unknown"))
@@ -185,6 +190,38 @@ def parse_odds_for_match(
                             "price": price,
                         })
 
+            elif market.get("key") == "spreads":
+                # Asian Handicap — outcomes have "point" (line) and "price"
+                for o in market.get("outcomes", []):
+                    name = o.get("name", "")
+                    point = o.get("point", 0)
+                    price = float(o.get("price", 0))
+                    if name == event.get("home_team"):
+                        spreads_odds.append({
+                            "bookmaker": bm_name,
+                            "side": "home",
+                            "line": point,
+                            "price": price,
+                        })
+                    elif name == event.get("away_team"):
+                        spreads_odds.append({
+                            "bookmaker": bm_name,
+                            "side": "away",
+                            "line": point,
+                            "price": price,
+                        })
+
+            elif market.get("key") == "btts":
+                # Both Teams To Score — outcomes "Yes" and "No"
+                for o in market.get("outcomes", []):
+                    name = o.get("name", "").lower()
+                    price = float(o.get("price", 0))
+                    btts_odds.append({
+                        "bookmaker": bm_name,
+                        "type": name,  # "yes" or "no"
+                        "price": price,
+                    })
+
     # Compute best and average odds
     best_h = max((o["home"] for o in h2h_odds), default=0)
     best_d = max((o["draw"] for o in h2h_odds), default=0)
@@ -196,6 +233,32 @@ def parse_odds_for_match(
     # Best over/under 2.5
     over_25 = max((o["price"] for o in totals_odds if o["type"] == "over"), default=0)
     under_25 = max((o["price"] for o in totals_odds if o["type"] == "under"), default=0)
+
+    # Asian Handicap: most common line, average price per side
+    ah_line = 0.0
+    ah_home = 0.0
+    ah_away = 0.0
+    if spreads_odds:
+        home_sp = [o for o in spreads_odds if o["side"] == "home"]
+        away_sp = [o for o in spreads_odds if o["side"] == "away"]
+        if home_sp:
+            # Use median line across bookmakers
+            lines = sorted(o["line"] for o in home_sp)
+            ah_line = lines[len(lines) // 2]
+            ah_home = sum(o["price"] for o in home_sp) / len(home_sp)
+        if away_sp:
+            ah_away = sum(o["price"] for o in away_sp) / len(away_sp)
+
+    # BTTS: average odds
+    btts_yes = 0.0
+    btts_no = 0.0
+    if btts_odds:
+        yes_odds = [o["price"] for o in btts_odds if o["type"] == "yes"]
+        no_odds = [o["price"] for o in btts_odds if o["type"] == "no"]
+        if yes_odds:
+            btts_yes = sum(yes_odds) / len(yes_odds)
+        if no_odds:
+            btts_no = sum(no_odds) / len(no_odds)
 
     return {
         "home_team": home,
@@ -211,6 +274,8 @@ def parse_odds_for_match(
         "n_bookmakers": len(h2h_odds),
         "odds_details": h2h_odds,
         "totals": {"over_25": over_25, "under_25": under_25},
+        "spreads": {"ah_line": ah_line, "ah_home": ah_home, "ah_away": ah_away},
+        "btts": {"yes": btts_yes, "no": btts_no},
     }
 
 
@@ -275,6 +340,9 @@ def ingest_odds_to_db(con, competitions: list[str] | None = None, verbose: bool 
                 [best_match]
             ).fetchone()
 
+            ah = parsed.get("spreads", {})
+            btts = parsed.get("btts", {})
+
             if existing:
                 con.execute("""
                     UPDATE match_extras SET
@@ -283,22 +351,33 @@ def ingest_odds_to_db(con, competitions: list[str] | None = None, verbose: bool 
                         avga = COALESCE(avga, ?),
                         maxh = COALESCE(maxh, ?),
                         maxd = COALESCE(maxd, ?),
-                        maxa = COALESCE(maxa, ?)
+                        maxa = COALESCE(maxa, ?),
+                        odds_ah_line = COALESCE(?, odds_ah_line),
+                        odds_ah_home = COALESCE(?, odds_ah_home),
+                        odds_ah_away = COALESCE(?, odds_ah_away),
+                        odds_btts_yes = COALESCE(?, odds_btts_yes),
+                        odds_btts_no = COALESCE(?, odds_btts_no)
                     WHERE match_id = ?
                 """, [
                     parsed["avg_h"], parsed["avg_d"], parsed["avg_a"],
                     parsed["best_h"], parsed["best_d"], parsed["best_a"],
+                    ah.get("ah_line") or None, ah.get("ah_home") or None, ah.get("ah_away") or None,
+                    btts.get("yes") or None, btts.get("no") or None,
                     best_match,
                 ])
             else:
                 con.execute("""
                     INSERT INTO match_extras (match_id, provider, avgh, avgd, avga,
-                                              maxh, maxd, maxa)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                              maxh, maxd, maxa,
+                                              odds_ah_line, odds_ah_home, odds_ah_away,
+                                              odds_btts_yes, odds_btts_no)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [
                     best_match, "the-odds-api",
                     parsed["avg_h"], parsed["avg_d"], parsed["avg_a"],
                     parsed["best_h"], parsed["best_d"], parsed["best_a"],
+                    ah.get("ah_line") or None, ah.get("ah_home") or None, ah.get("ah_away") or None,
+                    btts.get("yes") or None, btts.get("no") or None,
                 ])
             matched += 1
         except Exception as e:

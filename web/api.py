@@ -9,10 +9,10 @@ Serves:
 from __future__ import annotations
 
 import json
-import os
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
+
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -25,19 +25,13 @@ from footy.normalize import canonical_team_name
 from footy.config import settings as get_settings
 from footy.xg import compute_xg_advanced, learn_conversion_rates
 
+log = logging.getLogger(__name__)
 settings = get_settings()
 
 WEB_DIR = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
-# ---------------------------------------------------------------------------
-# App lifespan
-# ---------------------------------------------------------------------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield  # no persistent DB connection — opened per-request instead
-
-app = FastAPI(title="Footy Predictor", lifespan=lifespan)
+app = FastAPI(title="Footy Predictor")
 
 # CORS — allow browser requests from any origin (single-user tool)
 from starlette.middleware.cors import CORSMiddleware
@@ -77,8 +71,7 @@ def con() -> duckdb.DuckDBPyConnection:
             return duckdb.connect(settings.db_path, read_only=True)
         except duckdb.IOException:
             if attempt < 2:
-                import time as _t
-                _t.sleep(0.5)
+                time.sleep(0.5)
     # Last attempt — let it raise
     return duckdb.connect(settings.db_path, read_only=True)
 
@@ -109,7 +102,7 @@ async def api_matches(days: int = 7, model: str = "v10_council"):
         SELECT m.match_id, m.utc_date, m.competition,
                m.home_team, m.away_team,
                p.p_home, p.p_draw, p.p_away,
-               p.eg_home, p.eg_away
+               p.eg_home, p.eg_away, p.notes
         FROM matches m
         LEFT JOIN predictions p ON p.match_id = m.match_id AND p.model_version = ?
         WHERE m.status IN ('SCHEDULED','TIMED')
@@ -119,6 +112,17 @@ async def api_matches(days: int = 7, model: str = "v10_council"):
 
     matches = []
     for r in rows:
+        btts = None
+        o25 = None
+        predicted_score = None
+        try:
+            notes = json.loads(r[10]) if r[10] else {}
+            if isinstance(notes, dict):
+                btts = notes.get("btts")
+                o25 = notes.get("o25")
+                predicted_score = notes.get("predicted_score")
+        except (json.JSONDecodeError, TypeError):
+            pass
         matches.append({
             "match_id": r[0], "utc_date": str(r[1])[:16],
             "competition": r[2], "home_team": r[3], "away_team": r[4],
@@ -127,6 +131,9 @@ async def api_matches(days: int = 7, model: str = "v10_council"):
             "p_away": round(float(r[7]), 3) if r[7] else None,
             "eg_home": round(float(r[8]), 2) if r[8] else None,
             "eg_away": round(float(r[9]), 2) if r[9] else None,
+            "btts": round(float(btts), 3) if btts is not None else None,
+            "o25": round(float(o25), 3) if o25 is not None else None,
+            "predicted_score": predicted_score,
         })
     return {"matches": matches, "model": model}
 
@@ -154,6 +161,8 @@ async def api_match_detail(match_id: int, model: str = "v10_council"):
 
     prediction = None
     poisson_stats = None
+    model_analysis = None
+    expert_summary = None
     if pred_row:
         prediction = {
             "p_home": round(float(pred_row[0]), 3),
@@ -162,13 +171,15 @@ async def api_match_detail(match_id: int, model: str = "v10_council"):
             "eg_home": round(float(pred_row[3]), 2) if pred_row[3] else None,
             "eg_away": round(float(pred_row[4]), 2) if pred_row[4] else None,
         }
-        # Parse Poisson stats from notes JSON
+        # Parse all model data from notes JSON
         try:
             notes = json.loads(pred_row[5]) if pred_row[5] else {}
             if isinstance(notes, dict) and "btts" in notes:
                 poisson_stats = {
                     "btts": notes.get("btts"),
                     "o25": notes.get("o25"),
+                    "btts_poisson": notes.get("btts_poisson"),
+                    "o25_poisson": notes.get("o25_poisson"),
                     "predicted_score": notes.get("predicted_score"),
                     "lambda_home": notes.get("lambda_home"),
                     "lambda_away": notes.get("lambda_away"),
@@ -180,6 +191,31 @@ async def api_match_detail(match_id: int, model: str = "v10_council"):
                     "mc_btts": notes.get("mc_btts"),
                     "mc_o25": notes.get("mc_o25"),
                 }
+                # v11: Multi-model analysis
+                model_analysis = {
+                    # Bivariate Poisson (Karlis & Ntzoufras 2003)
+                    "bp_home": notes.get("bp_home"),
+                    "bp_draw": notes.get("bp_draw"),
+                    "bp_btts": notes.get("bp_btts"),
+                    "bp_o25": notes.get("bp_o25"),
+                    # Frank Copula (full-scoreline dependency)
+                    "cop_home": notes.get("cop_home"),
+                    "cop_draw": notes.get("cop_draw"),
+                    "cop_btts": notes.get("cop_btts"),
+                    "cop_o25": notes.get("cop_o25"),
+                    # COM-Poisson (dispersion-aware)
+                    "cmp_home": notes.get("cmp_home"),
+                    "cmp_disp_h": notes.get("cmp_disp_h"),
+                    "cmp_disp_a": notes.get("cmp_disp_a"),
+                    # Bradley-Terry
+                    "bt_home": notes.get("bt_home"),
+                    "bt_draw": notes.get("bt_draw"),
+                    "bt_away": notes.get("bt_away"),
+                    # Skellam
+                    "sk_expected_gd": notes.get("sk_expected_gd"),
+                }
+                # Expert breakdown summary (inline in notes)
+                expert_summary = notes.get("experts")
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -220,12 +256,36 @@ async def api_match_detail(match_id: int, model: str = "v10_council"):
             "correct": bool(score_row[3]),
         }
 
+    # Opta predictions
+    opta = None
+    try:
+        from footy.providers.opta_analyst import ensure_opta_table
+        ensure_opta_table(db)
+        opta_row = db.execute(
+            "SELECT home_win, draw, away_win, source_url, scraped_at "
+            "FROM opta_predictions WHERE match_key LIKE ? ORDER BY scraped_at DESC LIMIT 1",
+            [f"%{home_c}%{away_c}%"]
+        ).fetchone()
+        if opta_row and opta_row[0]:
+            opta = {
+                "home_win": round(float(opta_row[0]), 3),
+                "draw": round(float(opta_row[1]), 3),
+                "away_win": round(float(opta_row[2]), 3),
+                "source": opta_row[3],
+                "scraped_at": str(opta_row[4])[:19] if opta_row[4] else None,
+            }
+    except Exception:
+        pass
+
     return {
         "match_id": row[0], "utc_date": str(row[1])[:16],
         "competition": row[2], "home_team": row[3], "away_team": row[4],
         "status": row[5], "home_goals": row[6], "away_goals": row[7],
         "prediction": prediction,
         "poisson": poisson_stats,
+        "model_analysis": model_analysis,
+        "expert_summary": expert_summary,
+        "opta": opta,
         "odds": odds,
         "elo": {
             "home": round(float(elo_h[0]), 0) if elo_h else None,
@@ -498,10 +558,14 @@ async def api_patterns(match_id: int, n: int = 10):
 async def api_ai_narrative(match_id: int):
     """Generate AI narrative for a match using Ollama + expert breakdown."""
     try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy — pipeline running. Try again shortly."}, 503)
+    try:
         from footy.models.council import get_expert_breakdown
         from footy.llm.ollama_client import chat
 
-        bd = get_expert_breakdown(con(), match_id)
+        bd = get_expert_breakdown(db, match_id)
         if not bd:
             return {"narrative": None, "available": False}
 
@@ -515,7 +579,7 @@ async def api_ai_narrative(match_id: int):
             )
 
         # Get the council's final prediction
-        pred = con().execute(
+        pred = db.execute(
             "SELECT p_home, p_draw, p_away FROM predictions "
             "WHERE match_id=? AND model_version='v10_council'",
             [match_id]
@@ -997,3 +1061,59 @@ async def api_last_updated():
         "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v10_council'"
     ).fetchone()
     return {"last_updated": str(row[0])[:19] if row and row[0] else None}
+
+
+# ---------------------------------------------------------------------------
+# API — Opta Analyst Predictions
+# ---------------------------------------------------------------------------
+@app.get("/api/opta")
+async def api_opta():
+    """Return all cached Opta Analyst predictions."""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy"}, 503)
+    try:
+        from footy.providers.opta_analyst import get_cached_predictions
+        preds = get_cached_predictions(db)
+        return {"predictions": preds}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+
+@app.get("/api/matches/{match_id}/opta")
+async def api_match_opta(match_id: int):
+    """Get Opta prediction for a specific match."""
+    try:
+        db = con()
+    except duckdb.IOException:
+        return JSONResponse({"error": "Database busy"}, 503)
+
+    row = db.execute(
+        "SELECT home_team, away_team FROM matches WHERE match_id=?", [match_id]
+    ).fetchone()
+    if not row:
+        return JSONResponse({"error": "Match not found"}, 404)
+
+    home = canonical_team_name(row[0])
+    away = canonical_team_name(row[1])
+
+    try:
+        from footy.providers.opta_analyst import ensure_opta_table
+        ensure_opta_table(db)
+        opta_row = db.execute(
+            "SELECT home_win, draw, away_win, source_url, scraped_at "
+            "FROM opta_predictions WHERE match_key LIKE ? ORDER BY scraped_at DESC LIMIT 1",
+            [f"%{home}%{away}%"]
+        ).fetchone()
+        if opta_row and opta_row[0]:
+            return {
+                "home_win": round(float(opta_row[0]), 3),
+                "draw": round(float(opta_row[1]), 3),
+                "away_win": round(float(opta_row[2]), 3),
+                "source": opta_row[3],
+                "scraped_at": str(opta_row[4])[:19] if opta_row[4] else None,
+            }
+        return {"home_win": None, "draw": None, "away_win": None}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)

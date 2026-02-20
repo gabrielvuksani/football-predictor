@@ -9,7 +9,7 @@ import math
 import httpx
 
 from footy.config import settings
-from footy.providers.ratelimit import RateLimiter
+from footy.providers.ratelimit import RateLimiter, TRANSIENT_ERRORS
 from footy.normalize import canonical_team_name
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,14 @@ _RETRY_BACKOFF = (2.0, 5.0, 10.0)  # seconds
 def _client():
     s = settings()
     return httpx.Client(
-        headers={"X-Auth-Token": s.football_data_org_token},
+        headers={
+            "X-Auth-Token": s.football_data_org_token,
+            # X-Unfold headers — free tier provides expanded match detail
+            "X-Unfold-Goals": "true",
+            "X-Unfold-Lineups": "true",
+            "X-Unfold-Bookings": "true",
+            "X-Unfold-Subs": "true",
+        },
         timeout=30.0
     )
 
@@ -53,6 +60,10 @@ def fetch_matches(date_from: date, date_to_exclusive: date) -> dict:
         except httpx.TimeoutException:
             wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
             log.warning("football-data.org timeout, retrying in %.1fs", wait)
+            time.sleep(wait)
+        except TRANSIENT_ERRORS as exc:
+            wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+            log.warning("football-data.org network error (%s), retrying in %.1fs", exc, wait)
             time.sleep(wait)
         except httpx.HTTPStatusError:
             raise
@@ -104,7 +115,39 @@ def normalize_match(m: dict) -> dict:
     away_goals = score.get("away")
     comp = (m.get("competition") or {}).get("code")
     season = (m.get("season") or {}).get("startDate", "")[:4]
-    return {
+
+    # Half-time score (from score block, not stats)
+    ht = (m.get("score") or {}).get("halfTime") or {}
+    hthg = ht.get("home")
+    htag = ht.get("away")
+
+    # Extract lineups/formations if unfolded
+    homeLineup = m.get("homeTeam", {}).get("lineup") or []
+    awayLineup = m.get("awayTeam", {}).get("lineup") or []
+    formation_home = m.get("homeTeam", {}).get("formation")
+    formation_away = m.get("awayTeam", {}).get("formation")
+
+    lineup_home_str = json.dumps([
+        {"name": p.get("name"), "position": p.get("position"), "shirtNumber": p.get("shirtNumber")}
+        for p in homeLineup
+    ]) if homeLineup else None
+    lineup_away_str = json.dumps([
+        {"name": p.get("name"), "position": p.get("position"), "shirtNumber": p.get("shirtNumber")}
+        for p in awayLineup
+    ]) if awayLineup else None
+
+    # Extract booking counts from unfolded data
+    bookings = m.get("bookings") or []
+    hy = sum(1 for b in bookings if b.get("card") == "YELLOW_CARD"
+             and (b.get("team") or {}).get("id") == (m.get("homeTeam") or {}).get("id"))
+    ay = sum(1 for b in bookings if b.get("card") == "YELLOW_CARD"
+             and (b.get("team") or {}).get("id") == (m.get("awayTeam") or {}).get("id"))
+    hr = sum(1 for b in bookings if b.get("card") == "RED_CARD"
+             and (b.get("team") or {}).get("id") == (m.get("homeTeam") or {}).get("id"))
+    ar = sum(1 for b in bookings if b.get("card") == "RED_CARD"
+             and (b.get("team") or {}).get("id") == (m.get("awayTeam") or {}).get("id"))
+
+    result = {
         "match_id": int(m["id"]),
         "provider": "football-data.org",
         "competition": comp,
@@ -117,3 +160,26 @@ def normalize_match(m: dict) -> dict:
         "away_goals": away_goals,
         "raw_json": json.dumps(m),
     }
+
+    # Extra fields for match_extras upsert (only if data is present)
+    extras = {}
+    if hthg is not None:
+        extras["hthg"] = hthg
+    if htag is not None:
+        extras["htag"] = htag
+    if formation_home:
+        extras["formation_home"] = formation_home
+    if formation_away:
+        extras["formation_away"] = formation_away
+    if lineup_home_str:
+        extras["lineup_home"] = lineup_home_str
+    if lineup_away_str:
+        extras["lineup_away"] = lineup_away_str
+    if bookings:
+        extras["hy"] = hy
+        extras["ay"] = ay
+        extras["hr"] = hr
+        extras["ar"] = ar
+
+    result["_extras"] = extras
+    return result

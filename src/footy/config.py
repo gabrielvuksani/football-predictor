@@ -19,7 +19,6 @@ class Settings:
     db_path: str
 
     thesportsdb_key: str | None
-    sportapi_ai_key: str | None
     the_odds_api_key: str | None
 
     ollama_host: str
@@ -53,7 +52,6 @@ def settings() -> Settings:
         lookahead_days=int(_get("LOOKAHEAD_DAYS", "7") or "7"),
         db_path=_get("DB_PATH", "./data/footy.duckdb") or "./data/footy.duckdb",
         thesportsdb_key=_get("THESPORTSDB_KEY"),
-        sportapi_ai_key=_get("SPORTAPI_AI_KEY"),
         the_odds_api_key=_get("THE_ODDS_API_KEY"),
         ollama_host=_get("OLLAMA_HOST", "http://localhost:11434") or "http://localhost:11434",
         ollama_model=_get("OLLAMA_MODEL", "llama3.2:3b") or "llama3.2:3b",

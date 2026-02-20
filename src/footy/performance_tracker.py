@@ -14,9 +14,9 @@ Features:
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-import math
 
 from footy.db import connect
+from footy.utils import score_prediction
 
 
 class PerformanceTracker:
@@ -137,28 +137,24 @@ class PerformanceTracker:
         
         for outcome, p_home, p_draw, p_away, competition in rows:
             probs = [p_home, p_draw, p_away]
-            outcome_prob = probs[outcome]
+            s = score_prediction(probs, outcome)
             
             outcomes.append(outcome)
             probabilities.append((outcome, probs))
             
-            predicted_outcome = max(range(3), key=lambda i: probs[i])
-            if predicted_outcome == outcome:
+            if s["correct"]:
                 n_correct += 1
             
             outcome_counts[outcome] += 1
             
             # Log Loss
-            logloss = -math.log(max(outcome_prob, 1e-15))
-            total_logloss += logloss
+            total_logloss += s["logloss"]
             
             # Brier Score
-            brier = sum((p - (1.0 if i == outcome else 0.0)) ** 2 for i, p in enumerate(probs)) / 3
-            total_brier += brier
+            total_brier += s["brier"]
             
             # Track by outcome for accuracy breakdown
-            predicted_outcome = max(range(3), key=lambda i: probs[i])
-            if predicted_outcome == outcome:
+            if s["correct"]:
                 outcome_correct_counts[outcome] += 1
             
             # Track by competition

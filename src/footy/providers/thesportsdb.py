@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from footy.providers.ratelimit import RateLimiter
+from footy.providers.ratelimit import RateLimiter, TRANSIENT_ERRORS
 from footy.normalize import canonical_team_name
 
 log = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def _get(path: str) -> dict | None:
                 log.debug("TheSportsDB %d: %s", r.status_code, path)
                 return None
             return r.json()
-        except (httpx.TimeoutException, httpx.HTTPError) as e:
+        except TRANSIENT_ERRORS as e:
             log.warning("TheSportsDB error (attempt %d): %s", attempt + 1, e)
             time.sleep(2)
     return None
@@ -148,29 +148,6 @@ def get_next_events(team_name: str, n: int = 5) -> list[dict]:
             "away_team": ev.get("strAwayTeam"),
             "venue": ev.get("strVenue"),
             "league": ev.get("strLeague"),
-        })
-    return events
-
-
-def get_league_next_events(competition: str = "PL") -> list[dict]:
-    """Get next events for an entire league."""
-    league_id = LEAGUE_IDS.get(competition)
-    if not league_id:
-        return []
-
-    data = _get(f"eventsnextleague.php?id={league_id}")
-    if not data or not data.get("events"):
-        return []
-
-    events = []
-    for ev in data["events"]:
-        events.append({
-            "event_id": ev.get("idEvent"),
-            "date": ev.get("dateEvent"),
-            "time": ev.get("strTime"),
-            "home_team": canonical_team_name(ev.get("strHomeTeam")),
-            "away_team": canonical_team_name(ev.get("strAwayTeam")),
-            "venue": ev.get("strVenue"),
         })
     return events
 

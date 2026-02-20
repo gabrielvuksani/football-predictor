@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from footy.providers.ratelimit import RateLimiter
+from footy.providers.ratelimit import RateLimiter, TRANSIENT_ERRORS
 from footy.normalize import canonical_team_name
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def _get(path: str) -> dict | list | None:
                 log.debug("FPL API %d: %s", r.status_code, path)
                 return None
             return r.json()
-        except (httpx.TimeoutException, httpx.HTTPError) as e:
+        except TRANSIENT_ERRORS as e:
             log.warning("FPL API error (attempt %d): %s", attempt + 1, e)
             import time
             time.sleep(2)

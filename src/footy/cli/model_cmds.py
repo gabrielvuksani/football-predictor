@@ -33,16 +33,19 @@ def predict():
 
 @app.command()
 def metrics():
-    """Show backtest accuracy metrics."""
-    m = _pipeline().backtest_metrics()
+    """Show scored prediction metrics."""
+    m = _pipeline().score_finished_predictions(verbose=True)
     console.print(m)
 
 
 @app.command()
-def backtest(days: int = 180, test_days: int = 14):
-    """Walk-forward backtest with time-split evaluation."""
-    r = _pipeline().backtest_time_split(days=days, test_days=test_days, verbose=True)
-    console.print(r)
+def backtest(days: int = 365, test_days: int = 28):
+    """Walk-forward backtest using the v10 council model."""
+    from footy.db import connect
+    from footy.walkforward import walk_forward_cv
+    con = connect()
+    results = walk_forward_cv(con, n_splits=4, verbose=True)
+    console.print(results)
 
 
 @app.command()

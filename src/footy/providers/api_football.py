@@ -320,6 +320,166 @@ def fetch_injuries(fixture_id: int) -> Dict[str, Any]:
     except Exception:
         return {"response": []}
 
+def fetch_fixture_statistics(fixture_id: int) -> Dict[str, Any]:
+    """
+    Fetch per-team statistics for a fixture from /fixtures/statistics.
+
+    Returns response with stats like possession, shots, xG, passes, etc.
+    """
+    af = client_from_env()
+    try:
+        return af.get("/fixtures/statistics", {"fixture": int(fixture_id)})
+    except Exception:
+        return {"response": []}
+
+
+def fetch_fixture_lineups(fixture_id: int) -> Dict[str, Any]:
+    """
+    Fetch starting lineups and formations from /fixtures/lineups.
+
+    Returns response with formation, startXI, substitutes per team.
+    """
+    af = client_from_env()
+    try:
+        return af.get("/fixtures/lineups", {"fixture": int(fixture_id)})
+    except Exception:
+        return {"response": []}
+
+
+def fetch_h2h(home_id: int, away_id: int, last: int = 10) -> Dict[str, Any]:
+    """
+    Fetch head-to-head history from /fixtures/headtohead.
+
+    Parameters:
+        home_id, away_id: API-Football team IDs
+        last: number of past meetings to retrieve
+    """
+    af = client_from_env()
+    try:
+        return af.get("/fixtures/headtohead", {
+            "h2h": f"{home_id}-{away_id}",
+            "last": last,
+        })
+    except Exception:
+        return {"response": []}
+
+
+def _extract_stat(team_stats: list, stat_type: str) -> Any:
+    """Extract a specific stat value from API-Football statistics response."""
+    for s in team_stats:
+        if s.get("type") == stat_type:
+            return s.get("value")
+    return None
+
+
+def enrich_match_extras_from_af(con, match_id: int, fixture_id: int, verbose: bool = False) -> bool:
+    """
+    Fetch statistics + lineups from API-Football and persist to match_extras.
+
+    Enriches: af_xg_home, af_xg_away, af_possession_home, af_possession_away,
+              af_stats_json, formation_home, formation_away, lineup_home, lineup_away
+    """
+    try:
+        stats_data = fetch_fixture_statistics(fixture_id)
+        lineups_data = fetch_fixture_lineups(fixture_id)
+    except Exception as e:
+        if verbose:
+            print(f"[af] enrich failed for fixture {fixture_id}: {e}")
+        return False
+
+    updates: Dict[str, Any] = {}
+
+    # Parse statistics
+    stats_resp = stats_data.get("response", []) or []
+    if len(stats_resp) >= 2:
+        home_stats = stats_resp[0].get("statistics", []) or []
+        away_stats = stats_resp[1].get("statistics", []) or []
+
+        # xG
+        xg_h = _extract_stat(home_stats, "expected_goals")
+        xg_a = _extract_stat(away_stats, "expected_goals")
+        if xg_h is not None:
+            try:
+                updates["af_xg_home"] = float(str(xg_h).replace("%", ""))
+            except (ValueError, TypeError):
+                pass
+        if xg_a is not None:
+            try:
+                updates["af_xg_away"] = float(str(xg_a).replace("%", ""))
+            except (ValueError, TypeError):
+                pass
+
+        # Possession
+        poss_h = _extract_stat(home_stats, "Ball Possession")
+        poss_a = _extract_stat(away_stats, "Ball Possession")
+        if poss_h is not None:
+            try:
+                updates["af_possession_home"] = float(str(poss_h).replace("%", ""))
+            except (ValueError, TypeError):
+                pass
+        if poss_a is not None:
+            try:
+                updates["af_possession_away"] = float(str(poss_a).replace("%", ""))
+            except (ValueError, TypeError):
+                pass
+
+        # Store full stats JSON for future feature extraction
+        updates["af_stats_json"] = json.dumps({
+            "home": {s.get("type"): s.get("value") for s in home_stats},
+            "away": {s.get("type"): s.get("value") for s in away_stats},
+        })
+
+    # Parse lineups
+    lineups_resp = lineups_data.get("response", []) or []
+    if len(lineups_resp) >= 2:
+        home_lineup = lineups_resp[0]
+        away_lineup = lineups_resp[1]
+
+        form_h = home_lineup.get("formation")
+        form_a = away_lineup.get("formation")
+        if form_h:
+            updates["formation_home"] = form_h
+        if form_a:
+            updates["formation_away"] = form_a
+
+        start_h = home_lineup.get("startXI", []) or []
+        start_a = away_lineup.get("startXI", []) or []
+        if start_h:
+            updates["lineup_home"] = json.dumps([
+                {"name": (p.get("player") or {}).get("name"), "pos": (p.get("player") or {}).get("pos")}
+                for p in start_h
+            ])
+        if start_a:
+            updates["lineup_away"] = json.dumps([
+                {"name": (p.get("player") or {}).get("name"), "pos": (p.get("player") or {}).get("pos")}
+                for p in start_a
+            ])
+
+    if not updates:
+        return False
+
+    # Upsert into match_extras
+    existing = con.execute(
+        "SELECT match_id FROM match_extras WHERE match_id = ?", [match_id]
+    ).fetchone()
+
+    if existing:
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        con.execute(
+            f"UPDATE match_extras SET {set_clause} WHERE match_id = ?",
+            list(updates.values()) + [match_id],
+        )
+    else:
+        cols = ["match_id", "provider"] + list(updates.keys())
+        placeholders = ", ".join(["?"] * len(cols))
+        con.execute(
+            f"INSERT INTO match_extras ({', '.join(cols)}) VALUES ({placeholders})",
+            [match_id, "api-football"] + list(updates.values()),
+        )
+
+    if verbose:
+        print(f"[af] enriched match {match_id} with {len(updates)} fields")
+    return True
 
 def upsert_context(con, stale_hours: int = 6, verbose: bool = True) -> int:
     """
@@ -401,6 +561,14 @@ def upsert_context(con, stale_hours: int = 6, verbose: bool = True) -> int:
                 None,
             ],
         )
+
+        # Also enrich match_extras with stats/lineups (non-fatal)
+        try:
+            enrich_match_extras_from_af(con, mid, fid, verbose=verbose)
+        except Exception as e:
+            if verbose:
+                print(f"[af] enrich extras failed for {mid}: {e}")
+
         wrote += 1
         if verbose and wrote % 10 == 0:
             print(f"[af] context saved {wrote}/{len(rows)} ...", flush=True)

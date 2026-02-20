@@ -2,20 +2,27 @@
 
 ML-powered football match prediction system with an **11-expert AI council**, research-backed mathematical models, multi-model stacking with learned weights, walk-forward validation, continuous retraining, FastAPI backend, and dark-mode frontend.
 
-Current Version: **v10\_council** (v0.0.2b4 - Untested)
+Current Version: **v10\_council** (v0.0.2b4 — v11 upgrade)
 
-## Highlights — v10 Council
+## Highlights — v10 Council (v11 Upgrade)
 
 - **11 specialist experts** (was 9): added BayesianRateExpert + InjuryAvailabilityExpert
 - **Dixon-Coles τ correction** for low-scoring match bias
+- **MLE-estimated ρ** per competition via `scipy.optimize.minimize_scalar` (re-estimated every 200 matches)
 - **Monte Carlo simulation** (2 000 DC-correlated draws) for BTTS / O2.5 / scoreline distributions
 - **Skellam distribution** for exact goal-difference probabilities
-- **Beta-Binomial Bayesian shrinkage** for noisy rate estimates (win rate, CS, BTTS)
+- **Beta-Binomial Bayesian shrinkage** for noisy rate estimates (win rate, CS, BTTS, O2.5)
 - **Learned stacking weights** via Nelder-Mead optimisation on validation logloss (replaces fixed 60/25/15)
 - **KL divergence** per expert vs ensemble mean for disagreement signalling
-- **Logit-space market analysis**, Shannon entropy, Pinnacle-specific features
-- **Schedule difficulty** and **shot conversion** in FormExpert
-- **286 unit/integration tests** passing (scheduler, training manager, math, experts, API)
+- **Asian Handicap + BTTS markets** from The Odds API (8 new MarketExpert features)
+- **Real xG from API-Football** as first-priority method in xG computation chain
+- **14-feature InjuryAvailabilityExpert** reading FPL injuries/availability/FDR + API-Football injury counts
+- **Walk-forward CV deployment gating** with configurable logloss/accuracy thresholds
+- **Feature-count validation** at predict time (auto-pad/truncate to match training dimensions)
+- **FPL data persistence** to `fpl_availability` + `fpl_fixture_difficulty` tables
+- **Composite schedule difficulty** with exponential decay, variance penalty, max-opponent consideration
+- **football-data.org X-Unfold headers** for HT scores, formations, lineups, bookings
+- **API-Football enrichment** — statistics, lineups, H2H endpoints integrated
 
 ## Leagues Tracked
 
@@ -223,8 +230,9 @@ Layer 1 — ELEVEN SPECIALIST EXPERTS
 │ Bayesian     │   Injury     │              │
 │ Rate Expert  │ Availability │              │
 │ Beta-Binom   │ FPL injuries │              │
-│ shrinkage    │ fixture      │              │
-│ (18 feats)   │ difficulty   │              │
+│ shrinkage    │ AF injuries, │              │
+│ (18 feats)   │ FDR, squad   │              │
+│              │ strength (14)│              │
 └──────────────┴──────────────┴──────────────┘
                      ↓
 Layer 2 — CONFLICT & CONSENSUS SIGNALS
@@ -239,11 +247,12 @@ Layer 3 — MULTI-MODEL STACK (META-LEARNER)
   HistGradientBoosting + RandomForest + LogisticRegression
   Weights learned via Nelder-Mead on validation logloss
   Each wrapped in isotonic calibration (cv=5)
-  → ~250+ features → P(Home, Draw, Away)
+  → ~270+ features → P(Home, Draw, Away)
                      ↓
-Layer 4 — WALK-FORWARD VALIDATION
+Layer 4 — WALK-FORWARD VALIDATION + DEPLOYMENT GATING
   4-fold expanding-window temporal CV
   Per-fold: logloss, brier, accuracy, ECE
+  Deployment gate: logloss < 1.05, accuracy > 0.38
   Feature importance stability analysis
 ```
 
@@ -253,15 +262,17 @@ Layer 4 — WALK-FORWARD VALIDATION
 |--------|--------|-------|
 | Beta-Binomial shrinkage | `advanced_math.py` | Noisy rate estimation (win rate, CS, BTTS, O2.5) |
 | Dixon-Coles τ correction | `advanced_math.py` | Low-score joint probability adjustment |
+| MLE ρ estimation | `advanced_math.py` | Per-competition Dixon-Coles ρ via bounded Brent optimisation |
 | Skellam distribution | `advanced_math.py` | Goal-difference probabilities from Poisson rates |
 | Monte Carlo simulation | `advanced_math.py` | 2000 DC-correlated draws → P(BTTS), P(O2.5), etc. |
+| Composite schedule difficulty | `advanced_math.py` | Exp-decay weighted mean + variance penalty + max-opponent |
 | Logit-space operations | `advanced_math.py` | Market probability analysis in log-odds space |
 | Adaptive EWMA | `advanced_math.py` | Time-weighted exponential moving averages |
 | KL divergence | `advanced_math.py` | Expert disagreement quantification |
 | Shannon entropy | `advanced_math.py` | Market uncertainty measurement |
 | Nelder-Mead optimisation | `council.py` | Stacking weight learning on validation set |
 | Isotonic calibration | `council.py` | Probability calibration per base model |
-| Walk-forward CV | `walkforward.py` | Temporal cross-validation (no future leakage) |
+| Walk-forward CV | `walkforward.py` | Temporal cross-validation with deployment gating |
 
 ## API Endpoints
 
@@ -313,7 +324,7 @@ FOOTBALL_DATA_ORG_TOKEN=your_token_here
 API_FOOTBALL_KEY=your_key_here          # optional but recommended
 
 # Optional data providers (all free)
-THE_ODDS_API_KEY=                        # multi-bookmaker market odds
+THE_ODDS_API_KEY=                        # multi-bookmaker odds (h2h, totals, AH, BTTS)
 THESPORTSDB_KEY=3                        # team metadata (default: 3 = free dev key)
 
 # AI
@@ -324,6 +335,11 @@ OLLAMA_MODEL=llama3.2:3b
 TRACKED_COMPETITIONS=PL,PD,SA,BL1,FL1
 LOOKAHEAD_DAYS=7
 DB_PATH=./data/footy.duckdb
+
+# Walk-forward CV deployment gates (optional)
+WF_LOGLOSS_GATE=1.05                    # max acceptable WF-CV logloss
+WF_ACCURACY_GATE=0.38                   # min acceptable WF-CV accuracy
+WF_MIN_FOLDS=3                          # min folds required for gating
 ```
 
 ## Database
@@ -333,7 +349,7 @@ DuckDB at `data/footy.duckdb`:
 | Table | Description |
 |-------|-------------|
 | matches | All fixtures (finished + upcoming) |
-| match\_extras | Odds + stats (shots, corners, cards) |
+| match\_extras | Odds + stats (shots, corners, cards, AH, BTTS, formations, lineups, AF xG/possession) |
 | match\_xg | Expected goals per match |
 | predictions | Model predictions per match per version |
 | prediction\_scores | Scored predictions with accuracy metrics |
@@ -342,6 +358,8 @@ DuckDB at `data/footy.duckdb`:
 | poisson\_state | Fitted Poisson parameters |
 | h2h\_stats | Head-to-head stats (any venue) |
 | h2h\_venue\_stats | Head-to-head stats (specific venue) |
+| fpl\_availability | FPL injury/availability per team (squad strength, injury score) |
+| fpl\_fixture\_difficulty | FPL fixture difficulty ratings (FDR next 3/6 matches) |
 | news | Team news headlines |
 | expert\_cache | Cached expert council breakdowns |
 | llm\_insights | LLM-generated match narratives |
@@ -531,5 +549,6 @@ v1 (Poisson)
             └─► v4 (Expert council v1)
                  └─► v5 (Ultimate ensemble)
                       └─► v8 (9-expert council)
-                           └─► v10 (11-expert council + learned weights + DC/MC/Skellam)  ◄── current
+                           └─► v10 (11-expert council + learned weights + DC/MC/Skellam)
+                                └─► v11 upgrade (MLE ρ, real xG, AH+BTTS, FPL persist, WF-CV gate)  ◄── current
 ```

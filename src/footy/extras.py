@@ -99,19 +99,25 @@ def ingest_extras_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
 
             before = inserted
 
-            # Iterate using safe column names (no _dt/_home/_away attributes)
-            for r in dfm.itertuples(index=False):
-                row = r._asdict()
+            # Use iterrows() — itertuples()._asdict() mangles cols with >/<
+            for _, row in dfm.iterrows():
                 utc_date = row["utc_date"]
                 home_team = row["home_team"]
                 away_team = row["away_team"]
 
                 mid = _match_id(season_code, d.competition, utc_date, home_team, away_team)
 
-                def g(col):  # safe getter
-                    return row.get(col, None)
+                def g(col):  # safe getter — preserves original column names
+                    v = row.get(col)
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        return None
+                    return v
 
-                raw = {c: row.get(c) for c in (["Date","Time","HomeTeam","AwayTeam","FTHG","FTAG"] + wanted_cols) if c in row}
+                raw = {}
+                for c in (["Date","Time","HomeTeam","AwayTeam","FTHG","FTAG"] + wanted_cols):
+                    if c in row.index:
+                        v = row[c]
+                        raw[c] = None if (isinstance(v, float) and pd.isna(v)) else v
 
                 con.execute(
                     """INSERT OR REPLACE INTO match_extras
