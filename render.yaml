@@ -1,0 +1,31 @@
+# Render.com Blueprint — free web service
+# Deploy: connect GitHub repo → Render auto-detects this file
+services:
+  - type: web
+    name: footy-predictor
+    runtime: docker
+    plan: free          # spins down after 15 min inactivity
+    healthCheckPath: /api/health
+    envVars:
+      - key: DB_PATH
+        value: data/footy.duckdb
+      - key: TRACKED_COMPETITIONS
+        value: PL,PD,SA,BL1,FL1
+      # Free providers (no keys needed — these are enabled by default)
+      - key: ENABLE_SOFASCORE
+        value: "true"
+      - key: ENABLE_FBREF
+        value: "true"
+      - key: ENABLE_TRANSFERMARKT
+        value: "true"
+      - key: ENABLE_CLUBELO
+        value: "true"
+      - key: ENABLE_OPEN_METEO
+        value: "true"
+      # Optional API keys (set manually in Render dashboard)
+      - key: FOOTBALL_DATA_ORG_TOKEN
+        sync: false
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: THE_ODDS_API_KEY
+        sync: false

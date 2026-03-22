@@ -1,0 +1,1153 @@
+"""
+Phase 3: Ollama-powered match insights and analysis
+
+Combines GDELT news, local LLM, and cached predictions for:
+- Form analysis summaries
+- Team news signals 
+- Match explanations
+- Predictive insights
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+import httpx
+import pandas as pd
+
+from footy.cache import get_cache, cache_wrapper
+from footy.db import connect
+from footy.llm.providers import chat
+from footy.llm.news_extractor import extract_news_signal
+from footy.providers.news_gdelt import fetch_team_news
+
+log = logging.getLogger("footy.llm.insights")
+
+# Active model version for consistent prediction queries
+_ACTIVE_MODEL = "v12_analyst"
+
+
+def _model_version() -> str:
+    """Return the active model version, checking deployment metadata."""
+    try:
+        con = connect()
+        row = con.execute(
+            "SELECT active_version FROM model_deployments WHERE model_type = ?",
+            [_ACTIVE_MODEL],
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    return _ACTIVE_MODEL
+
+
+# ============================================================================
+# Form Analysis: Summarize recent team performance
+# ============================================================================
+
+
+@cache_wrapper(ttl_hours=24)
+def analyze_team_form(team: str, matches_window: int = 10) -> dict:
+    """
+    Analyze recent form for a team using LLM.
+    
+    Args:
+        team: Canonical team name
+        matches_window: How many recent matches to consider
+    
+    Returns:
+        {
+            "team": str,
+            "recent_form": str,  # "Excellent", "Good", "Mixed", "Poor"
+            "key_trends": list[str],
+            "momentum": float,  # -1.0 (declining) to +1.0 (improving)
+            "concern_areas": list[str],
+            "last_updated": str (ISO datetime)
+        }
+    """
+    con = connect()
+    
+    # Get recent matches for this team
+    query = """
+    SELECT 
+        utc_date, 
+        home_team, 
+        away_team, 
+        home_goals, 
+        away_goals,
+        status
+    FROM matches
+    WHERE (home_team = ? OR away_team = ?)
+        AND status = 'FINISHED'
+    ORDER BY utc_date DESC
+    LIMIT ?
+    """
+    results = con.execute(query, [team, team, matches_window]).df()
+    
+    if results.empty:
+        return {
+            "team": team,
+            "recent_form": "No data",
+            "key_trends": [],
+            "momentum": 0.0,
+            "concern_areas": [],
+            "last_updated": datetime.now().isoformat()
+        }
+    
+    # Calculate stats
+    wins = 0
+    draws = 0
+    losses = 0
+    goals_for = 0
+    goals_against = 0
+    
+    for _, row in results.iterrows():
+        if row['home_team'] == team:
+            goals_for += row['home_goals']
+            goals_against += row['away_goals']
+            if row['home_goals'] > row['away_goals']:
+                wins += 1
+            elif row['home_goals'] == row['away_goals']:
+                draws += 1
+            else:
+                losses += 1
+        else:
+            goals_for += row['away_goals']
+            goals_against += row['home_goals']
+            if row['away_goals'] > row['home_goals']:
+                wins += 1
+            elif row['away_goals'] == row['home_goals']:
+                draws += 1
+            else:
+                losses += 1
+    
+    record = f"{wins}W-{draws}D-{losses}L"
+    gd = goals_for - goals_against
+    
+    # Calculate form metrics from data
+    def infer_form_from_record(w, d, l, gf, ga, total):
+        """Generate reasonable form assessment from raw stats"""
+        if total == 0:
+            return "No recent matches", 0.0
+        
+        points = (w * 3 + d) / (total * 3)  # Proportion of max possible points
+        gd_per_match = gd / total if total > 0 else 0
+        
+        if points >= 0.8 and gd_per_match >= 0.5:
+            return "Excellent", 0.8
+        elif points >= 0.6 and gd_per_match >= 0.2:
+            return "Good", 0.5
+        elif points >= 0.4:
+            return "Mixed", 0.0
+        else:
+            return "Poor", -0.5
+    
+    form_status, momentum = infer_form_from_record(wins, draws, losses, goals_for, goals_against, matches_window)
+    
+    # Infer trends and concerns from data
+    trends = []
+    concerns = []
+    if goals_for < 1.0 * matches_window / 3:
+        concerns.append("Low scoring rate")
+    if goals_against > 1.5 * matches_window / 3:
+        concerns.append("Defensive vulnerability")
+    if wins >= losses * 2:
+        trends.append("Strong run")
+    elif losses >= wins * 2:
+        trends.append("Struggling")
+    else:
+        trends.append("Inconsistent")
+    
+    if gd > 0:
+        trends.append(f"Positive goal differential (+{gd})")
+    elif gd < 0:
+        trends.append(f"Negative goal differential ({gd})")
+    
+    # Return form analysis
+    result = {
+        "team": team,
+        "recent_form": form_status,
+        "key_trends": trends[:2],  # Top 2 trends
+        "momentum": momentum,
+        "concern_areas": concerns[:2],  # Top 2 concerns
+        "record": record,
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "last_updated": datetime.now().isoformat()
+    }
+    
+    # Try to enhance with Ollama if available
+    prompt = {
+        "role": "user",
+        "content": f"""
+Quick assessment of {team} form:
+Record: {record} (last {matches_window} matches)
+GF: {goals_for}, GA: {goals_against}, GD: {gd}
+
+Return ONLY valid JSON:
+{{"recent_form": "Excellent|Good|Mixed|Poor", "key_trends": ["trend1", "trend2"], "momentum": float, "concern_areas": ["area1", "area2"]}}
+"""
+    }
+    
+    try:
+        response = chat([prompt])
+        if response and response.strip():
+            data = json.loads(response)
+            result["recent_form"] = data.get("recent_form", form_status)
+            result["key_trends"] = data.get("key_trends", trends)[:2]
+            result["momentum"] = float(data.get("momentum", momentum))
+            result["concern_areas"] = data.get("concern_areas", concerns)[:2]
+    except (json.JSONDecodeError, ValueError, httpx.ConnectError):
+        # Ollama unavailable or invalid response - use fallback data above
+        pass
+    except Exception as e:
+        log.debug(f"Ollama form analysis optional enhancement failed: {e}")
+    
+    return result
+
+
+# ============================================================================
+# News Analysis: Extract team news signals
+# ============================================================================
+
+
+@cache_wrapper(ttl_hours=6)
+def extract_team_news_signal(team: str, days_back: int = 2) -> dict:
+    """
+    Fetch team news from GDELT and extract signal using Ollama.
+    
+    Args:
+        team: Canonical team name
+        days_back: How many days of news to fetch
+    
+    Returns:
+        {
+            "team": str,
+            "availability_score": float (-1..1),  # -1=bad news, +1=good news
+            "likely_absences": list[str],  # Injured/suspended players
+            "key_notes": list[str],
+            "headline_count": int,
+            "last_updated": str (ISO datetime)
+        }
+    """
+    try:
+        # Fetch news from GDELT
+        news_df = fetch_team_news(team, days_back=days_back, max_records=20)
+        
+        if news_df.empty:
+            log.info(f"No news found for {team}")
+            return {
+                "team": team,
+                "availability_score": 0.0,
+                "likely_absences": [],
+                "key_notes": ["No recent news found"],
+                "headline_count": 0,
+                "last_updated": datetime.now().isoformat()
+            }
+        
+        # Convert to list of dicts for LLM
+        headlines = news_df[["title", "domain", "seendate"]].to_dict("records")
+        
+        # Extract signal using Ollama
+        signal = extract_news_signal(team, headlines)
+        
+        return {
+            "team": team,
+            "availability_score": signal.availability_score,
+            "likely_absences": signal.likely_absences,
+            "key_notes": signal.key_notes,
+            "summary": signal.short_summary,
+            "headline_count": len(headlines),
+            "last_updated": datetime.now().isoformat()
+        }
+    except Exception as e:
+        log.warning(f"News extraction failed for {team}: {e}")
+        return {
+            "team": team,
+            "availability_score": 0.0,
+            "likely_absences": [],
+            "key_notes": [f"Error: {str(e)[:50]}"],
+            "headline_count": 0,
+            "last_updated": datetime.now().isoformat()
+        }
+
+
+# ============================================================================
+# Match Explanation: Generate LLM-powered insights for a specific match
+# ============================================================================
+
+
+@cache_wrapper(ttl_hours=24)
+def explain_match(
+    match_id: int, 
+    home_team: str, 
+    away_team: str,
+    home_pred: float,
+    draw_pred: float,
+    away_pred: float,
+    model_version: str = "v12_analyst"
+) -> dict:
+    """
+    Generate detailed LLM explanation for why a match has given probabilities.
+    
+    Args:
+        match_id: Database match ID
+        home_team: Home team name
+        away_team: Away team name
+        home_pred, draw_pred, away_pred: Model probabilities
+        model_version: Which model is predicting
+    
+    Returns:
+        {
+            "match_id": int,
+            "explanation": str,  # Main narrative explanation
+            "key_factors": list[str],  # Top 3-5 factors influencing prediction
+            "confidence_level": str,  # "Very High", "High", "Medium", "Low"
+            "last_updated": str
+        }
+    """
+    con = connect()
+    
+    # Get match details
+    try:
+        match = con.execute("""
+            SELECT m.*
+            FROM matches m
+            WHERE m.match_id = ?
+        """, [match_id]).df()
+        
+        if match.empty:
+            return {
+                "match_id": match_id,
+                "explanation": "Match not found",
+                "key_factors": [],
+                "confidence_level": "Low",
+                "last_updated": datetime.now().isoformat()
+            }
+        
+        match_row = match.iloc[0]
+        
+    except Exception as e:
+        log.warning(f"Match lookup failed: {e}")
+        match_row = {}
+    
+    # Get form analyses for both teams
+    home_form = analyze_team_form(home_team)
+    away_form = analyze_team_form(away_team)
+    
+    # Get news signals
+    home_news = extract_team_news_signal(home_team)
+    away_news = extract_team_news_signal(away_team)
+    
+    # Get H2H if available
+    h2h_text = ""
+    try:
+        h2h = con.execute("""
+            SELECT total_matches, team_a_wins, draws, team_b_wins
+            FROM h2h_stats
+            WHERE team_a = ? AND team_b = ?
+        """, [home_team, away_team]).df()
+        if not h2h.empty:
+            row = h2h.iloc[0]
+            h2h_text = f"H2H: {row['team_a_wins']}W-{row['draws']}D-{row['team_b_wins']}W ({row['total_matches']} games)"
+    except:
+        pass
+    
+    # Build context for LLM
+    context = f"""
+Match: {home_team} vs {away_team}
+Model: {model_version}
+Predicted: {home_pred:.1%} {draw_pred:.1%} {away_pred:.1%}
+
+Home Team ({home_team}):
+- Recent Form: {home_form.get('recent_form', 'N/A')} ({home_form.get('record', 'N/A')})
+- Momentum: {home_form.get('momentum', 0):.1f}
+- News: {home_news.get('summary', 'No news')}
+- Availability: {home_news.get('availability_score', 0):.1f}
+
+Away Team ({away_team}):
+- Recent Form: {away_form.get('recent_form', 'N/A')} ({away_form.get('record', 'N/A')})
+- Momentum: {away_form.get('momentum', 0):.1f}
+- News: {away_news.get('summary', 'No news')}
+- Availability: {away_news.get('availability_score', 0):.1f}
+
+{h2h_text}
+
+Generate a brief match explanation highlighting why the model favors these probabilities.
+Focus on: form, momentum, news impact, head-to-head history.
+Return JSON:
+{{
+    "explanation": "2-3 sentence summary",
+    "key_factors": ["factor1", "factor2", "factor3"],
+    "confidence_level": "Very High|High|Medium|Low"
+}}
+"""
+    
+    try:
+        response = chat([{"role": "user", "content": context}])
+        data = json.loads(response)
+        return {
+            "match_id": match_id,
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_prob": f"{home_pred:.1%}",
+            "draw_prob": f"{draw_pred:.1%}",
+            "away_prob": f"{away_pred:.1%}",
+            "explanation": data.get("explanation", "Unable to generate"),
+            "key_factors": data.get("key_factors", []),
+            "confidence_level": data.get("confidence_level", "Medium"),
+            "last_updated": datetime.now().isoformat()
+        }
+    except Exception as e:
+        log.warning(f"Match explanation failed: {e}")
+        return {
+            "match_id": match_id,
+            "home_team": home_team,
+            "away_team": away_team,
+            "explanation": f"Error generating explanation: {str(e)[:50]}",
+            "key_factors": [],
+            "confidence_level": "Low",
+            "last_updated": datetime.now().isoformat()
+        }
+
+
+# ============================================================================
+# Status & Monitoring
+# ============================================================================
+
+
+def get_insights_status() -> dict:
+    """Get current status of insights system (cache info, LLM health)."""
+    try:
+        cache = get_cache()
+        cache_stats = cache.get_stats()
+        
+        # Try an LLM health check
+        try:
+            response = chat([{"role": "user", "content": "Respond with 'OK'"}])
+            llm_health = "OK" if response.strip() == "OK" else "Degraded"
+        except Exception as e:
+            llm_health = f"Error: {str(e)[:30]}"
+        
+        return {
+            "status": "Ready",
+            "llm_health": llm_health,
+            "cache_predictions": cache_stats.get("total_predictions", 0),
+            "cache_metadata": cache_stats.get("total_metadata", 0),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "Error",
+            "error": str(e)[:100],
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+# ============================================================================
+# Pre-match Preview: Rich AI-generated match preview
+# ============================================================================
+
+
+@cache_wrapper(ttl_hours=12)
+def preview_match(match_id: int) -> dict:
+    """
+    Generate a comprehensive AI pre-match preview combining model predictions,
+    form, H2H, news, and market odds.
+
+    Returns:
+        {
+            "match_id": int,
+            "home_team": str,
+            "away_team": str,
+            "preview": str,          # 3-5 sentence narrative
+            "prediction": str,        # "Home Win" / "Draw" / "Away Win"
+            "confidence": str,        # "High" / "Medium" / "Low"
+            "value_bets": list[str],  # e.g. ["Over 2.5 @ 1.95 (model: 58%)"]
+            "key_stats": list[str],   # 3-5 bullet points
+        }
+    """
+    con = connect()
+
+    # ---- match row ----
+    row = con.execute("""
+        SELECT match_id, home_team, away_team, competition, utc_date
+        FROM matches WHERE match_id = ?
+    """, [match_id]).fetchone()
+    if not row:
+        return {"match_id": match_id, "error": "match not found"}
+    _, home, away, comp, utc = row
+
+    # ---- v5 predictions ----
+    pred = con.execute("""
+        SELECT p_home, p_draw, p_away
+        FROM predictions
+        WHERE match_id = ? AND model_version = ?
+        ORDER BY created_at DESC LIMIT 1
+    """, [match_id, _model_version()]).fetchone()
+    ph, pd_, pa = (pred if pred else (0.33, 0.34, 0.33))
+
+    # ---- odds ----
+    odds_row = con.execute("""
+        SELECT b365h, b365d, b365a
+        FROM match_extras WHERE match_id = ?
+    """, [match_id]).fetchone()
+    odds = dict(zip(["h", "d", "a"], odds_row)) if odds_row else {}
+
+    # ---- Elo ----
+    elo = {}
+    for t, label in [(home, "home"), (away, "away")]:
+        e = con.execute("SELECT rating FROM elo_state WHERE team = ?", [t]).fetchone()
+        if e:
+            elo[label] = round(e[0], 1)
+
+    # ---- form ----
+    home_form = analyze_team_form(home)
+    away_form = analyze_team_form(away)
+
+    # ---- H2H ----
+    h2h_text = ""
+    try:
+        h2h = con.execute("""
+            SELECT total_matches, team_a_wins, draws, team_b_wins
+            FROM h2h_stats WHERE team_a = ? AND team_b = ?
+        """, [home, away]).fetchone()
+        if h2h:
+            h2h_text = f"H2H ({h2h[0]} games): {h2h[1]}W-{h2h[2]}D-{h2h[3]}L for {home}"
+    except Exception:
+        pass
+
+    # ---- build prompt ----
+    ctx = f"""Generate a pre-match preview for:
+{home} vs {away} ({comp})
+
+Model probabilities: Home {ph:.1%}  Draw {pd_:.1%}  Away {pa:.1%}
+Elo ratings: Home {elo.get('home','?')} | Away {elo.get('away','?')}
+{h2h_text}
+Home form: {home_form.get('recent_form','?')} ({home_form.get('record','?')})  Momentum {home_form.get('momentum',0):.1f}
+Away form: {away_form.get('recent_form','?')} ({away_form.get('record','?')})  Momentum {away_form.get('momentum',0):.1f}
+Market odds — H: {odds.get('h','?')} D: {odds.get('d','?')} A: {odds.get('a','?')}
+
+Return ONLY valid JSON:
+{{"preview":"3-5 sentence narrative","prediction":"Home Win|Draw|Away Win","confidence":"High|Medium|Low","value_bets":[".."],"key_stats":["..","..",".."]}}
+"""
+    fallback = {
+        "match_id": match_id,
+        "home_team": home,
+        "away_team": away,
+        "preview": f"{home} hosts {away}. Model gives {ph:.0%}/{pd_:.0%}/{pa:.0%}.",
+        "prediction": ["Home Win", "Draw", "Away Win"][[ph, pd_, pa].index(max(ph, pd_, pa))],
+        "confidence": "High" if max(ph, pd_, pa) > 0.55 else ("Medium" if max(ph, pd_, pa) > 0.40 else "Low"),
+        "value_bets": [],
+        "key_stats": [
+            f"Home form: {home_form.get('record','?')}",
+            f"Away form: {away_form.get('record','?')}",
+            h2h_text or "No H2H data",
+        ],
+    }
+
+    try:
+        resp = chat([{"role": "user", "content": ctx}])
+        data = json.loads(resp)
+        return {**fallback, **data}
+    except Exception:
+        return fallback
+
+
+# ============================================================================
+# Value Bet Analysis: compare model vs market
+# ============================================================================
+
+
+def value_bet_scan(min_edge: float = 0.05) -> list[dict]:
+    """
+    Scan all upcoming matches for value bets where model probability
+    exceeds implied odds probability by at least `min_edge`.
+
+    Returns list of value opportunities sorted by edge descending.
+    """
+    con = connect()
+
+    rows = con.execute("""
+        SELECT m.match_id, m.home_team, m.away_team, m.utc_date,
+               p.p_home, p.p_draw, p.p_away,
+               e.b365h, e.b365d, e.b365a
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        LEFT JOIN match_extras e ON e.match_id = m.match_id
+        WHERE m.status IN ('TIMED','SCHEDULED')
+          AND p.model_version = ?
+        ORDER BY m.utc_date
+    """, [_model_version()]).fetchall()
+
+    values = []
+    for mid, ht, at, dt, ph, pd_, pa, oh, od, oa in rows:
+        for label, model_p, mkt_odds in [
+            ("Home", ph, oh), ("Draw", pd_, od), ("Away", pa, oa)
+        ]:
+            if not mkt_odds or mkt_odds <= 1:
+                continue
+            implied = 1.0 / mkt_odds
+            edge = model_p - implied
+            if edge >= min_edge:
+                values.append({
+                    "match_id": mid,
+                    "home_team": ht,
+                    "away_team": at,
+                    "date": str(dt)[:10],
+                    "bet": label,
+                    "model_prob": round(model_p, 3),
+                    "implied_prob": round(implied, 3),
+                    "edge": round(edge, 3),
+                    "odds": round(mkt_odds, 2),
+                })
+
+    values.sort(key=lambda x: x["edge"], reverse=True)
+    return values
+
+
+def ai_value_commentary(values: list[dict], top_n: int = 5) -> str:
+    """
+    Ask Ollama for a short commentary on the top value bets.
+    Falls back to a plain table if Ollama is unavailable.
+    """
+    top = values[:top_n]
+    if not top:
+        return "No value bets found above the edge threshold."
+
+    lines = []
+    for v in top:
+        lines.append(
+            f"- {v['home_team']} vs {v['away_team']}: "
+            f"{v['bet']} @ {v['odds']:.2f}  "
+            f"(model {v['model_prob']:.0%} vs implied {v['implied_prob']:.0%}, edge {v['edge']:+.1%})"
+        )
+    table = "\n".join(lines)
+
+    ctx = (
+        "You are a football betting analyst. Summarize these value bets in 3-4 sentences. "
+        "Highlight the strongest edge and any risks.\n\n" + table
+    )
+    try:
+        resp = chat([{"role": "user", "content": ctx}])
+        if resp.strip():
+            return resp.strip()
+    except Exception:
+        pass
+    return "Top value bets:\n" + table
+
+
+# ============================================================================
+# League Round Summary
+# ============================================================================
+
+
+def league_round_summary(competition_code: str = "PL") -> dict:
+    """
+    Generate an AI-powered summary of all upcoming matches in a league.
+
+    Returns:
+        {
+            "competition": str,
+            "matches": int,
+            "summary": str,         # AI narrative
+            "headline_pick": str,    # match of the round
+            "predictions": list[dict],
+        }
+    """
+    con = connect()
+
+    rows = con.execute("""
+        SELECT m.match_id, m.home_team, m.away_team, m.utc_date,
+               p.p_home, p.p_draw, p.p_away
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        WHERE m.status IN ('TIMED','SCHEDULED')
+          AND m.competition = ?
+          AND p.model_version = ?
+        ORDER BY m.utc_date
+    """, [competition_code, _model_version()]).fetchall()
+
+    if not rows:
+        return {"competition": competition_code, "matches": 0,
+                "summary": "No upcoming matches with predictions.", "predictions": []}
+
+    preds = []
+    lines = []
+    for mid, ht, at, dt, ph, pd_, pa in rows:
+        fav = ["Home", "Draw", "Away"][[ph, pd_, pa].index(max(ph, pd_, pa))]
+        preds.append({"match_id": mid, "home": ht, "away": at,
+                       "date": str(dt)[:10], "pred": fav,
+                       "probs": f"{ph:.0%}/{pd_:.0%}/{pa:.0%}"})
+        lines.append(f"{ht} vs {at} — {fav} ({max(ph,pd_,pa):.0%})")
+
+    ctx = (
+        f"You are a football analyst. Summarize this {competition_code} round in "
+        "3-5 sentences. Pick the headline match and explain why.\n\n"
+        + "\n".join(lines)
+        + "\n\nReturn JSON: {\"summary\":\"...\", \"headline_pick\":\"Team A vs Team B\"}"
+    )
+
+    fallback = {
+        "competition": competition_code,
+        "matches": len(preds),
+        "summary": f"{len(preds)} matches upcoming in {competition_code}.",
+        "headline_pick": f"{preds[0]['home']} vs {preds[0]['away']}" if preds else "",
+        "predictions": preds,
+    }
+
+    try:
+        resp = chat([{"role": "user", "content": ctx}])
+        data = json.loads(resp)
+        fallback["summary"] = data.get("summary", fallback["summary"])
+        fallback["headline_pick"] = data.get("headline_pick", fallback["headline_pick"])
+    except Exception:
+        pass
+    return fallback
+
+
+# ============================================================================
+# Post-match Review: Evaluate prediction accuracy
+# ============================================================================
+
+
+def post_match_review(days_back: int = 3, competition_code: str | None = None) -> dict:
+    """
+    Review recently finished matches: compare predictions to actual results
+    and generate an AI narrative on model performance.
+
+    Returns:
+        {
+            "matches_reviewed": int,
+            "correct": int,
+            "accuracy": float,
+            "review": str,          # AI narrative
+            "misses": list[dict],   # biggest wrong predictions
+        }
+    """
+    con = connect()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+
+    params = [cutoff, _model_version()]
+    comp_filter = ""
+    if competition_code:
+        comp_filter = "AND m.competition = ?"
+        params.append(competition_code)
+    rows = con.execute(f"""
+        SELECT m.match_id, m.home_team, m.away_team,
+               m.home_goals, m.away_goals,
+               p.p_home, p.p_draw, p.p_away
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        WHERE m.status = 'FINISHED'
+          AND m.utc_date >= ?
+          AND p.model_version = ?
+          {comp_filter}
+        ORDER BY m.utc_date DESC
+    """, params).fetchall()
+
+    if not rows:
+        return {"matches_reviewed": 0, "correct": 0, "accuracy": 0,
+                "review": "No recent finished matches with predictions.", "misses": []}
+
+    correct = 0
+    misses = []
+    lines = []
+    for mid, ht, at, hg, ag, ph, pd_, pa in rows:
+        pred_idx = [ph, pd_, pa].index(max(ph, pd_, pa))
+        actual_idx = 0 if hg > ag else (1 if hg == ag else 2)
+        ok = pred_idx == actual_idx
+        if ok:
+            correct += 1
+        else:
+            misses.append({
+                "match": f"{ht} vs {at}",
+                "score": f"{hg}-{ag}",
+                "predicted": ["Home", "Draw", "Away"][pred_idx],
+                "actual": ["Home", "Draw", "Away"][actual_idx],
+                "confidence": round(max(ph, pd_, pa), 3),
+            })
+        lines.append(
+            f"{'✓' if ok else '✗'} {ht} {hg}-{ag} {at} "
+            f"(pred: {['H','D','A'][pred_idx]} {max(ph,pd_,pa):.0%})"
+        )
+
+    acc = correct / len(rows) if rows else 0
+    ctx = (
+        "You are a football prediction analyst reviewing recent performance.\n"
+        f"Accuracy: {acc:.0%} ({correct}/{len(rows)})\n\n"
+        + "\n".join(lines[:30])
+        + "\n\nGive a 2-3 sentence verdict on model performance and what went wrong."
+    )
+
+    fallback_review = f"Model accuracy: {acc:.0%} ({correct}/{len(rows)} correct)"
+    try:
+        resp = chat([{"role": "user", "content": ctx}])
+        if resp.strip():
+            fallback_review = resp.strip()
+    except Exception:
+        pass
+
+    return {
+        "matches_reviewed": len(rows),
+        "correct": correct,
+        "accuracy": round(acc, 3),
+        "review": fallback_review,
+        "misses": sorted(misses, key=lambda x: x["confidence"], reverse=True)[:5],
+    }
+
+
+# ============================================================================
+# BTTS & Over/Under Insights
+# ============================================================================
+
+
+def btts_ou_insights() -> dict:
+    """
+    Analyse upcoming BTTS and Over/Under 2.5 predictions from the notes JSON.
+
+    Returns:
+        {
+            "btts_likely": list[dict],     # matches with BTTS prob > 0.55
+            "btts_unlikely": list[dict],   # matches with BTTS prob < 0.35
+            "over25": list[dict],          # matches with O2.5 prob > 0.55
+            "under25": list[dict],         # matches with O2.5 prob < 0.35
+        }
+    """
+    con = connect()
+    rows = con.execute("""
+        SELECT m.match_id, m.home_team, m.away_team, m.competition, m.utc_date,
+               p.p_home, p.p_draw, p.p_away, p.eg_home, p.eg_away, p.notes
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        WHERE m.status IN ('TIMED', 'SCHEDULED')
+          AND p.model_version = ?
+        ORDER BY m.utc_date
+    """, [_model_version()]).fetchall()
+
+    btts_likely, btts_unlikely, over25, under25 = [], [], [], []
+    for mid, ht, at, comp, dt, ph, pd_, pa, egh, ega, notes_str in rows:
+        notes = {}
+        if notes_str:
+            try:
+                notes = json.loads(notes_str)
+            except Exception:
+                pass
+
+        btts_p = notes.get("btts")
+        o25_p = notes.get("o25")
+
+        # fallback: estimate from expected goals if model heads not yet trained
+        if btts_p is None and egh is not None and ega is not None:
+            try:
+                from math import exp
+                lam_h, lam_a = float(egh), float(ega)
+                p_h0 = exp(-lam_h)
+                p_a0 = exp(-lam_a)
+                btts_p = (1 - p_h0) * (1 - p_a0)
+            except Exception:
+                pass
+        if o25_p is None and egh is not None and ega is not None:
+            try:
+                from math import exp
+                lam_h, lam_a = float(egh), float(ega)
+                total = lam_h + lam_a
+                p_0 = exp(-total)
+                p_1 = total * exp(-total)
+                p_2 = (total ** 2 / 2) * exp(-total)
+                o25_p = 1 - (p_0 + p_1 + p_2)
+            except Exception:
+                pass
+
+        entry = {
+            "match_id": mid,
+            "home_team": ht,
+            "away_team": at,
+            "competition": comp,
+            "date": str(dt)[:10],
+            "eg_home": round(float(egh), 2) if egh else None,
+            "eg_away": round(float(ega), 2) if ega else None,
+            "btts_prob": round(float(btts_p), 3) if btts_p is not None else None,
+            "o25_prob": round(float(o25_p), 3) if o25_p is not None else None,
+        }
+
+        if btts_p is not None:
+            if btts_p > 0.55:
+                btts_likely.append(entry)
+            elif btts_p < 0.35:
+                btts_unlikely.append(entry)
+
+        if o25_p is not None:
+            if o25_p > 0.55:
+                over25.append(entry)
+            elif o25_p < 0.35:
+                under25.append(entry)
+
+    # Sort by probability
+    btts_likely.sort(key=lambda x: x["btts_prob"] or 0, reverse=True)
+    btts_unlikely.sort(key=lambda x: x["btts_prob"] or 1)
+    over25.sort(key=lambda x: x["o25_prob"] or 0, reverse=True)
+    under25.sort(key=lambda x: x["o25_prob"] or 1)
+
+    return {
+        "btts_likely": btts_likely[:15],
+        "btts_unlikely": btts_unlikely[:15],
+        "over25": over25[:15],
+        "under25": under25[:15],
+    }
+
+
+# ============================================================================
+# League Form Table
+# ============================================================================
+
+
+def league_form_table(competition_code: str, last_n: int = 6) -> list[dict]:
+    """
+    Generate a mini form-table for a league: PPG, GF/GA, BTTS%, O2.5%
+    over the last *last_n* matches.
+    """
+    con = connect()
+    teams = con.execute("""
+        SELECT DISTINCT home_team FROM matches
+        WHERE competition = ? AND status = 'FINISHED'
+        UNION
+        SELECT DISTINCT away_team FROM matches
+        WHERE competition = ? AND status = 'FINISHED'
+    """, [competition_code, competition_code]).fetchall()
+
+    table = []
+    for (team,) in teams:
+        rows = con.execute("""
+            SELECT home_team, away_team, home_goals, away_goals
+            FROM matches
+            WHERE (home_team = ? OR away_team = ?)
+              AND competition = ? AND status = 'FINISHED'
+            ORDER BY utc_date DESC LIMIT ?
+        """, [team, team, competition_code, last_n]).fetchall()
+
+        if not rows:
+            continue
+
+        w = d = l = gf = ga = btts = o25 = 0
+        for ht, at, hg, ag in rows:
+            is_home = (ht == team)
+            tgf = hg if is_home else ag
+            tga = ag if is_home else hg
+            gf += tgf
+            ga += tga
+            if tgf > tga:
+                w += 1
+            elif tgf == tga:
+                d += 1
+            else:
+                l += 1
+            if hg > 0 and ag > 0:
+                btts += 1
+            if hg + ag > 2:
+                o25 += 1
+
+        n = len(rows)
+        table.append({
+            "team": team,
+            "played": n,
+            "w": w, "d": d, "l": l,
+            "ppg": round((w * 3 + d) / n, 2),
+            "gf": gf, "ga": ga,
+            "gd": gf - ga,
+            "btts_pct": round(btts / n * 100),
+            "o25_pct": round(o25 / n * 100),
+        })
+
+    table.sort(key=lambda x: x["ppg"], reverse=True)
+    return table
+
+
+# ============================================================================
+# Accumulator Builder
+# ============================================================================
+
+
+def build_accumulators(min_prob: float = 0.55, max_legs: int = 5) -> list[dict]:
+    """
+    Build accumulator suggestions from upcoming predictions.
+    Returns up to 3 accumulators: safe (2-3 legs), medium (3-4), bold (4-5).
+    """
+    con = connect()
+    rows = con.execute("""
+        SELECT m.match_id, m.home_team, m.away_team, m.competition, m.utc_date,
+               p.p_home, p.p_draw, p.p_away,
+               e.b365h, e.b365d, e.b365a
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        LEFT JOIN match_extras e ON e.match_id = m.match_id
+        WHERE m.status IN ('TIMED', 'SCHEDULED')
+          AND p.model_version = ?
+        ORDER BY m.utc_date
+    """, [_model_version()]).fetchall()
+
+    # Build pool of confident picks
+    pool = []
+    for mid, ht, at, comp, dt, ph, pd_, pa, oh, od, oa in rows:
+        probs = {"Home": ph, "Draw": pd_, "Away": pa}
+        odds_map = {"Home": oh, "Draw": od, "Away": oa}
+        best = max(probs, key=probs.get)
+        best_p = probs[best]
+        if best_p < min_prob:
+            continue
+        pool.append({
+            "match_id": mid,
+            "home_team": ht,
+            "away_team": at,
+            "competition": comp,
+            "date": str(dt)[:10],
+            "pick": best,
+            "prob": round(best_p, 3),
+            "odds": round(float(odds_map[best]), 2) if odds_map[best] else None,
+        })
+
+    pool.sort(key=lambda x: x["prob"], reverse=True)
+
+    accumulators = []
+    # Safe: top 2-3 highest probability
+    if len(pool) >= 2:
+        safe_legs = pool[:3]
+        combined = 1.0
+        for leg in safe_legs:
+            combined *= leg["prob"]
+            if leg["odds"]:
+                combined_odds = 1.0
+        combined_odds = 1.0
+        for leg in safe_legs:
+            if leg["odds"]:
+                combined_odds *= leg["odds"]
+        accumulators.append({
+            "type": "🛡️ Safe",
+            "legs": safe_legs,
+            "combined_prob": round(combined, 4),
+            "combined_odds": round(combined_odds, 2) if combined_odds > 1 else None,
+        })
+
+    # Medium: mix high + mid confidence
+    if len(pool) >= 4:
+        med_legs = [pool[0], pool[2], pool[4]] if len(pool) > 4 else pool[1:4]
+        combined = 1.0
+        combined_odds = 1.0
+        for leg in med_legs:
+            combined *= leg["prob"]
+            if leg["odds"]:
+                combined_odds *= leg["odds"]
+        accumulators.append({
+            "type": "⚖️ Medium",
+            "legs": med_legs,
+            "combined_prob": round(combined, 4),
+            "combined_odds": round(combined_odds, 2) if combined_odds > 1 else None,
+        })
+
+    # Bold: 4-5 legs including some lower-prob picks
+    if len(pool) >= 5:
+        bold_legs = pool[:5]
+        combined = 1.0
+        combined_odds = 1.0
+        for leg in bold_legs:
+            combined *= leg["prob"]
+            if leg["odds"]:
+                combined_odds *= leg["odds"]
+        accumulators.append({
+            "type": "🎯 Bold",
+            "legs": bold_legs,
+            "combined_prob": round(combined, 4),
+            "combined_odds": round(combined_odds, 2) if combined_odds > 1 else None,
+        })
+
+    return accumulators
+
+
+# ============================================================================
+# Prediction Accuracy Dashboard
+# ============================================================================
+
+
+def prediction_accuracy_stats(days_back: int = 30) -> dict:
+    """
+    Calculate detailed accuracy stats for the accuracy dashboard.
+    """
+    con = connect()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+
+    rows = con.execute("""
+        SELECT m.match_id, m.competition,
+               p.p_home, p.p_draw, p.p_away,
+               m.home_goals, m.away_goals
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.match_id
+        WHERE m.status = 'FINISHED'
+          AND m.utc_date >= ?
+                    AND p.model_version = ?
+        ORDER BY m.utc_date DESC
+        """, [cutoff, _model_version()]).fetchall()
+
+    if not rows:
+        return {"total": 0}
+
+    total = correct = 0
+    by_comp = {}
+    by_confidence = {"high": [0, 0], "mid": [0, 0], "low": [0, 0]}
+    brier_sum = 0.0
+
+    for mid, comp, ph, pd_, pa, hg, ag in rows:
+        total += 1
+        pred_idx = [ph, pd_, pa].index(max(ph, pd_, pa))
+        actual_idx = 0 if hg > ag else (1 if hg == ag else 2)
+        ok = pred_idx == actual_idx
+        if ok:
+            correct += 1
+
+        # Brier score
+        actual_vec = [0.0, 0.0, 0.0]
+        actual_vec[actual_idx] = 1.0
+        brier_sum += sum((p - a) ** 2 for p, a in zip([ph, pd_, pa], actual_vec))
+
+        # By competition
+        if comp not in by_comp:
+            by_comp[comp] = [0, 0]
+        by_comp[comp][0] += 1
+        if ok:
+            by_comp[comp][1] += 1
+
+        # By confidence tier
+        max_p = max(ph, pd_, pa)
+        if max_p >= 0.60:
+            tier = "high"
+        elif max_p >= 0.45:
+            tier = "mid"
+        else:
+            tier = "low"
+        by_confidence[tier][0] += 1
+        if ok:
+            by_confidence[tier][1] += 1
+
+    comp_stats = {
+        k: {"total": v[0], "correct": v[1],
+            "accuracy": round(v[1] / v[0], 3) if v[0] else 0}
+        for k, v in by_comp.items()
+    }
+    conf_stats = {
+        k: {"total": v[0], "correct": v[1],
+            "accuracy": round(v[1] / v[0], 3) if v[0] else 0}
+        for k, v in by_confidence.items()
+    }
+
+    return {
+        "total": total,
+        "correct": correct,
+        "accuracy": round(correct / total, 3) if total else 0,
+        "brier_score": round(brier_sum / total, 4) if total else 0,
+        "days_back": days_back,
+        "by_competition": comp_stats,
+        "by_confidence": conf_stats,
+    }

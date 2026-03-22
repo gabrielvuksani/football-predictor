@@ -1,0 +1,31 @@
+name: Test Suite
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FOOTBALL_DATA_ORG_TOKEN: test-token
+      API_FOOTBALL_KEY: test-token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install project
+        run: python -m pip install -e .
+
+      - name: Run tests
+        run: python -m pytest tests/ -q --tb=short
