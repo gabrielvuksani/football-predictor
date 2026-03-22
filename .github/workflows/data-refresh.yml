@@ -1,0 +1,37 @@
+name: Data Refresh
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: pip install -e .
+      - name: Download data artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: footy-data
+          path: data/
+        continue-on-error: true
+      - name: Run data refresh
+        env:
+          FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+        run: |
+          mkdir -p data
+          python -m footy.cli refresh
+      - name: Upload data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: footy-data
+          path: data/footy.duckdb
+          retention-days: 30

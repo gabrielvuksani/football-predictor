@@ -1,0 +1,35 @@
+name: Weekly Model Retrain
+on:
+  schedule:
+    - cron: '0 3 * * 1'  # Every Monday at 3am
+  workflow_dispatch:
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: pip install -e .
+      - name: Download data
+        uses: actions/download-artifact@v4
+        with:
+          name: footy-data
+          path: data/
+        continue-on-error: true
+      - name: Retrain model
+        env:
+          FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
+        run: |
+          mkdir -p data/models
+          python -m footy.cli go --skip-history
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: footy-model
+          path: data/models/
+          retention-days: 90

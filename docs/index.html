@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Footy Predictor - AI-powered football match predictions and analytics">
+  <meta name="theme-color" content="#050507">
+  <title>Footy Predictor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <!-- Alpine.js and app.js loaded at bottom of body -->
+</head>
+<body x-data="app" @click="showInsightsDropdown = false; showAnalysisDropdown = false; showSystemDropdown = false">
+
+  <!-- Skip to main content for accessibility -->
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <!-- ══════════ ERROR TOAST ══════════ -->
+  <div x-show="_errorToast" x-transition.opacity class="error-toast" x-cloak role="alert" aria-live="assertive" aria-atomic="true">
+    <span>⚠️</span>
+    <span x-text="_errorToast"></span>
+    <button @click="_errorToast = null" aria-label="Dismiss error message" style="background:none;border:none;color:inherit;cursor:pointer;font-size:1rem;padding:0 0.25rem;">×</button>
+  </div>
+
+  <!-- ══════════ NAV ══════════ -->
+  <nav class="nav" role="navigation" aria-label="Main navigation">
+    <div class="container nav-inner">
+      <a class="nav-brand" href="/" @click.prevent="goHome()" title="Go to home page"><span aria-label="Football icon">⚽</span> Footy Predictor</a>
+      <button class="nav-toggle" @click.stop="$refs.navRight.classList.toggle('open')" aria-label="Toggle navigation menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="nav-right" x-ref="navRight">
+        <template x-if="lastUpdated">
+          <span class="last-updated" :title="'Last updated: ' + lastUpdated" x-text="'Updated ' + formatUpdated(lastUpdated)"></span>
+        </template>
+        <div class="nav-tabs" x-show="view === 'main'" role="tablist" aria-label="Primary navigation tabs">
+          <!-- Matches tab -->
+          <button :id="tabId('matches')" class="nav-tab" :class="{ active: tab === 'matches' }" role="tab" :aria-selected="String(tab === 'matches')" :aria-controls="panelId('matches')" :tabindex="tab === 'matches' ? 0 : -1"
+            @click="switchTab('matches')" @keydown="onTabKeydown($event, 'matches')" title="View upcoming matches">Matches</button>
+          
+          <!-- Insights dropdown -->
+          <div class="nav-dropdown">
+            <button class="nav-dropdown-toggle" :class="{ active: ['insights', 'btts', 'accas'].includes(tab) }"
+              @click.stop="toggleInsightsDropdown()" title="Insights options" aria-label="Insights menu" :aria-expanded="String(showInsightsDropdown)" aria-haspopup="true">
+              Insights ▼
+            </button>
+            <div class="nav-dropdown-menu" :class="{ open: showInsightsDropdown }" role="menu">
+              <button class="nav-dropdown-item" :class="{ active: tab === 'insights' }" @click="switchTab('insights'); showInsightsDropdown = false" role="menuitem" title="View value bets">Value Bets</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'btts' }" @click="switchTab('btts'); showInsightsDropdown = false" role="menuitem" title="View BTTS and over/under">BTTS/O2.5</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'accas' }" @click="switchTab('accas'); showInsightsDropdown = false" role="menuitem" title="View accumulators">Accumulators</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'form' }" @click="switchTab('form'); showInsightsDropdown = false" role="menuitem" title="View team form">Form Tables</button>
+            </div>
+          </div>
+          
+          <!-- Analysis dropdown -->
+          <div class="nav-dropdown">
+            <button class="nav-dropdown-toggle" :class="{ active: ['table', 'accuracy', 'review'].includes(tab) }"
+              @click.stop="toggleAnalysisDropdown()" title="Analysis options" aria-label="Analysis menu" :aria-expanded="String(showAnalysisDropdown)" aria-haspopup="true">
+              Analysis ▼
+            </button>
+            <div class="nav-dropdown-menu" :class="{ open: showAnalysisDropdown }" role="menu">
+              <button class="nav-dropdown-item" :class="{ active: tab === 'table' }" @click="switchTab('table'); showAnalysisDropdown = false" role="menuitem" title="View league tables">League Tables</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'accuracy' }" @click="switchTab('accuracy'); showAnalysisDropdown = false" role="menuitem" title="View accuracy dashboard">Accuracy</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'review' }" @click="switchTab('review'); showAnalysisDropdown = false" role="menuitem" title="View post-match review">Post-Match Review</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'simulation' }" @click="switchTab('simulation'); showAnalysisDropdown = false" role="menuitem" title="Season simulation">Season Simulation</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'streaks' }" @click="switchTab('streaks'); showAnalysisDropdown = false" role="menuitem" title="Team streaks">Streaks</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'history' }" @click="switchTab('history'); showAnalysisDropdown = false" role="menuitem" title="Prediction history">Prediction History</button>
+            </div>
+          </div>
+          
+          <!-- System dropdown -->
+          <div class="nav-dropdown">
+            <button class="nav-dropdown-toggle" :class="{ active: ['stats', 'training', 'lab', 'brain', 'sources'].includes(tab) }"
+              @click.stop="toggleSystemDropdown()" title="System options" aria-label="System menu" :aria-expanded="String(showSystemDropdown)" aria-haspopup="true">
+              System ▼
+            </button>
+            <div class="nav-dropdown-menu" :class="{ open: showSystemDropdown }" role="menu">
+              <button class="nav-dropdown-item" :class="{ active: tab === 'stats' }" @click="switchTab('stats'); showSystemDropdown = false" role="menuitem" title="View statistics">Stats</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'training' }" @click="switchTab('training'); showSystemDropdown = false" role="menuitem" title="View training status">Training</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'lab' }" @click="switchTab('lab'); showSystemDropdown = false" role="menuitem" title="Access model lab">Model Lab</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'brain' }" @click="switchTab('brain'); showSystemDropdown = false" role="menuitem" title="View self-learning">Brain</button>
+              <button class="nav-dropdown-item" :class="{ active: tab === 'sources' }" @click="switchTab('sources'); showSystemDropdown = false" role="menuitem" title="View data sources">Sources</button>
+            </div>
+          </div>
+        </div>
+        <button class="nav-theme-toggle" @click="toggleTheme()" :title="'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' mode'" aria-label="Toggle dark/light mode">
+          <span x-show="theme === 'dark'" aria-label="Sun icon, switch to light mode">☀️</span>
+          <span x-show="theme === 'light'" aria-label="Moon icon, switch to dark mode">🌙</span>
+        </button>
+        <button class="nav-help" @click="showKeyboardHelp = true" title="Show keyboard shortcuts (Press ?)" aria-label="Show help menu">?</button>
+        <template x-if="view === 'match'">
+          <button class="back-btn" @click="goHome()" title="Go back to main view">← Back</button>
+        </template>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ══════════ KEYBOARD HELP MODAL ══════════ -->
+  <div x-show="showKeyboardHelp" class="modal" @click.self="showKeyboardHelp = false" x-transition role="dialog" aria-labelledby="help-title" aria-modal="true">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="help-title" class="modal-title">Keyboard Shortcuts</h2>
+        <button class="modal-close" @click="showKeyboardHelp = false" aria-label="Close help modal">×</button>
+      </div>
+      <div style="font-size: 0.95rem; line-height: 1.8;">
+        <div style="margin-bottom: 1.5rem;">
+          <h3 style="font-weight: 600; margin-bottom: 0.5rem; color: var(--accent);">Navigation</h3>
+          <p><kbd style="background: var(--surface-2); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: var(--mono);">?</kbd> Show this help menu</p>
+          <p><kbd style="background: var(--surface-2); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: var(--mono);">/</kbd> Focus search (on Matches tab)</p>
+          <p><kbd style="background: var(--surface-2); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: var(--mono);">Esc</kbd> Close modals</p>
+          <p><kbd style="background: var(--surface-2); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: var(--mono);">←</kbd> / <kbd style="background: var(--surface-2); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: var(--mono);">→</kbd> Navigate tabs</p>
+        </div>
+        <div>
+          <h3 style="font-weight: 600; margin-bottom: 0.5rem; color: var(--accent);">Features</h3>
+          <p>Click a match card to view detailed analysis</p>
+          <p>Use filters to refine match results by league</p>
+          <p>Sort by confidence, edge, or kickoff time</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main class="container main-content" id="main-content">
+
+    <!-- ══════════════════════════════════════════════════ -->
+    <!--                 MAIN VIEW                          -->
+    <!-- ══════════════════════════════════════════════════ -->
+    <div x-show="view === 'main'" x-cloak>
+
+      <!-- ══════════ MATCHES TAB ══════════ -->
+      <div x-show="tab === 'matches'" class="tab-content" x-cloak role="tabpanel" :id="panelId('matches')" :aria-labelledby="tabId('matches')" tabindex="0">
+        <template x-if="loading">
+          <div class="loading">
+            <div style="width: 100%; max-width: 1200px;">
+              <template x-for="i in 3" :key="i">
+                <div class="skeleton-card" style="margin-bottom: 1rem;">
+                  <div class="skeleton-line" style="width: 60%; height: 1.5rem; margin-bottom: 0.75rem;"></div>
+                  <div class="skeleton-line" style="width: 100%;"></div>
+                  <div class="skeleton-line" style="width: 100%;"></div>
+                  <div class="skeleton" style="height: 8px; width: 100%; margin-top: 0.75rem;"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <template x-if="!loading && matches.length === 0">
+          <div class="empty-state" role="status">
+            <div class="empty-state-icon" aria-label="Football icon">⚽</div>
+            <h3>No upcoming matches</h3>
+            <p>Predictions will appear here once match data is available. Check back before the next matchday.</p>
+          </div>
+        </template>
+
+        <template x-if="!loading && matches.length > 0">
+          <div aria-live="polite" aria-label="Match list">
+            <div class="matches-toolbar glass">
+              <div class="toolbar-left">
+                <div class="toolbar-title-wrap">
+                  <h2 class="section-title">Upcoming Matches</h2>
+                  <p class="toolbar-subtitle">Live predictions and confident picks across all leagues</p>
+                </div>
+                <div class="toolbar-stats" role="region" aria-label="Match summary statistics" aria-live="polite">
+                  <span class="toolbar-chip" :title="matchSummary.total + ' total matches'"><strong x-text="matchSummary.total"></strong> fixtures</span>
+                  <span class="toolbar-chip" :title="matchSummary.predicted + ' matches with predictions'"><strong x-text="matchSummary.predicted"></strong> predicted</span>
+                  <span class="toolbar-chip" :title="matchSummary.avgConfidence + '% average confidence'"><strong x-text="matchSummary.avgConfidence"></strong>% avg confidence</span>
+                  <template x-if="matchSummary.strongest">
+                    <span class="toolbar-chip toolbar-chip-accent" :title="'Strongest lean: ' + matchSummary.strongest.home_team + ' vs ' + matchSummary.strongest.away_team">
+                      Strongest: <strong x-text="matchSummary.strongest.home_team.substring(0,3)"></strong>
+                    </span>
+                  </template>
+                </div>
+              </div>
+              <div class="toolbar-controls">
+                <div class="search-wrap">
+                  <input type="search" class="search-input" placeholder="Search teams… (or press /)"
+                         x-model="searchQuery" @input="updateSearchQuery(searchQuery); _saveUiPrefs()"
+                         aria-label="Search matches by team name"
+                         @keydown.escape="searchQuery = ''">
+                  <template x-if="searchQuery">
+                    <button @click="searchQuery = ''" style="position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-2); cursor: pointer; padding: 0.25rem;" aria-label="Clear search">✕</button>
+                  </template>
+                </div>
+                <label class="toolbar-control">
+                  <span>Horizon</span>
+                  <select x-model.number="days" @change="_saveUiPrefs(); fetchMatches()"
+                          aria-label="Prediction horizon in days">
+                    <option :value="3">3 days</option>
+                    <option :value="7">7 days</option>
+                    <option :value="14">14 days</option>
+                    <option :value="30">30 days</option>
+                  </select>
+                </label>
+                <label class="toolbar-control">
+                  <span>Sort</span>
+                  <select x-model="sortMode" @change="_saveUiPrefs()"
+                          aria-label="Sort matches by">
+                    <option value="kickoff">Kickoff</option>
+                    <option value="confidence">Confidence</option>
+                    <option value="edge">Signal</option>
+                  </select>
+                </label>
+                <button class="toolbar-refresh" @click="refreshCurrentView()"
+                        aria-label="Refresh match data" title="Refresh data (Ctrl+R)">Refresh</button>
+                <button class="toolbar-btn" @click="toggleAutoRefresh()" :class="{'active': autoRefreshEnabled}"
+                        :aria-label="autoRefreshEnabled ? 'Pause auto-refresh' : 'Enable auto-refresh'"
+                        :title="autoRefreshEnabled ? 'Auto-refresh is on (every 5 min)' : 'Enable auto-refresh'">
+                  <span x-show="autoRefreshEnabled">⏸</span>
+                  <span x-show="!autoRefreshEnabled">▶</span>
+                  <span x-text="autoRefreshEnabled ? 'Pause' : 'Auto'"></span>
+                </button>
+              </div>
+            </div>
+
+            <div class="filter-bar" role="group" aria-label="League filters">
+              <template x-for="lg in leagues" :key="lg">
+                <button class="filter-pill" :class="{ active: league === lg }"
+                  @click="league = lg; _saveUiPrefs()"
+                  :aria-label="'Filter by ' + (lg === 'all' ? 'all leagues' : lg)"
+                        x-text="lg === 'all' ? 'All Leagues' : lg"></button>
+              </template>
+              <span class="filter-count" role="status" :aria-label="filteredMatches.length + ' matches after filtering'">
+                <strong x-text="filteredMatches.length"></strong> matches
+              </span>
+            </div>
+
+            <template x-if="filteredMatches.length === 0 && !loading">
+              <div class="empty" role="status">
+                <div class="empty-icon">🔍</div>
+                <p>No matches found</p>
+                <p class="text-3">Try adjusting your filters or search query</p>
+              </div>
+            </template>
+
+            <template x-for="[date, group] in groupedMatches()" :key="date">
+              <div>
+                <div class="date-header" x-text="formatDate(date)"></div>
+                <template x-for="m in group" :key="m.match_id">
+                  <a class="glass glass-hover match-card" :href="'/match/' + m.match_id"
+                     @click.prevent="openMatch(m.match_id)"
+                     :title="m.home_team + ' vs ' + m.away_team + ' (' + m.competition + ')'"
+                     role="button">
+                    <div class="match-top">
+                      <div class="match-teams-text">
+                        <span class="match-home" x-text="m.home_team"></span>
+                        <span class="match-vs">vs</span>
+                        <span class="match-away" x-text="m.away_team"></span>
+                      </div>
+                      <div class="match-meta">
+                        <span class="match-time" :aria-label="'Kickoff at ' + matchTime(m)" x-text="matchTime(m)"></span>
+                        <span :class="badgeClass(m.competition)" x-text="m.competition"></span>
+                      </div>
+                    </div>
+
+                    <template x-if="m.p_home != null">
+                      <div class="prob-section">
+                        <div class="prob-bar" role="img" :aria-label="'Home ' + pct(m.p_home) + ', Draw ' + pct(m.p_draw) + ', Away ' + pct(m.p_away)">
+                          <div class="home" :style="'width:' + (m.p_home*100) + '%'" aria-hidden="true"></div>
+                          <div class="draw" :style="'width:' + (m.p_draw*100) + '%'" aria-hidden="true"></div>
+                          <div class="away" :style="'width:' + (m.p_away*100) + '%'" aria-hidden="true"></div>
+                        </div>
+                        <div class="prob-labels">
+                          <div class="prob-label"><span class="prob-dot home" aria-hidden="true"></span><span class="prob-pct" x-text="pct(m.p_home)"></span></div>
+                          <div class="prob-label"><span class="prob-dot draw" aria-hidden="true"></span><span class="prob-pct" x-text="pct(m.p_draw)"></span></div>
+                          <div class="prob-label"><span class="prob-dot away" aria-hidden="true"></span><span class="prob-pct" x-text="pct(m.p_away)"></span></div>
+                        </div>
+                        <div class="card-footer">
+                          <div class="verdict" :class="verdict(m).cls" x-text="verdict(m).text"></div>
+                          <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                            <template x-if="m.btts != null">
+                              <span class="card-mini-tag" :class="m.btts >= 0.5 ? 'mini-yes' : 'mini-no'" :title="'BTTS probability: ' + pct(m.btts)" x-text="'BTTS ' + pct(m.btts)"></span>
+                            </template>
+                            <template x-if="m.o25 != null">
+                              <span class="card-mini-tag" :class="m.o25 >= 0.5 ? 'mini-yes' : 'mini-no'" :title="'Over 2.5 goals probability: ' + pct(m.o25)" x-text="'O2.5 ' + pct(m.o25)"></span>
+                            </template>
+                            <template x-if="confidence(m)">
+                              <span class="conf-badge" :class="'conf-' + confidence(m)" :title="confLabel(m) + ' confidence'" aria-label="Confidence level">
+                                <span class="conf-dot" aria-hidden="true"></span>
+                                <span x-text="confLabel(m)"></span>
+                              </span>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+
+                    <template x-if="m.p_home == null">
+                      <p class="text-3" style="font-size:0.78rem; margin-top:0.3rem;">No prediction yet</p>
+                    </template>
+                  </a>
+                </template>
+              </div>
+            </template>
+
+            <template x-if="filteredMatches.length > 0 && filteredMatches.length >= ITEMS_PER_PAGE">
+              <div style="text-align: center; padding: 2rem;">
+                <button class="btn btn-secondary" @click="loadMoreMatches()" x-show="!matchesLoadingMore" :disabled="matchesLoadingMore">
+                  Load More Matches
+                </button>
+                <div class="spinner" x-show="matchesLoadingMore" role="status" aria-label="Loading more matches"></div>
+              </div>
+            </template>
+          </div></template>
+      </div>
+
+      <!-- ══════════ INSIGHTS TAB ══════════ -->
+      <div x-show="tab === 'insights'" class="tab-content" x-cloak role="tabpanel" :id="panelId('insights')" :aria-labelledby="tabId('insights')" tabindex="0">
+        <div class="insights-header">
+          <h2 class="section-title"><span aria-label="Money bag icon">💰</span> Value Bets</h2>
+          <span class="text-3">Value opportunities with positive expected value</span>
+        </div>
+
+        <template x-if="loadingBets">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading value bets"></div></div>
+        </template>
+
+        <template x-if="!loadingBets && valueBets.length === 0">
+          <div class="empty" role="status">
+            <div class="empty-icon">🔍</div>
+            <p>No value bets found</p>
+            <p class="text-3">No edges detected at current threshold</p>
+          </div>
+        </template>
+
+        <template x-for="b in valueBets" :key="b.match_id + b.bet">
+          <div class="glass bet-card">
+            <div class="bet-left">
+              <div class="bet-match" x-text="b.home_team + ' vs ' + b.away_team"></div>
+              <div class="bet-meta">
+                <span :class="badgeClass(b.competition)" x-text="b.competition"></span>
+                <span x-text="b.date"></span>
+                <span class="bet-type" :class="b.bet" x-text="b.bet"></span>
+                <span>Model: <strong x-text="pct(b.model_prob)"></strong></span>
+              </div>
+              <div class="bet-kelly" x-text="'Kelly: ' + kellyPct(b.model_prob, b.odds)"></div>
+            </div>
+            <div class="bet-right">
+              <div class="bet-odds" x-text="b.odds.toFixed(2)"></div>
+              <div class="bet-edge-tag" x-text="'+' + (b.edge * 100).toFixed(1) + '%'"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ BTTS & OVER/UNDER TAB ══════════ -->
+      <div x-show="tab === 'btts'" class="tab-content" x-cloak role="tabpanel" :id="panelId('btts')" :aria-labelledby="tabId('btts')" tabindex="0">
+        <h2 class="section-title"><span aria-label="Football icon">⚽</span> BTTS &amp; Over/Under 2.5</h2>
+
+        <template x-if="loadingBtts">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading BTTS predictions"></div></div>
+        </template>
+
+        <template x-if="!loadingBtts && bttsOu">
+          <div class="btts-grid">
+            <!-- BTTS Likely -->
+            <div class="glass" style="padding:1.5rem;">
+              <h3 class="subsection-title" style="color:var(--green);margin-bottom:1rem;"><span aria-label="Checkmark icon">✓</span> BTTS Likely (&gt;55%)</h3>
+              <template x-if="bttsOu.btts_likely?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.btts_likely || []" :key="m.match_id + 'bl'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;" role="button" :title="m.home_team + ' vs ' + m.away_team">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--green)" x-text="pct(m.btts_prob)"></span>
+                </div>
+              </template>
+            </div>
+
+            <!-- BTTS Unlikely -->
+            <div class="glass" style="padding:1.5rem;">
+              <h3 class="subsection-title" style="color:var(--red);margin-bottom:1rem;"><span aria-label="X mark icon">✗</span> BTTS Unlikely (&lt;35%)</h3>
+              <template x-if="bttsOu.btts_unlikely?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.btts_unlikely || []" :key="m.match_id + 'bu'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;" role="button" :title="m.home_team + ' vs ' + m.away_team">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--red)" x-text="pct(m.btts_prob)"></span>
+                </div>
+              </template>
+            </div>
+
+            <!-- Over 2.5 -->
+            <div class="glass" style="padding:1.5rem;">
+              <h3 class="subsection-title" style="color:var(--green);margin-bottom:1rem;"><span aria-label="Up arrow icon">⬆</span> Over 2.5 (&gt;55%)</h3>
+              <template x-if="bttsOu.over25?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.over25 || []" :key="m.match_id + 'o25'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;" role="button" :title="m.home_team + ' vs ' + m.away_team">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--green)" x-text="pct(m.o25_prob)"></span>
+                </div>
+              </template>
+            </div>
+
+            <!-- Under 2.5 -->
+            <div class="glass" style="padding:1.5rem;">
+              <h3 class="subsection-title" style="color:var(--red);margin-bottom:1rem;"><span aria-label="Down arrow icon">⬇</span> Under 2.5 (&lt;35%)</h3>
+              <template x-if="bttsOu.under25?.length === 0">
+                <p class="text-3">No matches meet threshold</p>
+              </template>
+              <template x-for="m in bttsOu.under25 || []" :key="m.match_id + 'u25'">
+                <div class="btts-row" @click="openMatch(m.match_id)" style="cursor:pointer;" role="button" :title="m.home_team + ' vs ' + m.away_team">
+                  <span class="btts-match" x-text="m.home_team + ' vs ' + m.away_team"></span>
+                  <span :class="badgeClass(m.competition)" x-text="m.competition" style="font-size:0.6rem;"></span>
+                  <span class="btts-prob" style="color:var(--red)" x-text="pct(m.under25_prob)"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ ACCUMULATORS TAB ══════════ -->
+      <div x-show="tab === 'accas'" class="tab-content" x-cloak role="tabpanel" :id="panelId('accas')" :aria-labelledby="tabId('accas')" tabindex="0">
+        <h2 class="section-title"><span aria-label="Target icon">🎯</span> Accumulators</h2>
+
+        <template x-if="loadingAccas">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading accumulators"></div></div>
+        </template>
+
+        <template x-if="!loadingAccas && accumulators.length === 0">
+          <div class="empty" role="status">
+            <div class="empty-icon">🎲</div>
+            <p>No accumulators available</p>
+            <p class="text-3">Check back later for multi-match opportunities</p>
+          </div>
+        </template>
+
+        <template x-for="(acca, idx) in accumulators" :key="idx">
+          <div class="glass" style="padding:1.5rem;margin-bottom:1rem;">
+            <h3 class="card-title">Accumulator <strong x-text="idx + 1"></strong></h3>
+            <p class="text-2" style="margin-bottom:1rem;"><strong>Odds: <span x-text="acca.odds?.toFixed(2) || '—'"></span></strong> | Stake: £10 → Win: £<span x-text="((acca.odds || 1) * 10).toFixed(2)"></span></p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">
+              <template x-for="leg in acca.legs || []" :key="leg.match_id + leg.outcome">
+                <div style="padding:0.75rem;background:var(--surface-1);border-radius:var(--r-sm);border:1px solid var(--border);">
+                  <div style="font-weight:600;margin-bottom:0.25rem;" x-text="leg.home_team + ' vs ' + leg.away_team"></div>
+                  <div style="font-size:0.85rem;color:var(--text-2);margin-bottom:0.5rem;">
+                    <span :class="badgeClass(leg.competition)" x-text="leg.competition"></span>
+                    <span style="margin-left:0.5rem;" x-text="leg.outcome.toUpperCase()"></span>
+                  </div>
+                  <div style="font-size:0.85rem;"><strong x-text="pct(leg.probability)"></strong></div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ FORM TABLE TAB ══════════ -->
+      <div x-show="tab === 'form'" class="tab-content" x-cloak role="tabpanel" :id="panelId('form')" :aria-labelledby="tabId('form')" tabindex="0">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+          <h2 class="section-title"><span aria-label="Chart icon">📊</span> Form Table</h2>
+          <div style="display:flex;gap:0.5rem;">
+            <template x-for="comp in tableCompetitions" :key="comp">
+              <button class="filter-pill" :class="{ active: formTableComp === comp }" @click="selectFormTableComp(comp)" :aria-label="'Filter form by ' + comp" x-text="comp"></button>
+            </template>
+          </div>
+        </div>
+
+        <template x-if="loadingFormTable">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading form table"></div></div>
+        </template>
+
+        <template x-if="!loadingFormTable && formTable.length > 0">
+          <div class="table-wrapper">
+            <table role="table" aria-label="Team form table">
+              <thead>
+                <tr>
+                  <th>Team</th>
+                  <th style="text-align:center;">Played</th>
+                  <th style="text-align:center;">W</th>
+                  <th style="text-align:center;">D</th>
+                  <th style="text-align:center;">L</th>
+                  <th style="text-align:right;">GF</th>
+                  <th style="text-align:right;">GA</th>
+                  <th style="text-align:right;">Form</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="row in formTable" :key="row.team">
+                  <tr>
+                    <td><strong x-text="row.team"></strong></td>
+                    <td style="text-align:center;" x-text="row.played || '—'"></td>
+                    <td style="text-align:center;color:var(--green);" x-text="row.wins || '—'"></td>
+                    <td style="text-align:center;color:var(--amber);" x-text="row.draws || '—'"></td>
+                    <td style="text-align:center;color:var(--red);" x-text="row.losses || '—'"></td>
+                    <td style="text-align:right;" x-text="row.goals_for || '—'"></td>
+                    <td style="text-align:right;" x-text="row.goals_against || '—'"></td>
+                    <td style="text-align:right;font-weight:600;" x-text="row.form || '—'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ LEAGUE TABLE TAB ══════════ -->
+      <div x-show="tab === 'table'" class="tab-content" x-cloak role="tabpanel" :id="panelId('table')" :aria-labelledby="tabId('table')" tabindex="0">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+          <h2 class="section-title"><span aria-label="Trophy icon">🏆</span> League Tables</h2>
+          <div style="display:flex;gap:0.5rem;">
+            <template x-for="comp in tableCompetitions" :key="comp">
+              <button class="filter-pill" :class="{ active: tableComp === comp }" @click="selectTableComp(comp)" :aria-label="'Show ' + comp + ' table'" x-text="comp"></button>
+            </template>
+          </div>
+        </div>
+
+        <template x-if="loadingTable">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading league table"></div></div>
+        </template>
+
+        <template x-if="!loadingTable && leagueTable.length > 0">
+          <div class="table-wrapper">
+            <table role="table" :aria-label="leagueName(tableComp) + ' table'">
+              <thead>
+                <tr>
+                  <th style="text-align:center;">Pos</th>
+                  <th>Team</th>
+                  <th style="text-align:center;">P</th>
+                  <th style="text-align:center;">W</th>
+                  <th style="text-align:center;">D</th>
+                  <th style="text-align:center;">L</th>
+                  <th style="text-align:right;">GD</th>
+                  <th style="text-align:right;">Pts</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="row in leagueTable" :key="row.team_id">
+                  <tr>
+                    <td style="text-align:center;font-weight:600;" x-text="row.position"></td>
+                    <td><strong x-text="row.team_name"></strong></td>
+                    <td style="text-align:center;" x-text="row.played"></td>
+                    <td style="text-align:center;color:var(--green);" x-text="row.won"></td>
+                    <td style="text-align:center;color:var(--amber);" x-text="row.drawn"></td>
+                    <td style="text-align:center;color:var(--red);" x-text="row.lost"></td>
+                    <td style="text-align:right;" :class="row.goal_difference > 0 ? 'text-1' : row.goal_difference < 0 ? 'text-3' : 'text-2'" x-text="row.goal_difference > 0 ? '+' + row.goal_difference : row.goal_difference"></td>
+                    <td style="text-align:right;font-weight:600;" x-text="row.points"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ ACCURACY TAB ══════════ -->
+      <div x-show="tab === 'accuracy'" class="tab-content" x-cloak role="tabpanel" :id="panelId('accuracy')" :aria-labelledby="tabId('accuracy')" tabindex="0">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+          <h2 class="section-title">📈 Accuracy Dashboard</h2>
+          <label class="toolbar-control">
+            <span>Period</span>
+            <select x-model.number="accuracyDays" @change="fetchAccuracy()" aria-label="Time period for accuracy calculation">
+              <option :value="7">Last 7 days</option>
+              <option :value="14">Last 14 days</option>
+              <option :value="30">Last 30 days</option>
+              <option :value="90">Last 90 days</option>
+            </select>
+          </label>
+        </div>
+
+        <template x-if="loadingAccuracy">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading accuracy data"></div></div>
+        </template>
+
+        <template x-if="!loadingAccuracy && accuracyStats">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:2rem;">
+            <div class="card">
+              <div class="card-title">Accuracy</div>
+              <div style="font-size:2rem;font-weight:700;color:var(--accent);" x-text="pct(accuracyStats.accuracy)"></div>
+            </div>
+            <div class="card">
+              <div class="card-title">Log Loss</div>
+              <div style="font-size:2rem;font-weight:700;" :style="'color:' + perfAccuracyColor(1 - accuracyStats.log_loss)">
+                <span x-text="accuracyStats.log_loss?.toFixed(3) || '—'"></span>
+              </div>
+              <div class="text-3" style="font-size:0.85rem;" x-text="loglossGrade(accuracyStats.log_loss)"></div>
+            </div>
+            <div class="card">
+              <div class="card-title">Predictions</div>
+              <div style="font-size:2rem;font-weight:700;color:var(--cyan);" x-text="accuracyStats.total_predictions || '—'"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ REVIEW TAB ══════════ -->
+      <div x-show="tab === 'review'" class="tab-content" x-cloak role="tabpanel" :id="panelId('review')" :aria-labelledby="tabId('review')" tabindex="0">
+        <h2 class="section-title">📋 Post-Match Review</h2>
+
+        <template x-if="loadingReview || loadingRoundPreview">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading review data"></div></div>
+        </template>
+
+        <template x-if="postMatchReview">
+          <div class="card" style="margin-bottom:2rem;">
+            <div class="card-title">Recent Results</div>
+            <div class="card-content" x-text="postMatchReview.summary || 'Review data unavailable'"></div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ STATS TAB ══════════ -->
+      <div x-show="tab === 'stats'" class="tab-content" x-cloak role="tabpanel" :id="panelId('stats')" :aria-labelledby="tabId('stats')" tabindex="0">
+        <h2 class="section-title">📊 Statistics</h2>
+
+        <template x-if="loadingStats || loadingPerf">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading statistics"></div></div>
+        </template>
+
+        <template x-if="!loadingStats && stats">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;margin-bottom:2rem;">
+            <div class="card">
+              <div class="card-title">Total Predictions</div>
+              <div style="font-size:2rem;font-weight:700;color:var(--accent);" x-text="stats.total_matches || '—'"></div>
+            </div>
+            <div class="card">
+              <div class="card-title">Avg Confidence</div>
+              <div style="font-size:2rem;font-weight:700;color:var(--green);" x-text="pct(stats.avg_confidence)"></div>
+            </div>
+            <div class="card">
+              <div class="card-title">Top Prediction</div>
+              <div class="card-content" style="word-break:break-word;" x-text="stats.strongest_prediction || 'N/A'"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ TRAINING TAB ══════════ -->
+      <div x-show="tab === 'training'" class="tab-content" x-cloak role="tabpanel" :id="panelId('training')" :aria-labelledby="tabId('training')" tabindex="0">
+        <h2 class="section-title">🚀 Training Status</h2>
+
+        <template x-if="loadingTraining">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading training status"></div></div>
+        </template>
+
+        <template x-if="!loadingTraining && trainingStatus">
+          <div class="card">
+            <div class="card-title" x-text="trainingStatus.status || 'Training'"></div>
+            <div class="card-content" x-text="trainingStatus.message || 'Training in progress'"></div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ MODEL LAB TAB ══════════ -->
+      <div x-show="tab === 'lab'" class="tab-content" x-cloak role="tabpanel" :id="panelId('lab')" :aria-labelledby="tabId('lab')" tabindex="0">
+        <h2 class="section-title">🔬 Model Lab</h2>
+
+        <template x-if="loadingModelLab">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading model lab"></div></div>
+        </template>
+
+        <template x-if="!loadingModelLab && modelLab">
+          <div class="card">
+            <div class="card-title">Experiments</div>
+            <div class="card-content" x-text="modelLab.status || 'Lab ready'"></div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ BRAIN TAB ══════════ -->
+      <div x-show="tab === 'brain'" class="tab-content" x-cloak role="tabpanel" :id="panelId('brain')" :aria-labelledby="tabId('brain')" tabindex="0">
+        <h2 class="section-title">🧠 Self-Learning</h2>
+
+        <template x-if="loadingBrain">
+          <div class="loading"><div class="spinner" role="status" aria-label="Loading brain status"></div></div>
+        </template>
+
+        <template x-if="!loadingBrain && brainStatus">
+          <div class="card">
+            <div class="card-title" x-text="brainStatus.stage || 'Learning'"></div>
+            <div class="card-content" x-text="brainStatus.message || 'Self-learning in progress'"></div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════ SOURCES TAB ══════════ -->
+      <div x-show="tab === 'sources'" class="tab-content" x-cloak role="tabpanel" :id="panelId('sources')" :aria-labelledby="tabId('sources')" tabindex="0">
+        <h2 class="section-title">📡 Data Sources</h2>
+
+        <template x-if="sourcesData">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">
+            <template x-for="src in sourcesData.sources || []" :key="src.name">
+              <div class="card">
+                <div class="card-title" x-text="src.name"></div>
+                <div class="card-content">
+                  <p><strong>Status:</strong> <span :style="'color:' + (src.active ? 'var(--green)' : 'var(--red)')" x-text="src.active ? 'Active' : 'Inactive'"></span></p>
+                  <p><strong>Updated:</strong> <span class="text-2" x-text="formatUpdated(src.last_update)"></span></p>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+    </div>
+
+    <!-- ══════════════════════════════════════════════════ -->
+    <!--              MATCH DETAIL VIEW                     -->
+    <!-- ══════════════════════════════════════════════════ -->
+    <div x-show="view === 'match'" x-cloak>
+      <template x-if="loadingDetail">
+        <div class="loading" style="min-height:600px;">
+          <div class="spinner" role="status" aria-label="Loading match details"></div>
+        </div>
+      </template>
+
+      <template x-if="!loadingDetail && md">
+        <div style="animation: fadeIn 0.35s cubic-bezier(0.4,0,0.2,1);">
+          <!-- Match Header -->
+          <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+            <h1 style="font-size:1.875rem;font-weight:700;margin-bottom:0.5rem;">
+              <span x-text="md.home_team"></span> vs <span x-text="md.away_team"></span>
+            </h1>
+            <p class="text-2">
+              <span :class="badgeClass(md.competition)" x-text="md.competition"></span>
+              <span style="margin-left:1rem;" x-text="formatDate(md.utc_date?.split('T')[0])"></span>
+              <span style="margin-left:1rem;" x-text="matchTime(md)"></span>
+            </p>
+          </div>
+
+          <!-- Prediction Box -->
+          <template x-if="md.prediction">
+            <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+              <h2 class="section-title">Match Prediction</h2>
+              
+              <!-- Probability Gauge -->
+              <div class="probability-gauge">
+                <div class="gauge-circle">
+                  <svg class="gauge-svg" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--surface-2)" stroke-width="8"/>
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--accent)" stroke-width="8" 
+                      stroke-dasharray="314" :stroke-dashoffset="314 - (314 * Math.max(md.prediction.p_home, md.prediction.p_draw, md.prediction.p_away))"
+                      stroke-linecap="round" transform="rotate(-90 60 60)"/>
+                  </svg>
+                  <div class="gauge-text">
+                    <div class="gauge-value" x-text="pct(Math.max(md.prediction.p_home, md.prediction.p_draw, md.prediction.p_away))"></div>
+                    <div class="gauge-label">Confidence</div>
+                  </div>
+                </div>
+                <div class="gauge-info">
+                  <div class="gauge-outcome" x-text="verdict(md).text"></div>
+                  <div style="font-size:0.9rem;color:var(--text-2);line-height:1.6;">
+                    <p style="margin:0 0 0.75rem 0;">The AI model predicts this match with <strong x-text="confLabel(md)"></strong> confidence.</p>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Outcome Probabilities -->
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem;margin-bottom:2rem;">
+                <div style="text-align:center;">
+                  <div style="font-size:0.9rem;color:var(--text-2);margin-bottom:0.5rem;">Home Win</div>
+                  <div style="font-size:2.5rem;font-weight:800;color:#3b82f6;" x-text="pct(md.prediction.p_home)"></div>
+                  <div style="font-size:0.85rem;color:var(--text-3);margin-top:0.5rem;">
+                    <span x-text="md.home_team"></span>
+                  </div>
+                </div>
+                <div style="text-align:center;">
+                  <div style="font-size:0.9rem;color:var(--text-2);margin-bottom:0.5rem;">Draw</div>
+                  <div style="font-size:2.5rem;font-weight:800;color:#f59e0b;" x-text="pct(md.prediction.p_draw)"></div>
+                  <div style="font-size:0.85rem;color:var(--text-3);margin-top:0.5rem;">Draw</div>
+                </div>
+                <div style="text-align:center;">
+                  <div style="font-size:0.9rem;color:var(--text-2);margin-bottom:0.5rem;">Away Win</div>
+                  <div style="font-size:2.5rem;font-weight:800;color:#ef4444;" x-text="pct(md.prediction.p_away)"></div>
+                  <div style="font-size:0.85rem;color:var(--text-3);margin-top:0.5rem;">
+                    <span x-text="md.away_team"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Experts Section -->
+          <template x-if="matchExperts">
+            <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+              <h2 class="section-title">Expert Consensus</h2>
+              <div style="background:var(--surface-1);padding:1.5rem;border-radius:var(--r-sm);margin-bottom:1.5rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <div style="font-size:0.9rem;color:var(--text-2);margin-bottom:0.5rem;">Consensus Score</div>
+                    <div style="font-size:2.5rem;font-weight:800;color:var(--accent);" x-text="consensusScore(matchExperts) + '%'"></div>
+                  </div>
+                  <div style="text-align:right;">
+                    <strong :class="'consensus-' + consensusClass(matchExperts)" x-text="consensusLabel(matchExperts)"></strong>
+                  </div>
+                </div>
+              </div>
+              <template x-if="matchExperts.experts">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;">
+                  <template x-for="(expert, name) in matchExperts.experts" :key="name">
+                    <div style="background:var(--surface-2);padding:1rem;border-radius:var(--r-sm);border:1px solid var(--border);">
+                      <div style="font-weight:600;margin-bottom:0.75rem;" x-text="name"></div>
+                      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.5rem;font-size:0.85rem;">
+                        <div style="text-align:center;">
+                          <div x-text="pct(expert.probs.home)"></div>
+                          <div style="color:var(--text-3);font-size:0.75rem;">Home</div>
+                        </div>
+                        <div style="text-align:center;">
+                          <div x-text="pct(expert.probs.draw)"></div>
+                          <div style="color:var(--text-3);font-size:0.75rem;">Draw</div>
+                        </div>
+                        <div style="text-align:center;">
+                          <div x-text="pct(expert.probs.away)"></div>
+                          <div style="color:var(--text-3);font-size:0.75rem;">Away</div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Other Sections (H2H, Form, XG, Patterns) -->
+          <template x-if="matchH2H">
+            <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+              <h2 class="section-title">Head-to-Head</h2>
+              <div class="card-content" x-text="matchH2H.summary || 'H2H data unavailable'"></div>
+            </div>
+          </template>
+
+          <template x-if="matchForm">
+            <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+              <h2 class="section-title">Team Form</h2>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:2rem;">
+                <div>
+                  <h3 class="subsection-title" x-text="md.home_team"></h3>
+                  <div class="card-content" x-text="matchForm.home_form || 'Form data unavailable'"></div>
+                </div>
+                <div>
+                  <h3 class="subsection-title" x-text="md.away_team"></h3>
+                  <div class="card-content" x-text="matchForm.away_form || 'Form data unavailable'"></div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="matchXG">
+            <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+              <h2 class="section-title">Expected Goals (xG)</h2>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:2rem;">
+                <div style="text-align:center;">
+                  <div style="font-size:0.9rem;color:var(--text-2);margin-bottom:0.5rem;" x-text="md.home_team"></div>
+                  <div style="font-size:2rem;font-weight:700;" x-text="(matchXG.home_xg || 0).toFixed(2)"></div>
+                </div>
+                <div style="text-align:center;">
+                  <div style="font-size:0.9rem;color:var(--text-2);margin-bottom:0.5rem;" x-text="md.away_team"></div>
+                  <div style="font-size:2rem;font-weight:700;" x-text="(matchXG.away_xg || 0).toFixed(2)"></div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- AI Narrative -->
+          <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+              <h2 class="section-title">AI Analysis</h2>
+              <button class="btn btn-small btn-secondary" @click="loadAI()" x-show="!matchNarrative && !loadingAI">Generate</button>
+            </div>
+            <template x-if="loadingAI">
+              <div style="text-align:center;padding:2rem;">
+                <div class="spinner" role="status" aria-label="Generating AI analysis"></div>
+              </div>
+            </template>
+            <template x-if="matchNarrative">
+              <div class="card-content" x-text="matchNarrative"></div>
+            </template>
+          </div>
+
+          <!-- Multi-Model -->
+          <div class="glass" style="padding:2rem;margin-bottom:2rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+              <h2 class="section-title">Model Comparison</h2>
+              <button class="btn btn-small btn-secondary" @click="loadMultiModel()" x-show="!multiModelData && !loadingMultiModel">Load Models</button>
+            </div>
+            <template x-if="loadingMultiModel">
+              <div style="text-align:center;padding:2rem;">
+                <div class="spinner" role="status" aria-label="Loading model comparison"></div>
+              </div>
+            </template>
+            <template x-if="multiModelData">
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">
+                <template x-for="m in multiModelData.models || []" :key="m.name">
+                  <div style="background:var(--surface-1);padding:1rem;border-radius:var(--r-sm);border:1px solid var(--border);">
+                    <div style="font-weight:600;margin-bottom:0.75rem;" x-text="m.name"></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.5rem;font-size:0.85rem;">
+                      <div style="text-align:center;">
+                        <div x-text="pct(m.p_home)"></div>
+                        <div style="color:var(--text-3);font-size:0.75rem;">Home</div>
+                      </div>
+                      <div style="text-align:center;">
+                        <div x-text="pct(m.p_draw)"></div>
+                        <div style="color:var(--text-3);font-size:0.75rem;">Draw</div>
+                      </div>
+                      <div style="text-align:center;">
+                        <div x-text="pct(m.p_away)"></div>
+                        <div style="color:var(--text-3);font-size:0.75rem;">Away</div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+
+  </main>
+
+  <footer class="app-footer">
+    <p>Footy Predictor v12 — 34-expert AI ensemble</p>
+  </footer>
+
+  <script src="app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment & secrets
+.env
+.env.local
+.env.production
+
+# Database
+data/footy.duckdb
+data/footy.duckdb.wal
+data/cache.db
+
+# Model artifacts (large binary files)
+data/models/*.joblib
+
+# Logs
+logs/
+*.log
+
+# Test & coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+*.bak
+*.tmp
