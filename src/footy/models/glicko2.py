@@ -224,7 +224,7 @@ def _update_rating_and_rd(
         return rating, rd
 
     v = _compute_v(results)
-    delta = _compute_delta(v, results)
+    _compute_delta(v, results)
 
     phi = rd / SCALE
     phi_star_inv = 1.0 / math.sqrt((1.0 / (phi**2)) + (1.0 / v))

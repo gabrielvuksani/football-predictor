@@ -25,12 +25,11 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Sequence, Optional
+from typing import Optional
 from collections import deque
 
 import numpy as np
 from scipy.stats import poisson as poisson_dist
-from scipy.optimize import minimize_scalar
 
 log = logging.getLogger(__name__)
 

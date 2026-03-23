@@ -11,12 +11,11 @@ Reference:
 """
 from __future__ import annotations
 
-import math
 
 import numpy as np
 import pandas as pd
 
-from footy.models.experts._base import Expert, ExpertResult, _f, _is_finished, _norm3
+from footy.models.experts._base import Expert, ExpertResult, _is_finished, _norm3
 from footy.models.math.double_poisson import build_double_poisson_matrix
 
 

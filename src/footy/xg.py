@@ -13,7 +13,6 @@ Methods:
 """
 
 from __future__ import annotations
-import pandas as pd
 import duckdb
 from datetime import timedelta
 
@@ -38,26 +37,26 @@ def compute_xg_from_stats(
 ) -> float:
     """
     Estimate xG from shot statistics.
-    
+
     Formula: xG = SOT * conversion_rate + (Shots - SOT) * off_target_rate
-    
+
     Args:
         shots_on_target: Shots on target count
         total_shots: Total shots count
         historical_conversion: Conversion rate for on-target shots (default 0.10 = 10%)
         off_target_conversion: Conversion rate for off-target shots (default 0.02 = 2%)
-    
+
     Returns:
         Estimated xG value
     """
     if total_shots == 0:
         return 0.0
-    
+
     off_target = total_shots - shots_on_target
-    
+
     xg_on_target = shots_on_target * historical_conversion
     xg_off_target = off_target * off_target_conversion
-    
+
     return float(xg_on_target + xg_off_target)
 
 
@@ -305,33 +304,33 @@ def estimate_xg_rolling_stats(
 ) -> dict:
     """
     Estimate xG based on rolling team statistics.
-    
+
     Uses team's recent average performance:
     - Avg shots per game
     - Avg shots on target per game
     - Team quality (attack/defense rating)
-    
+
     Args:
         con: DuckDB connection
         team: Team name (will be canonicalized)
         against_team: Opponent team (for defense metrics)
         lookback_days: Days to look back for rolling average
-    
+
     Returns:
         dict with estimated xG and confidence
     """
     from footy.normalize import canonical_team_name
     from datetime import datetime, timedelta
-    
+
     team = canonical_team_name(team)
     against_team = canonical_team_name(against_team)
-    
+
     if not team or not against_team:
         return {"home_xg": 0.0, "away_xg": 0.0, "confidence": 0.0}
-    
+
     # Calculate cutoff date
     cutoff_date = datetime.now() - timedelta(days=lookback_days)
-    
+
     # Get recent stats where team was home
     home_stats = con.execute("""
         SELECT
@@ -344,7 +343,7 @@ def estimate_xg_rolling_stats(
         WHERE LOWER(m.home_team) = LOWER(?)
           AND m.utc_date > ?
     """, [team, cutoff_date]).df()
-    
+
     # Get opponent home stats
     opponent_home_stats = con.execute("""
         SELECT
@@ -356,11 +355,11 @@ def estimate_xg_rolling_stats(
         WHERE LOWER(m.away_team) = LOWER(?)
           AND m.utc_date > ?
     """, [against_team, cutoff_date]).df()
-    
+
     team_xg = 0.0
     opponent_xg = 0.0
     confidence = 0.5
-    
+
     if not home_stats.empty and home_stats.iloc[0]["games"] and home_stats.iloc[0]["games"] > 0:
         row = home_stats.iloc[0]
         avg_sot = row["avg_sot"] or 0.0
@@ -368,7 +367,7 @@ def estimate_xg_rolling_stats(
         if avg_shots > 0:
             team_xg = compute_xg_from_stats(avg_sot, avg_shots)
             confidence += 0.2
-    
+
     if not opponent_home_stats.empty:
         row = opponent_home_stats.iloc[0]
         avg_sot = row["avg_sot"] or 0.0
@@ -376,9 +375,9 @@ def estimate_xg_rolling_stats(
         if avg_shots > 0:
             opponent_xg = compute_xg_from_stats(avg_sot, avg_shots)
             confidence += 0.2
-    
+
     confidence = min(1.0, confidence)
-    
+
     return {
         "home_xg": float(team_xg),
         "away_xg": float(opponent_xg),
@@ -392,47 +391,47 @@ def compute_xg_for_upcoming_match(
 ) -> dict:
     """
     Compute xG for an upcoming match using all available methods.
-    
+
     Strategy:
     1. Try to get xG from recent match_extras (if stats available)
     2. Fall back to rolling team statistics
     3. Fall back to Poisson model if available
-    
+
     Args:
         con: DuckDB connection
         match_id: Match ID to compute xG for
         verbose: Whether to print debug info
-    
+
     Returns:
         dict with home_xg, away_xg, method, confidence
     """
     ensure_xg_table(con)
-    
+
     # Check if already computed
     cached = con.execute("""
         SELECT home_xg, away_xg, method, confidence
         FROM match_xg
         WHERE match_id = ?
     """, [match_id]).df()
-    
+
     if not cached.empty:
         result = cached.iloc[0].to_dict()
         result["cached"] = True
         return result
-    
+
     # Get match details
     match = con.execute("""
         SELECT home_team, away_team, utc_date
         FROM matches
         WHERE match_id = ?
     """, [match_id]).df()
-    
+
     if match.empty:
         return {"error": "Match not found"}
-    
+
     home_team = match.iloc[0]["home_team"]
     away_team = match.iloc[0]["away_team"]
-    
+
     # Try recent match stats first - get last 5 FINISHED home/away matches
     recent_home = con.execute("""
         SELECT CAST(hs AS FLOAT) as shots,
@@ -445,14 +444,14 @@ def compute_xg_for_upcoming_match(
         ORDER BY m.utc_date DESC
         LIMIT 5
     """, [home_team]).df()
-    
+
     # Average per match (not sum) to get per-game shot rates
     total_shots_home = 0.0
     total_sot_home = 0.0
     if not recent_home.empty:
         total_shots_home = float(recent_home["shots"].mean())
         total_sot_home = float(recent_home["shots_on_target"].mean())
-    
+
     recent_away = con.execute("""
         SELECT CAST(as_ AS FLOAT) as shots,
                CAST(ast AS FLOAT) as shots_on_target
@@ -464,19 +463,19 @@ def compute_xg_for_upcoming_match(
         ORDER BY m.utc_date DESC
         LIMIT 5
     """, [away_team]).df()
-    
+
     # Average per match (not sum) to get per-game shot rates
     total_shots_away = 0.0
     total_sot_away = 0.0
     if not recent_away.empty:
         total_shots_away = float(recent_away["shots"].mean())
         total_sot_away = float(recent_away["shots_on_target"].mean())
-    
+
     method = "none"
     home_xg = 0.0
     away_xg = 0.0
     confidence = 0.0
-    
+
     # Method 0: Real xG from API-Football (highest quality)
     try:
         af_xg = con.execute("""
@@ -501,7 +500,7 @@ def compute_xg_for_upcoming_match(
             away_xg = compute_xg_from_stats(total_sot_away, total_shots_away)
             method = "stats"
             confidence = 0.7
-    
+
     # Method 2: Fallback to rolling stats
     if method == "none" or confidence < 0.5:
         roll_est = estimate_xg_rolling_stats(con, home_team, away_team)
@@ -510,7 +509,7 @@ def compute_xg_for_upcoming_match(
             away_xg = roll_est["away_xg"]
             method = "rolling"
             confidence = roll_est["confidence"]
-    
+
     # Cache the result
     try:
         con.execute("""
@@ -519,11 +518,11 @@ def compute_xg_for_upcoming_match(
         """, [match_id, home_xg, away_xg, method, confidence])
     except Exception:
         pass  # Ignore cache errors
-    
+
     if verbose:
         print(f"[xg] match_id={match_id} {home_team} vs {away_team}: "
               f"{home_xg:.2f} vs {away_xg:.2f} ({method}, conf={confidence:.2f})")
-    
+
     return {
         "match_id": match_id,
         "home_xg": float(home_xg),
@@ -540,12 +539,12 @@ def backfill_xg_for_finished_matches(
     """
     Backfill xG for all finished matches in the database.
     Uses match stats from match_extras table.
-    
+
     Returns:
         dict with stats on how many matches were processed
     """
     ensure_xg_table(con)
-    
+
     # Get all finished matches without xG
     matches = con.execute("""
         SELECT m.match_id, m.home_team, m.away_team
@@ -555,19 +554,19 @@ def backfill_xg_for_finished_matches(
           AND x.match_id IS NULL
         LIMIT 1000
     """).df()
-    
+
     if matches.empty:
         if verbose:
             print("[xg] no matches to backfill")
         return {"computed": 0, "total": 0}
-    
+
     computed = 0
     for _, row in matches.iterrows():
         result = compute_xg_for_upcoming_match(con, int(row["match_id"]), verbose=verbose)
         if "error" not in result:
             computed += 1
-    
+
     if verbose:
         print(f"[xg] backfilled {computed}/{len(matches)} matches")
-    
+
     return {"computed": computed, "total": len(matches)}

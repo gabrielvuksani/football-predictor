@@ -21,9 +21,8 @@ Features:
 """
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Callable
+from typing import Callable
 from enum import Enum
-import json
 import logging
 
 from footy.db import connect
@@ -87,30 +86,30 @@ class DegradationAlert:
 class DegradationMonitor:
     """
     Monitors model performance and triggers alerts on degradation.
-    
+
     Example usage:
         monitor = DegradationMonitor()
-        
+
         # Setup monitoring for a model
         monitor.setup_monitoring(
             model_version="v5_ultimate",
             accuracy_threshold=0.45,
             logloss_threshold=0.65,
         )
-        
+
         # Periodic check (run in scheduler)
         alerts = monitor.check_degradation()
-        
+
         # Get current alerts
         active = monitor.get_active_alerts()
     """
-    
+
     def __init__(self):
         self.con = connect()
         self.performance_tracker = get_performance_tracker()
         self._ensure_schema()
         self._alert_handlers: list[Callable] = []
-    
+
     def _ensure_schema(self):
         """Create alert tables with enhanced schema for deduplication and escalation."""
         self.con.execute("""
@@ -183,7 +182,7 @@ class DegradationMonitor:
             CREATE INDEX IF NOT EXISTS history_alert_idx
             ON alert_history(alert_id, timestamp DESC)
         """)
-    
+
     def setup_monitoring(
         self,
         model_version: str,
@@ -195,7 +194,7 @@ class DegradationMonitor:
     ) -> dict:
         """
         Configure degradation monitoring for a model.
-        
+
         Args:
             model_version: Model to monitor
             accuracy_threshold: Minimum acceptable accuracy
@@ -206,12 +205,12 @@ class DegradationMonitor:
         """
         self.con.execute("""
             INSERT OR REPLACE INTO degradation_rules
-            (model_version, accuracy_threshold, logloss_threshold, brier_threshold, 
+            (model_version, accuracy_threshold, logloss_threshold, brier_threshold,
              trend_threshold, window_days, enabled)
             VALUES (?, ?, ?, ?, ?, ?, TRUE)
         """, [model_version, accuracy_threshold, logloss_threshold, brier_threshold,
               trend_threshold, window_days])
-        
+
         return {
             "model_version": model_version,
             "accuracy_threshold": accuracy_threshold,
@@ -220,55 +219,55 @@ class DegradationMonitor:
             "trend_threshold": trend_threshold,
             "window_days": window_days,
         }
-    
+
     def check_degradation(self) -> list[DegradationAlert]:
         """
         Check all monitored models for degradation.
-        
+
         Returns:
             List of new alerts triggered
         """
         new_alerts = []
-        
+
         # Get all monitored models
         models = self.con.execute("""
             SELECT model_version FROM degradation_rules WHERE enabled = TRUE
         """).fetchall()
-        
+
         for (model_version,) in models:
             alerts = self._check_model_degradation(model_version)
             new_alerts.extend(alerts)
-        
+
         # Send notifications
         for alert in new_alerts:
             self._notify_alert(alert)
-        
+
         return new_alerts
-    
+
     def _check_model_degradation(self, model_version: str) -> list[DegradationAlert]:
         """Check single model for degradation"""
         alerts = []
-        
+
         # Get monitoring rules
         rule = self.con.execute("""
-            SELECT accuracy_threshold, logloss_threshold, brier_threshold, 
+            SELECT accuracy_threshold, logloss_threshold, brier_threshold,
                    trend_threshold, window_days
             FROM degradation_rules WHERE model_version = ?
         """, [model_version]).fetchone()
-        
+
         if not rule:
             return []
-        
+
         acc_thresh, loss_thresh, brier_thresh, trend_thresh, window = rule
-        
+
         # Get current metrics
         metrics = self.performance_tracker.compute_aggregated_metrics(
             model_version, days=window
         )
-        
+
         if metrics.get("n_predictions", 0) == 0:
             return []
-        
+
         # Check accuracy
         if metrics["accuracy"] < acc_thresh:
             alert_id = f"{model_version}_accuracy_{datetime.now(timezone.utc).timestamp()}"
@@ -283,7 +282,7 @@ class DegradationMonitor:
             )
             if self._store_alert(alert):
                 alerts.append(alert)
-        
+
         # Check logloss
         if metrics["logloss"] > loss_thresh:
             alert_id = f"{model_version}_logloss_{datetime.now(timezone.utc).timestamp()}"
@@ -298,7 +297,7 @@ class DegradationMonitor:
             )
             if self._store_alert(alert):
                 alerts.append(alert)
-        
+
         # Check brier
         if metrics["brier"] > brier_thresh:
             alert_id = f"{model_version}_brier_{datetime.now(timezone.utc).timestamp()}"
@@ -313,12 +312,12 @@ class DegradationMonitor:
             )
             if self._store_alert(alert):
                 alerts.append(alert)
-        
+
         # Check trend
         trend = self.performance_tracker.get_performance_trend(
             model_version, window_days=window
         )
-        
+
         if trend and trend["trend_slope"] < trend_thresh:
             alert_id = f"{model_version}_trend_{datetime.now(timezone.utc).timestamp()}"
             alert = DegradationAlert(
@@ -332,9 +331,9 @@ class DegradationMonitor:
             )
             if self._store_alert(alert):
                 alerts.append(alert)
-        
+
         return alerts
-    
+
     def _store_alert(
         self,
         alert: DegradationAlert,
@@ -408,11 +407,11 @@ class DegradationMonitor:
         log.info(f"New alert created: {alert.alert_id} ({alert.metric} = {alert.metric_value:.4f})")
         self._log_action(alert.alert_id, "created", alert.message)
         return True
-    
+
     def register_alert_handler(self, handler: Callable[[DegradationAlert], None]):
         """Register a callback for alert notifications"""
         self._alert_handlers.append(handler)
-    
+
     def _notify_alert(self, alert: DegradationAlert):
         """Send alert to registered handlers"""
         for handler in self._alert_handlers:
@@ -420,7 +419,7 @@ class DegradationMonitor:
                 handler(alert)
             except Exception as e:
                 print(f"Error notifying alert: {e}")
-    
+
     def acknowledge_alert(self, alert_id: str) -> dict:
         """Acknowledge an alert with proper status transition."""
         try:
@@ -525,7 +524,7 @@ class DegradationMonitor:
         except Exception as e:
             log.error(f"Failed to snooze alert: {e}")
             return {"alert_id": alert_id, "status": "error", "error": str(e)}
-    
+
     def _log_action(self, alert_id: str, action: str, details: str = None, status_from: str = None, status_to: str = None):
         """Log action on an alert with status transitions."""
         self.con.execute(
@@ -608,7 +607,7 @@ class DegradationMonitor:
                 "logloss_threshold": 0.65,
                 "brier_threshold": 0.25,
             }
-    
+
     def get_active_alerts(self) -> list:
         """Get all active alerts"""
         rows = self.con.execute("""
@@ -618,7 +617,7 @@ class DegradationMonitor:
             WHERE status = 'active'
             ORDER BY created_at DESC
         """).fetchall()
-        
+
         alerts = []
         for row in rows:
             alerts.append({
@@ -631,9 +630,9 @@ class DegradationMonitor:
                 "threshold": row[6],
                 "created_at": row[7],
             })
-        
+
         return alerts
-    
+
     def get_alerts_for_model(self, model_version: str, status: str = None) -> list:
         """Get alerts for specific model"""
         if status:
@@ -650,7 +649,7 @@ class DegradationMonitor:
                 WHERE model_version = ?
                 ORDER BY created_at DESC
             """, [model_version]).fetchall()
-        
+
         alerts = []
         for row in rows:
             alerts.append({
@@ -661,9 +660,9 @@ class DegradationMonitor:
                 "created_at": row[4],
                 "status": row[5],
             })
-        
+
         return alerts
-    
+
     def get_alert_summary(self) -> dict:
         """Get comprehensive summary of all alerts."""
         try:

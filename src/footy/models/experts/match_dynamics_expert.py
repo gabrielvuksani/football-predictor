@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from footy.models.experts._base import Expert, ExpertResult, _is_finished, _norm3, _pts
+from footy.models.experts._base import Expert, ExpertResult, _is_finished, _norm3
 
 
 class MatchDynamicsExpert(Expert):

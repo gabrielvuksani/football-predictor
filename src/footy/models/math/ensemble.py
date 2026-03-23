@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Sequence
 
 import numpy as np
-from scipy.stats import norm, poisson as poisson_dist
+from scipy.stats import norm
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -723,7 +722,6 @@ def unified_prediction(lambda_h: float, lambda_a: float) -> dict[str, float]:
         Dict with p_home, p_draw, p_away, confidence, entropy
     """
     # Get various model predictions
-    from footy.models.math.scoring import kl_divergence
 
     dc_result = aggregate_model_predictions(lambda_h, lambda_a)
     skellam_result = skellam_match_probs(lambda_h, lambda_a)

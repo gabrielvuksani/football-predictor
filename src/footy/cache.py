@@ -37,12 +37,12 @@ class MatchCache:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._init_schema()
-    
+
     def _init_schema(self) -> None:
         """Create cache tables if they don't exist."""
         con = sqlite3.connect(str(self.db_path))
         con.execute("PRAGMA journal_mode=WAL")  # Better concurrency
-        
+
         con.execute("""
             CREATE TABLE IF NOT EXISTS prediction_cache (
                 match_id INTEGER PRIMARY KEY,
@@ -59,7 +59,7 @@ class MatchCache:
                 source VARCHAR DEFAULT 'model'  -- 'model', 'ensemble', 'historical'
             );
         """)
-        
+
         con.execute("""
             CREATE TABLE IF NOT EXISTS metadata_cache (
                 key VARCHAR PRIMARY KEY,
@@ -70,7 +70,7 @@ class MatchCache:
                 refresh_count INTEGER DEFAULT 0
             );
         """)
-        
+
         con.execute("""
             CREATE TABLE IF NOT EXISTS cache_stats (
                 metric VARCHAR PRIMARY KEY,
@@ -78,18 +78,18 @@ class MatchCache:
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        
+
         con.execute("""
             CREATE INDEX IF NOT EXISTS idx_pred_expires ON prediction_cache(expires_at);
         """)
-        
+
         con.execute("""
             CREATE INDEX IF NOT EXISTS idx_meta_category ON metadata_cache(category);
         """)
-        
+
         con.commit()
         con.close()
-    
+
     def cache_prediction(
         self,
         match_id: int,
@@ -131,7 +131,7 @@ class MatchCache:
             con.close()
 
         logger.debug(f"[cache] prediction cached: match_id={match_id}, model={model_version}, ttl={ttl_hours}h")
-    
+
     def get_prediction(
         self,
         match_id: int,
@@ -178,7 +178,7 @@ class MatchCache:
                 "confidence": float(row["confidence"]),
                 "cached_at": row["cached_at"],
             }
-    
+
     def cache_metadata(
         self,
         key: str,
@@ -212,7 +212,7 @@ class MatchCache:
             con.close()
 
         logger.debug(f"[cache] metadata cached: key={key}, category={category}, ttl={ttl_hours}h")
-    
+
     def get_metadata(
         self,
         key: str,
@@ -264,7 +264,7 @@ class MatchCache:
                 return json.loads(row["value"])
             except json.JSONDecodeError:
                 return None
-    
+
     def invalidate_predictions(
         self,
         match_id: int = None,
@@ -315,7 +315,7 @@ class MatchCache:
 
         logger.info(f"[cache] invalidated {count} predictions")
         return count
-    
+
     def invalidate_metadata(self, category: str = None, key: str = None) -> int:
         """
         Invalidate metadata from cache.
@@ -346,7 +346,7 @@ class MatchCache:
 
         logger.info(f"[cache] invalidated {count} metadata entries")
         return count
-    
+
     def get_stats(self) -> dict:
         """Get cache statistics."""
         with self._lock:
@@ -375,31 +375,31 @@ class MatchCache:
 
             con.close()
         return stats
-    
+
     def cleanup(self, delete_expired: bool = True) -> dict:
         """
         Clean up cache (remove expired entries).
-        
+
         Args:
             delete_expired: Whether to delete expired entries
-        
+
         Returns:
             dict with cleanup stats
         """
         logger.info("[cache] cleanup started")
-        
+
         stats = {
             "deleted_predictions": 0,
             "deleted_metadata": 0,
         }
-        
+
         if delete_expired:
             stats["deleted_predictions"] = self.invalidate_predictions()
             stats["deleted_metadata"] = self.invalidate_metadata()
-        
+
         logger.info(f"[cache] cleanup complete: {stats}")
         return stats
-    
+
     def clear(self) -> None:
         """Clear entire cache (use with caution)."""
         with self._lock:
@@ -429,7 +429,7 @@ def get_cache(db_path: str = "data/cache.db") -> MatchCache:
 def cache_wrapper(ttl_hours: int = 24):
     """
     Decorator to cache function results.
-    
+
     Usage:
         @cache_wrapper(ttl_hours=24)
         def expensive_function(arg1, arg2):
@@ -439,22 +439,22 @@ def cache_wrapper(ttl_hours: int = 24):
         def wrapper(*args, **kwargs):
             # Generate cache key from function name and arguments
             key = f"{func.__name__}:{str(args)}{str(kwargs)}"
-            
+
             cache = get_cache()
             cached = cache.get_metadata(key, category="function_cache")
-            
+
             if cached is not None:
                 logger.debug(f"[cache] hit: {func.__name__}")
                 return cached
-            
+
             # Execute function
             result = func(*args, **kwargs)
-            
+
             # Store result
             cache.cache_metadata(key, "function_cache", result, ttl_hours=ttl_hours)
             logger.debug(f"[cache] miss: {func.__name__}, stored for {ttl_hours}h")
-            
+
             return result
-        
+
         return wrapper
     return decorator

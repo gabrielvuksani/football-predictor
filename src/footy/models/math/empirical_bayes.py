@@ -15,10 +15,8 @@ References:
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import numpy as np
-import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import poisson as poisson_dist
 

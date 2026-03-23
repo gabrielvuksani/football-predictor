@@ -192,7 +192,7 @@ def stats():
     console.print(f"  Total Jobs: {st['total_jobs']}")
     console.print(f"  Active Jobs: {st['active_jobs']}")
 
-    console.print(f"\n[cyan]Stats by Job Type:[/cyan]")
+    console.print("\n[cyan]Stats by Job Type:[/cyan]")
     for job_type, type_stats in st["stats_by_type"].items():
         console.print(f"  {job_type}:")
         console.print(f"    Total Runs: {type_stats['total_runs']}")

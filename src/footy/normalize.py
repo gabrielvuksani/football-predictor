@@ -38,7 +38,7 @@ def canonical_team_name(name: Optional[str]) -> Optional[str]:
     """
     if not name:
         return None
-    
+
     # Try the new unified mapping system first
     try:
         from footy.team_mapping import get_canonical_name
@@ -47,7 +47,7 @@ def canonical_team_name(name: Optional[str]) -> Optional[str]:
             return canonical
     except (ImportError, ModuleNotFoundError):
         pass  # Fallback if team_mapping not available
-    
+
     # Legacy normalization (fallback)
     s = str(name).strip()
 

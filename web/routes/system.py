@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Query
-from fastapi.responses import JSONResponse
 
 from . import con, safe_error, settings
 

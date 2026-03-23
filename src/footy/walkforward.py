@@ -20,7 +20,6 @@ Key features:
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -135,7 +134,7 @@ def walk_forward_cv(
         WalkForwardResult with per-fold and aggregate metrics
     """
     dates = pd.to_datetime(dates)
-    n = len(X)
+    len(X)
 
     # Compute fold boundaries
     total_range = (dates.max() - dates.min()).days

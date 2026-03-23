@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from footy.models.experts._base import Expert, ExpertResult, _f, _is_finished, _norm3, _pts
+from footy.models.experts._base import Expert, ExpertResult, _is_finished, _norm3, _pts
 from footy.models.elo_core import elo_expected as _elo_exp, elo_draw_prob as _elo_dp, dynamic_k as _dk
 from footy.models.advanced_math import tanh_transform, log_transform
 

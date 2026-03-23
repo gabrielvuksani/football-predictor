@@ -556,8 +556,8 @@ class ADWINDetector:
 
         mean0 = s0 / c0
         mean1 = s1 / c1
-        var0 = max(0, sq0 / c0 - mean0**2)
-        var1 = max(0, sq1 / c1 - mean1**2)
+        max(0, sq0 / c0 - mean0**2)
+        max(0, sq1 / c1 - mean1**2)
 
         # Hoeffding bound for change detection
         m = 1 / (c0 + c1)
@@ -1012,7 +1012,7 @@ class SelfLearningLoop:
         Returns:
             Dict mapping expert names to weights (and optionally uncertainties).
             Weights are normalized to sum to 1.
-            
+
         Notes:
             - Weights incorporate:
               1. Inverse-variance weighting (consistent performers get higher weight)
@@ -1273,7 +1273,7 @@ class SelfLearningLoop:
 
         # Calibration error for this single prediction:
         # positive means over-confident (predicted prob > reality)
-        prob_actual = predicted_probs[actual_outcome]
+        predicted_probs[actual_outcome]
         # For the actual outcome the ideal prob is 1.0; calibration error
         # is the mean gap between confidence and accuracy across many
         # predictions.  As a proxy per-match: max(predicted_probs) - correct.

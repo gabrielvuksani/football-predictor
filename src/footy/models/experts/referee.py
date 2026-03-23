@@ -64,7 +64,7 @@ class RefereeExpert(Expert):
             elif hb < 0.9 and hb > 0:  # referee slightly favors away
                 home_boost = max(-0.04, (hb - 1.0) * 0.03)
 
-            # Strict referees tend to produce more goals (penalties, red cards leading to 
+            # Strict referees tend to produce more goals (penalties, red cards leading to
             # tactical changes), slightly favoring decisive outcomes over draws
             if strict_ref[i]:
                 draw_adj = -0.02

@@ -17,7 +17,7 @@ from footy.normalize import canonical_team_name
 
 def ensure_h2h_tables(con: duckdb.DuckDBPyConnection) -> None:
     """Create DuckDB tables for H2H statistics."""
-    
+
     # Main H2H stats (any venue)
     con.execute("""
         CREATE TABLE IF NOT EXISTS h2h_stats (
@@ -41,7 +41,7 @@ def ensure_h2h_tables(con: duckdb.DuckDBPyConnection) -> None:
             PRIMARY KEY(team_a, team_b)
         );
     """)
-    
+
     # Venue-specific H2H (when team_a hosts team_b)
     con.execute("""
         CREATE TABLE IF NOT EXISTS h2h_venue_stats (
@@ -175,22 +175,22 @@ def recompute_h2h_stats(con: duckdb.DuckDBPyConnection, verbose: bool = False) -
 def get_h2h_any_venue(con: duckdb.DuckDBPyConnection, team_a: str, team_b: str, limit: int = 10) -> dict:
     """
     Get H2H statistics for two teams regardless of venue.
-    
+
     Args:
         con: DuckDB connection
         team_a: First team name (will be canonicalized)
         team_b: Second team name (will be canonicalized)
         limit: Max recent matches to return
-    
+
     Returns:
         dict with overall stats and recent matches
     """
     team_a = canonical_team_name(team_a)
     team_b = canonical_team_name(team_b)
-    
+
     if not team_a or not team_b:
         return {"error": "Could not canonicalize team names"}
-    
+
     # Get overall stats (use sorted order to ensure match)
     ta, tb = tuple(sorted([team_a, team_b]))
     stats = con.execute("""
@@ -199,13 +199,13 @@ def get_h2h_any_venue(con: duckdb.DuckDBPyConnection, team_a: str, team_b: str, 
         WHERE team_a_canonical = ? AND team_b_canonical = ?
         LIMIT 1
     """, [ta, tb]).df()
-    
+
     result = {"stats": None, "recent_matches": []}
-    
+
     if not stats.empty:
         row = stats.iloc[0].to_dict()
         result["stats"] = row
-    
+
     # Get recent matches
     recent = con.execute("""
         SELECT m.match_id, m.utc_date, m.home_team, m.away_team, m.home_goals, m.away_goals
@@ -218,24 +218,24 @@ def get_h2h_any_venue(con: duckdb.DuckDBPyConnection, team_a: str, team_b: str, 
         ORDER BY m.utc_date DESC
         LIMIT ?
     """, [team_a, team_b, team_b, team_a, limit]).df()
-    
+
     result["recent_matches"] = recent.to_dict("records") if not recent.empty else []
-    
+
     return result
 
 def get_h2h_venue(con: duckdb.DuckDBPyConnection, home_team: str, away_team: str, limit: int = 10) -> dict:
     """
     Get H2H statistics for two teams when home_team hosts away_team.
-    
+
     Returns:
         dict with venue-specific stats and recent matches
     """
     home_team = canonical_team_name(home_team)
     away_team = canonical_team_name(away_team)
-    
+
     if not home_team or not away_team:
         return {"error": "Could not canonicalize team names"}
-    
+
     # Get venue-specific stats (use canonical columns)
     stats = con.execute("""
         SELECT *
@@ -243,12 +243,12 @@ def get_h2h_venue(con: duckdb.DuckDBPyConnection, home_team: str, away_team: str
         WHERE home_team_canonical = ? AND away_team_canonical = ?
         LIMIT 1
     """, [home_team, away_team]).df()
-    
+
     result = {"stats": None, "recent_matches": []}
-    
+
     if not stats.empty:
         result["stats"] = stats.iloc[0].to_dict()
-    
+
     # Get recent matches at this venue
     recent = con.execute("""
         SELECT m.match_id, m.utc_date, m.home_team, m.away_team, m.home_goals, m.away_goals
@@ -259,7 +259,7 @@ def get_h2h_venue(con: duckdb.DuckDBPyConnection, home_team: str, away_team: str
         ORDER BY m.utc_date DESC
         LIMIT ?
     """, [home_team, away_team, limit]).df()
-    
+
     result["recent_matches"] = recent.to_dict("records") if not recent.empty else []
-    
+
     return result

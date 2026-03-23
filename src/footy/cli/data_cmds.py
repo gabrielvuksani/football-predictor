@@ -183,7 +183,7 @@ def cache_stats():
     console.print("\n[cyan]Cache Statistics[/cyan]")
     console.print(f"  Predictions: {stats['total_predictions']} total, {stats['expired_predictions']} expired")
     console.print(f"  Metadata: {stats['total_metadata']} total, {stats['expired_metadata']} expired")
-    console.print(f"  By category:")
+    console.print("  By category:")
     for cat, count in stats["metadata_by_category"].items():
         console.print(f"    {cat:15s}: {count:5d}")
 
@@ -200,6 +200,6 @@ def cache_cleanup(full: bool = False):
     else:
         console.print("[cyan]Removing expired entries...[/cyan]")
         result = get_cache().cleanup(delete_expired=True)
-        console.print(f"[green]Cleanup complete:[/green]")
+        console.print("[green]Cleanup complete:[/green]")
         console.print(f"  Deleted predictions: {result['deleted_predictions']}")
         console.print(f"  Deleted metadata: {result['deleted_metadata']}")

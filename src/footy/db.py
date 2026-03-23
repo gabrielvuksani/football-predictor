@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import threading
 import duckdb
 from footy.config import settings
 
@@ -716,8 +717,6 @@ def _migrate_columns(con):
     except Exception as e:
         log.debug("migrate prediction_scores lookup: %s", e)
 
-
-import threading
 
 _connection: duckdb.DuckDBPyConnection | None = None
 _schema_initialized: bool = False

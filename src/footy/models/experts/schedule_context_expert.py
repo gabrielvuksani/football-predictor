@@ -14,7 +14,6 @@ Uses utc_date, competition, and match context to derive these signals.
 """
 from __future__ import annotations
 
-import math
 
 import numpy as np
 import pandas as pd
@@ -68,10 +67,9 @@ class ScheduleContextExpert(Expert):
 
             try:
                 month = utc.month if hasattr(utc, "month") else 1
-                day_of_week = utc.weekday() if hasattr(utc, "weekday") else 0  # 0=Monday
+                utc.weekday() if hasattr(utc, "weekday") else 0  # 0=Monday
             except Exception:
                 month = 1
-                day_of_week = 0
 
             # 1. Midweek fatigue — was the team's last match within 3 days?
             for t, arr in [(h, sc_midweek_fatigue_h), (a, sc_midweek_fatigue_a)]:

@@ -9,7 +9,7 @@ from scipy.stats import poisson
 # Dixon–Coles low-score adjustment tau
 def _tau(hg: int, ag: int, lam: float, mu: float, rho: float) -> float:
     """Dixon-Coles (1997) low-score correction factor.
-    
+
     lam = expected home goals (λ), mu = expected away goals (μ).
     Repository convention, matching advanced_math: τ(1,0) = 1 + λρ,
     τ(0,1) = 1 + μρ.

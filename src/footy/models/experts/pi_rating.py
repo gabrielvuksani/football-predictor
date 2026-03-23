@@ -1,17 +1,13 @@
 """PiRatingExpert — Pi-rating system with goal-difference learning."""
 from __future__ import annotations
 
-import math
 import numpy as np
 import pandas as pd
 
-from footy.models.experts._base import Expert, ExpertResult, _is_finished, _norm3
+from footy.models.experts._base import Expert, ExpertResult, _is_finished
 from footy.models.pi_rating import (
     INITIAL_RATING,
     SCALE_CONSTANT,
-    BASE_LEARNING_RATE,
-    MIN_LEARNING_RATE,
-    LEARNING_DECAY_RATE,
     _learning_rate,
     _expected_goal_diff,
     _ordinal_logistic_probs,

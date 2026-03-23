@@ -22,32 +22,32 @@ from footy.utils import score_prediction
 class PerformanceTracker:
     """
     Tracks and aggregates model prediction performance metrics.
-    
+
     Metrics computed:
     - Accuracy: % of correct predictions
     - Log Loss: measures probability calibration
     - Brier Score: mean squared error of probabilities
     - Calibration Slope: how well probabilities match outcomes
     - AUC: discriminative ability for 2-class problems
-    
+
     Example usage:
         tracker = PerformanceTracker()
-        
+
         # Get daily performance
         daily = tracker.get_daily_performance(model_version="v5_ultimate", days=30)
-        
+
         # Compare models
         comparison = tracker.compare_models(["v1", "v4", "v5"], days=365)
-        
+
         # Track degradation
         trend = tracker.get_performance_trend("v5_ultimate", window_days=30)
         degradation = trend["trend_slope"] if trend else 0
     """
-    
+
     def __init__(self):
         self.con = connect()
         self._ensure_schema()
-    
+
     def _ensure_schema(self):
         """Create performance tracking tables"""
         self.con.execute("""
@@ -68,7 +68,7 @@ class PerformanceTracker:
                 away_accuracy DOUBLE
             )
         """)
-        
+
         self.con.execute("""
             CREATE TABLE IF NOT EXISTS performance_thresholds (
                 model_version VARCHAR PRIMARY KEY,
@@ -79,12 +79,12 @@ class PerformanceTracker:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
         self.con.execute("""
-            CREATE INDEX IF NOT EXISTS performance_metrics_idx 
+            CREATE INDEX IF NOT EXISTS performance_metrics_idx
             ON performance_metrics(model_version, metric_date DESC)
         """)
-    
+
     def compute_aggregated_metrics(
         self,
         model_version: str,
@@ -93,18 +93,18 @@ class PerformanceTracker:
     ) -> dict:
         """
         Compute aggregated metrics for a model over a time window.
-        
+
         Args:
             model_version: Model version to analyze
             days: Time window in days (default: 365)
             window_start: Start date (default: today - days)
-        
+
         Returns:
             Aggregated metrics dict
         """
         if window_start is None:
             window_start = datetime.now(timezone.utc) - timedelta(days=days)
-        
+
         # Get all scored predictions for this model in the window
         rows = self.con.execute("""
             SELECT ps.outcome, p.p_home, p.p_draw, p.p_away, m.competition
@@ -114,7 +114,7 @@ class PerformanceTracker:
             WHERE ps.model_version = ? AND m.utc_date >= ?
             ORDER BY m.utc_date
         """, [model_version, window_start]).fetchall()
-        
+
         if not rows:
             return {
                 "model_version": model_version,
@@ -122,59 +122,59 @@ class PerformanceTracker:
                 "window_days": days,
                 "status": "no_data",
             }
-        
+
         outcomes = []
         probabilities = []
         competitions = {}
-        
+
         n_correct = 0
         total_logloss = 0.0
         total_brier = 0.0
-        
+
         # Outcome counts
         outcome_counts = {0: 0, 1: 0, 2: 0}  # Home, Draw, Away
         outcome_correct_counts = {0: 0, 1: 0, 2: 0}
-        
+
         for outcome, p_home, p_draw, p_away, competition in rows:
             probs = [p_home, p_draw, p_away]
             s = score_prediction(probs, outcome)
-            
+
             outcomes.append(outcome)
             probabilities.append((outcome, probs))
-            
+
             if s["correct"]:
                 n_correct += 1
-            
+
             outcome_counts[outcome] += 1
-            
+
             # Log Loss
             total_logloss += s["logloss"]
-            
+
             # Brier Score
             total_brier += s["brier"]
-            
+
             # Track by outcome for accuracy breakdown
             if s["correct"]:
                 outcome_correct_counts[outcome] += 1
-            
+
             # Track by competition
             if competition not in competitions:
                 competitions[competition] = {"total": 0, "correct": 0}
             competitions[competition]["total"] += 1
-            
+
             if s["predicted"] == outcome:
                 competitions[competition]["correct"] += 1
-        
+
         n = len(rows)
         accuracy = n_correct / n if n > 0 else 0.0
         avg_logloss = total_logloss / n if n > 0 else 0.0
         avg_brier = total_brier / n if n > 0 else 0.0
-        
+
         # Outcome-specific accuracy
         home_accuracy = outcome_correct_counts[0] / (outcome_counts[0] + 1e-10)
         draw_accuracy = outcome_correct_counts[1] / (outcome_counts[1] + 1e-10)
         away_accuracy = outcome_correct_counts[2] / (outcome_counts[2] + 1e-10)
-        
+
         # Competition breakdown
         comp_metrics = {}
         for comp, stats in competitions.items():
@@ -182,7 +182,7 @@ class PerformanceTracker:
                 "accuracy": stats["correct"] / stats["total"],
                 "n_predictions": stats["total"],
             }
-        
+
         return {
             "model_version": model_version,
             "n_predictions": n,
@@ -197,13 +197,13 @@ class PerformanceTracker:
             "away_accuracy": away_accuracy,
             "by_competition": comp_metrics,
         }
-    
+
     def get_daily_performance(self, model_version: str, days: int = 30) -> list:
         """Get daily performance breakdown"""
         window_start = datetime.now(timezone.utc) - timedelta(days=days)
-        
+
         rows = self.con.execute("""
-            SELECT DATE(m.utc_date) as match_date, COUNT(*) as n_pred, 
+            SELECT DATE(m.utc_date) as match_date, COUNT(*) as n_pred,
                    SUM(CASE WHEN ps.correct THEN 1 ELSE 0 END) as n_correct,
                    AVG(ps.logloss) as avg_logloss, AVG(ps.brier) as avg_brier
             FROM prediction_scores ps
@@ -212,7 +212,7 @@ class PerformanceTracker:
             GROUP BY DATE(m.utc_date)
             ORDER BY match_date DESC
         """, [model_version, window_start]).fetchall()
-        
+
         daily = []
         for score_date, n_pred, n_correct, logloss, brier in rows:
             accuracy = (n_correct or 0) / n_pred if n_pred else 0.0
@@ -223,9 +223,9 @@ class PerformanceTracker:
                 "logloss": logloss or 0.0,
                 "brier": brier or 0.0,
             })
-        
+
         return daily
-    
+
     def get_performance_trend(
         self,
         model_version: str,
@@ -234,50 +234,50 @@ class PerformanceTracker:
     ) -> Optional[dict]:
         """
         Calculate performance trend to detect degradation.
-        
+
         Returns:
             Trend analysis with slope (negative = degrading)
         """
         daily = self.get_daily_performance(model_version, days=lookback_days)
-        
+
         if len(daily) < 2:
             return None
-        
+
         # IMPORTANT: daily is in DESC order from SQL — reverse to chronological ASC
         daily = list(reversed(daily))
-        
+
         # Use recent window for trend slope
         cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).date()
         recent = [d for d in daily if d['date'] >= cutoff]
-        
+
         if len(recent) < 2:
             recent = daily[-window_days:]
-        
+
         if len(recent) < 2:
             return None
-        
+
         # Calculate trend using linear regression
         accuracies = [d["accuracy"] for d in recent]
         n = len(accuracies)
-        
+
         # Simple slope calculation
         x_sum = sum(range(n))
         y_sum = sum(accuracies)
         xy_sum = sum(i * accuracies[i] for i in range(n))
         x2_sum = sum(i**2 for i in range(n))
-        
+
         numerator = n * xy_sum - x_sum * y_sum
         denominator = n * x2_sum - x_sum ** 2
-        
+
         slope = numerator / denominator if denominator != 0 else 0.0
         intercept = (y_sum - slope * x_sum) / n
-        
+
         # R-squared
         y_mean = y_sum / n
         ss_tot = sum((y - y_mean) ** 2 for y in accuracies)
         ss_res = sum((y - (intercept + slope * i)) ** 2 for i, y in enumerate(accuracies))
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        
+
         return {
             "model_version": model_version,
             "window_days": window_days,
@@ -288,7 +288,7 @@ class PerformanceTracker:
             "degrading": slope < -0.001,  # Threshold for degradation
             "r_squared": r_squared,
         }
-    
+
     def compare_models(
         self,
         model_versions: list,
@@ -296,30 +296,30 @@ class PerformanceTracker:
     ) -> dict:
         """
         Compare performance across multiple models.
-        
+
         Args:
             model_versions: List of model versions to compare
             days: Time window for comparison
-        
+
         Returns:
             Comparative metrics dict
         """
         comparison = []
-        
+
         for model_version in model_versions:
             metrics = self.compute_aggregated_metrics(model_version, days=days)
             comparison.append(metrics)
-        
+
         # Sort by accuracy
         comparison.sort(key=lambda x: x.get("accuracy", 0), reverse=True)
-        
+
         return {
             "models": comparison,
             "window_days": days,
             "best_model": comparison[0]["model_version"] if comparison else None,
             "best_accuracy": comparison[0].get("accuracy", 0) if comparison else 0,
         }
-    
+
     def set_performance_thresholds(
         self,
         model_version: str,
@@ -330,7 +330,7 @@ class PerformanceTracker:
     ) -> dict:
         """
         Set performance thresholds for monitoring and alerting.
-        
+
         Args:
             model_version: Model to configure
             min_accuracy: Minimum acceptable accuracy
@@ -343,7 +343,7 @@ class PerformanceTracker:
             (model_version, min_accuracy, max_logloss, max_brier, alert_threshold)
             VALUES (?, ?, ?, ?, ?)
         """, [model_version, min_accuracy, max_logloss, max_brier, alert_threshold])
-        
+
         return {
             "model_version": model_version,
             "min_accuracy": min_accuracy,
@@ -351,11 +351,11 @@ class PerformanceTracker:
             "max_brier": max_brier,
             "alert_threshold": alert_threshold,
         }
-    
+
     def check_performance_health(self, model_version: str, days: int = 30) -> dict:
         """
         Check if model performance is within acceptable thresholds.
-        
+
         Returns:
             Health status with alerts if thresholds violated
         """
@@ -364,35 +364,35 @@ class PerformanceTracker:
             SELECT min_accuracy, max_logloss, max_brier, alert_threshold
             FROM performance_thresholds WHERE model_version = ?
         """, [model_version]).fetchone()
-        
+
         if not threshold_row:
             return {"status": "not_configured"}
-        
+
         min_acc, max_loss, max_brier, alert_thresh = threshold_row
-        
+
         # Get current metrics
         metrics = self.compute_aggregated_metrics(model_version, days=days)
-        
+
         if metrics.get("n_predictions", 0) == 0:
             return {"status": "no_data"}
-        
+
         # Check thresholds
         alerts = []
-        
+
         if metrics["accuracy"] < min_acc:
             alerts.append(f"Accuracy below threshold ({metrics['accuracy']:.3f} < {min_acc:.3f})")
-        
+
         if metrics["logloss"] > max_loss:
             alerts.append(f"Logloss above threshold ({metrics['logloss']:.3f} > {max_loss:.3f})")
-        
+
         if metrics["brier"] > max_brier:
             alerts.append(f"Brier above threshold ({metrics['brier']:.3f} > {max_brier:.3f})")
-        
+
         # Check trend
         trend = self.get_performance_trend(model_version, window_days=days)
         if trend and trend["degrading"] and trend["trend_slope"] < alert_thresh:
             alerts.append(f"Performance degrading (slope: {trend['trend_slope']:.4f})")
-        
+
         return {
             "status": "healthy" if not alerts else "degraded",
             "model_version": model_version,
@@ -400,7 +400,7 @@ class PerformanceTracker:
             "alerts": alerts,
             "window_days": days,
         }
-    
+
     def get_model_rankings(self, days: int = 365) -> list:
         """Get all models ranked by accuracy"""
         rows = self.con.execute("""
@@ -409,20 +409,20 @@ class PerformanceTracker:
             JOIN matches m2 ON ps.match_id = m2.match_id
             WHERE m2.utc_date >= ?
         """, [datetime.now(timezone.utc) - timedelta(days=days)]).fetchall()
-        
+
         models = [r[0] for r in rows]
         comparison = self.compare_models(models, days=days)
-        
+
         return comparison["models"]
-    
+
     def get_summary(self) -> dict:
         """Get overall performance summary for all models"""
         rows = self.con.execute("""
             SELECT DISTINCT model_version FROM predictions
         """).fetchall()
-        
+
         models = [r[0] for r in rows]
-        
+
         summary = {}
         for model_version in models:
             metrics = self.compute_aggregated_metrics(model_version, days=180)
@@ -433,7 +433,7 @@ class PerformanceTracker:
                     "brier": metrics.get("brier", 0),
                     "n_predictions": metrics.get("n_predictions", 0),
                 }
-        
+
         return summary
 
 

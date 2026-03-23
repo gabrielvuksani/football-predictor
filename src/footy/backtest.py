@@ -26,7 +26,6 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 from footy.models.math.scoring import (
@@ -36,8 +35,8 @@ from footy.models.math.scoring import (
     ranked_probability_score,
     remove_overround,
 )
-from footy.models.experts import ALL_EXPERTS, Expert, ExpertResult
-from footy.models.experts._base import _label, _norm3
+from footy.models.experts import ALL_EXPERTS, ExpertResult
+from footy.models.experts._base import _label
 from footy.normalize import canonical_team_name
 
 log = logging.getLogger(__name__)
@@ -585,7 +584,7 @@ class Backtester:
                   f"(std={np.std(acc_vals):.4f})")
 
         # -- Market comparison --
-        print(f"\n  MARKET COMPARISON")
+        print("\n  MARKET COMPARISON")
         print("  " + "-" * 40)
         delta = result.vs_market_rps
         direction = "BETTER" if delta < 0 else "WORSE"
@@ -598,7 +597,7 @@ class Backtester:
             print("  Interpretation: market odds are still superior")
 
         # -- Upset detection --
-        print(f"\n  UPSET DETECTION")
+        print("\n  UPSET DETECTION")
         print("  " + "-" * 40)
         print(f"  Precision:  {result.upset_precision:.4f}")
         print(f"  Recall:     {result.upset_recall:.4f}")
@@ -606,7 +605,7 @@ class Backtester:
 
         # -- Per-competition --
         if result.by_competition:
-            print(f"\n  PER-COMPETITION BREAKDOWN")
+            print("\n  PER-COMPETITION BREAKDOWN")
             print("  " + "-" * 60)
             print(f"  {'Competition':<25} {'N':>5} {'RPS':>8} {'Acc':>7} {'vs Mkt':>8}")
             print("  " + "-" * 60)
@@ -627,7 +626,7 @@ class Backtester:
 
         # -- Calibration --
         if result.calibration_bins:
-            print(f"\n  CALIBRATION (reliability diagram data)")
+            print("\n  CALIBRATION (reliability diagram data)")
             print("  " + "-" * 50)
             print(f"  {'Bin':>10} {'Pred Conf':>10} {'Act Acc':>10} {'Count':>7}")
             print("  " + "-" * 50)
@@ -647,7 +646,7 @@ class Backtester:
                 if not k.startswith("shap_")
             }
             if main_imp:
-                print(f"\n  TOP 10 FEATURES (split importance)")
+                print("\n  TOP 10 FEATURES (split importance)")
                 print("  " + "-" * 40)
                 for rank, (fname, imp) in enumerate(
                     sorted(main_imp.items(), key=lambda x: -x[1])[:10], 1
@@ -662,7 +661,7 @@ class Backtester:
                 if k.startswith("shap_")
             }
             if shap_imp:
-                print(f"\n  TOP 10 FEATURES (SHAP mean |value|)")
+                print("\n  TOP 10 FEATURES (SHAP mean |value|)")
                 print("  " + "-" * 40)
                 for rank, (fname, imp) in enumerate(
                     sorted(shap_imp.items(), key=lambda x: -x[1])[:10], 1
@@ -671,7 +670,7 @@ class Backtester:
 
         # -- Monthly trend --
         if result.by_period and len(result.by_period) > 3:
-            print(f"\n  MONTHLY TREND (last 6)")
+            print("\n  MONTHLY TREND (last 6)")
             print("  " + "-" * 50)
             print(f"  {'Period':>10} {'N':>5} {'RPS':>8} {'Acc':>7}")
             for p in result.by_period[-6:]:
@@ -702,7 +701,7 @@ class Backtester:
         print(f"  {'Log-loss':<15} {a['log_loss']:10.5f} {b['log_loss']:10.5f} {diff['ll_diff']:+10.5f}")
         print(f"  {'Accuracy':<15} {a['accuracy']:10.4f} {b['accuracy']:10.4f} {diff['acc_diff']:+10.4f}")
 
-        print(f"\n  Diebold-Mariano test (H0: equal predictive accuracy):")
+        print("\n  Diebold-Mariano test (H0: equal predictive accuracy):")
         print(f"    Statistic: {diff['dm_statistic']:.4f}")
         print(f"    p-value:   {diff['dm_pvalue']:.6f}")
         sig = "YES" if diff["significant_at_005"] else "NO"

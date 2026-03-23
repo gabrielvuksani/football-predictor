@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 
-from footy.models.experts._base import Expert, ExpertResult, _f, _is_finished, _norm3, _pts
+from footy.models.experts._base import Expert, ExpertResult, _is_finished, _norm3, _pts
 
 
 class SquadRotationExpert(Expert):

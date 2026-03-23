@@ -33,9 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
-import pickle
-from typing import Any, TypeAlias, cast
-from dataclasses import dataclass, field
+from typing import Any, TypeAlias
 from enum import Enum
 
 import numpy as np
@@ -367,7 +365,7 @@ class BetaCalibrator(BaseCalibrator):
 
         for class_idx in range(self.n_classes):
             p = probs_arr[:, class_idx]
-            y = (outcomes_arr == class_idx).astype(int)
+            (outcomes_arr == class_idx).astype(int)
 
             # Fit via method of moments
             mean_p = np.mean(p)
@@ -528,7 +526,7 @@ def expected_calibration_error(
     if probs_arr.ndim == 1:
         probs_arr = np.column_stack([1 - probs_arr, probs_arr])
 
-    n_classes = probs_arr.shape[1]
+    probs_arr.shape[1]
 
     if class_idx is not None:
         # Single class ECE
@@ -1134,7 +1132,6 @@ class CalibrationManager:
 
                 # Store stratified calibrator
                 if self.db_con:
-                    stratum_name = f"{name}_{stratum}"
                     params_json = json.dumps(calibrator.get_params(), default=str)
                     self.db_con.execute(
                         """INSERT OR REPLACE INTO stratified_calibrators

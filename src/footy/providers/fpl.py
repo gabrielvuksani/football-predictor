@@ -13,8 +13,6 @@ Key data extracted:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any
 
 import httpx
 
@@ -209,7 +207,7 @@ def get_all_teams_availability() -> dict[str, dict]:
 
     team_map = _ensure_team_map()
     elements = data.get("elements", [])
-    element_types = {et["id"]: et["singular_name"]
+    {et["id"]: et["singular_name"]
                      for et in data.get("element_types", [])}
 
     # Group players by team
@@ -289,10 +287,9 @@ def get_fixture_difficulty() -> dict[str, dict]:
 
     # Find current gameweek
     events = data.get("events", [])
-    current_gw = 1
     for ev in events:
         if ev.get("is_current"):
-            current_gw = ev["id"]
+            ev["id"]
             break
 
     # Filter future fixtures

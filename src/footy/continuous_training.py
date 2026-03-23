@@ -19,7 +19,6 @@ import json
 import shutil
 import logging
 import math
-import time
 
 import numpy as np
 
@@ -30,7 +29,7 @@ log = logging.getLogger(__name__)
 
 class ModelTrainingRecord:
     """Tracks a single model training run"""
-    
+
     def __init__(
         self,
         model_version: str,
@@ -94,7 +93,7 @@ class ContinuousTrainingManager:
         self._drift_triggered: bool = False
         self._drift_detectors_triggered: list[str] = []
         self._drift_event_timestamp: Optional[str] = None
-    
+
     def _ensure_schema(self):
         """Create training records table with enhanced schema."""
         self.con.execute("""
@@ -198,7 +197,7 @@ class ContinuousTrainingManager:
             CREATE INDEX IF NOT EXISTS deployment_model_type_idx
             ON model_deployments(model_type)
         """)
-    
+
     def setup_continuous_training(
         self,
         model_type: str,
@@ -246,7 +245,7 @@ class ContinuousTrainingManager:
             "learning_plateau_threshold": learning_plateau_threshold,
             "enabled": True,
         }
-    
+
     def compute_rolling_baseline(self, model_type: str, window_days: int = 30) -> dict:
         """Compute rolling baseline performance for comparison.
 
@@ -405,30 +404,30 @@ class ContinuousTrainingManager:
         row = self.con.execute("""
             SELECT last_trained FROM retraining_schedules WHERE model_type = ?
         """, [model_type]).fetchone()
-        
+
         if not row or not row[0]:
             # First training, use all finished matches
             count = self.con.execute("""
                 SELECT COUNT(*) FROM matches WHERE status = 'FINISHED' AND home_goals IS NOT NULL
             """).fetchone()[0]
             return count
-        
+
         last_trained = row[0]
         count = self.con.execute("""
-            SELECT COUNT(*) FROM matches 
-            WHERE status = 'FINISHED' AND home_goals IS NOT NULL 
+            SELECT COUNT(*) FROM matches
+            WHERE status = 'FINISHED' AND home_goals IS NOT NULL
             AND utc_date > ?
         """, [last_trained]).fetchone()[0]
-        
+
         return count
-    
+
     def check_and_retrain(self, model_type: str = None) -> dict:
         """
         Check if retraining is needed and perform if threshold met.
-        
+
         Args:
             model_type: Specific model to check, or None for all
-        
+
         Returns:
             Status dict with results
         """
@@ -439,7 +438,7 @@ class ContinuousTrainingManager:
                 SELECT model_type FROM retraining_schedules WHERE enabled = TRUE
             """).fetchall()
             model_types = [r[0] for r in rows]
-        
+
         results = {}
         for mt in model_types:
             try:
@@ -447,9 +446,9 @@ class ContinuousTrainingManager:
                 results[mt] = result
             except Exception as e:
                 results[mt] = {"status": "error", "error": str(e)}
-        
+
         return results
-    
+
     def _check_retrain_single(self, model_type: str) -> dict:
         """Check and potentially retrain single model type"""
         # Get config
@@ -457,18 +456,18 @@ class ContinuousTrainingManager:
             SELECT retrain_threshold_matches, performance_threshold_improvement
             FROM retraining_schedules WHERE model_type = ?
         """, [model_type]).fetchone()
-        
+
         if not config:
             return {"status": "not_configured"}
-        
+
         retrain_threshold, perf_threshold = config
-        
+
         # Count new matches
         n_new = self.get_new_matches_since_training(model_type)
-        
+
         # Check for drift (accuracy degradation on recent matches)
         drift = self.detect_drift(model_type)
-        
+
         # Bug 5: Add CUSUM-based drift detection for sensitive early warning
         cusum_drift = False
         try:
@@ -479,7 +478,7 @@ class ContinuousTrainingManager:
                 ORDER BY created_at
                 LIMIT 60
             """, [f"{model_type}_v1"]).fetchall()
-            
+
             if len(recent_preds) >= 30:
                 # Parse predictions (stored as JSON) and outcomes
                 pred_list = []
@@ -493,7 +492,7 @@ class ContinuousTrainingManager:
                             outcome_list.append(int(outcome_code))
                     except Exception:
                         continue
-                
+
                 if len(pred_list) >= 30:
                     # Use CUSUM drift detector
                     cusum_drift = self.check_for_drift(pred_list, outcome_list, threshold=0.05, window_size=30)
@@ -501,7 +500,7 @@ class ContinuousTrainingManager:
                         log.warning("[drift] CUSUM drift detector flagged degradation for %s", model_type)
         except Exception as e:
             log.debug("CUSUM drift check skipped: %s", e)
-        
+
         # Merge drift signals: either accuracy-based OR CUSUM-based
         drift["cusum_triggered"] = cusum_drift
         drift["combined_drift"] = drift.get("drifted", False) or cusum_drift
@@ -563,7 +562,7 @@ class ContinuousTrainingManager:
                 "threshold": retrain_threshold,
                 "ready_in": retrain_threshold - n_new,
             }
-        
+
         # Ready to retrain
         return {
             "status": "ready_to_retrain",
@@ -577,10 +576,10 @@ class ContinuousTrainingManager:
     def detect_drift(self, model_type: str, recent_window: int = 60, baseline_window: int = 365) -> dict:
         """
         Detect prediction accuracy drift by comparing recent vs baseline performance.
-        
+
         Compares the model's accuracy on the last `recent_window` days against
         its accuracy on the prior `baseline_window` days.
-        
+
         Returns dict with 'drifted' bool and accuracy numbers.
         """
         now = datetime.now(timezone.utc)
@@ -699,13 +698,13 @@ class ContinuousTrainingManager:
     def auto_retrain(self, force: bool = False, verbose: bool = True) -> dict:
         """
         End-to-end auto-retrain: check thresholds → train → validate → deploy/rollback.
-        
+
         1. Checks if retraining is needed (new matches or drift detected)
         2. Trains new v13_oracle model
         3. Compares test-set performance vs current model
         4. Deploys only if performance improves (or force=True)
         5. Backs up old model artifact for rollback
-        
+
         Returns summary dict.
         """
         check = self.check_and_retrain("v13_oracle")
@@ -868,7 +867,7 @@ class ContinuousTrainingManager:
                 "reason": "performance_regression",
                 "drift_info": drift_info,
             }
-    
+
     def record_training(
         self,
         model_version: str,
@@ -881,7 +880,7 @@ class ContinuousTrainingManager:
     ) -> dict:
         """
         Record a completed training run and compare with previous version.
-        
+
         Args:
             model_version: New version identifier (e.g., "v5_ultimate_20260214_v2")
             model_type: Model type (v5_ultimate, v13_oracle, etc.)
@@ -890,7 +889,7 @@ class ContinuousTrainingManager:
             n_matches_test: Number of matches in test set
             metrics: Training metrics dict (e.g., {"accuracy": 0.65, "loss": 0.42})
             test_metrics: Test set metrics dict
-        
+
         Returns:
             Training record with improvement assessment
         """
@@ -900,13 +899,13 @@ class ContinuousTrainingManager:
             WHERE model_type = ? AND deployed = TRUE
             ORDER BY training_date DESC LIMIT 1
         """, [model_type]).fetchone()
-        
+
         prev_version = prev_record[0] if prev_record else None
         prev_metrics = json.loads(prev_record[1]) if prev_record and prev_record[1] else {}
-        
+
         # Calculate improvement
         improvement_pct = self._calculate_improvement(test_metrics or metrics, prev_metrics)
-        
+
         # Record training
         self.con.execute("""
             INSERT INTO model_training_records
@@ -919,14 +918,14 @@ class ContinuousTrainingManager:
             prev_version, improvement_pct,
             f"Training started {datetime.now(timezone.utc).isoformat()}"
         ])
-        
+
         # Update retraining schedule
         self.con.execute("""
             UPDATE retraining_schedules
             SET last_trained = CURRENT_TIMESTAMP, last_retrain_matches = 0
             WHERE model_type = ?
         """, [model_type])
-        
+
         return {
             "model_version": model_version,
             "model_type": model_type,
@@ -934,7 +933,7 @@ class ContinuousTrainingManager:
             "previous_version": prev_version,
             "ready_to_deploy": improvement_pct > 0,  # Deploy if any improvement
         }
-    
+
     def _calculate_improvement(self, new_metrics: dict, prev_metrics: dict) -> float:
         """Calculate fractional improvement from metrics (0.01 = 1%)"""
         if not new_metrics:
@@ -942,7 +941,7 @@ class ContinuousTrainingManager:
         if not prev_metrics:
             # First deployment — no baseline to compare against, treat as ready
             return 1.0
-        
+
         # Use accuracy if available, otherwise logloss
         if "accuracy" in new_metrics and "accuracy" in prev_metrics:
             improvement = new_metrics["accuracy"] - prev_metrics["accuracy"]
@@ -951,9 +950,9 @@ class ContinuousTrainingManager:
             improvement = prev_metrics["logloss"] - new_metrics["logloss"]
         else:
             return 0.0
-        
+
         return improvement
-    
+
     def deploy_model(
         self,
         model_version: str,
@@ -962,12 +961,12 @@ class ContinuousTrainingManager:
     ) -> dict:
         """
         Deploy a trained model to production.
-        
+
         Args:
             model_version: Version to deploy
             model_type: Model type
             force: Override performance checks
-        
+
         Returns:
             Deployment result
         """
@@ -976,12 +975,12 @@ class ContinuousTrainingManager:
             SELECT improvement_pct, test_metrics_json FROM model_training_records
             WHERE model_version = ?
         """, [model_version]).fetchone()
-        
+
         if not record:
             return {"status": "error", "error": f"No training record for {model_version}"}
-        
+
         improvement, metrics_json = record
-        
+
         # Performance gate: skip deployment if improvement is negative (unless forced)
         if not force and improvement is not None and improvement < 0:
             return {
@@ -989,14 +988,14 @@ class ContinuousTrainingManager:
                 "reason": f"Model {model_version} did not improve (delta: {improvement:.4f})",
                 "improvement_pct": improvement,
             }
-        
+
         # Get current deployed version
         current = self.con.execute("""
             SELECT active_version FROM model_deployments WHERE model_type = ?
         """, [model_type]).fetchone()
-        
+
         prev_version = current[0] if current else None
-        
+
         # Update deployment
         self.con.execute("""
             INSERT OR REPLACE INTO model_deployments
@@ -1007,14 +1006,14 @@ class ContinuousTrainingManager:
             f"Deployed by continuous retraining (improvement: {improvement:.2f}%)",
             metrics_json
         ])
-        
+
         # Mark training record as deployed
         self.con.execute("""
             UPDATE model_training_records
             SET deployed = TRUE, deployment_date = CURRENT_TIMESTAMP
             WHERE model_version = ?
         """, [model_version])
-        
+
         return {
             "status": "deployed",
             "model_version": model_version,
@@ -1022,32 +1021,32 @@ class ContinuousTrainingManager:
             "previous_version": prev_version,
             "improvement_pct": improvement,
         }
-    
+
     def rollback_model(self, model_type: str) -> dict:
         """Rollback to previous model version if current one has issues"""
         # Get previous version
         prev = self.con.execute("""
             SELECT previous_version FROM model_deployments WHERE model_type = ?
         """, [model_type]).fetchone()
-        
+
         if not prev or not prev[0]:
             return {"status": "error", "error": "No previous version to rollback to"}
-        
+
         prev_version = prev[0]
-        
+
         # Restore previous version
         self.con.execute("""
             UPDATE model_deployments
             SET active_version = ?, previous_version = NULL, reason = 'Rolled back due to performance issue'
             WHERE model_type = ?
         """, [prev_version, model_type])
-        
+
         return {
             "status": "rolled_back",
             "model_type": model_type,
             "restored_version": prev_version,
         }
-    
+
     def get_training_history(self, model_type: str, limit: int = 10) -> list:
         """Get training history for a model type"""
         rows = self.con.execute("""
@@ -1057,7 +1056,7 @@ class ContinuousTrainingManager:
             ORDER BY training_date DESC
             LIMIT ?
         """, [model_type, limit]).fetchall()
-        
+
         history = []
         for version, date, matches, improvement, deployed in rows:
             history.append({
@@ -1067,9 +1066,9 @@ class ContinuousTrainingManager:
                 "improvement_pct": improvement,
                 "deployed": bool(deployed),
             })
-        
+
         return history
-    
+
     def get_deployment_status(self) -> dict:
         """Get status of all deployed models"""
         rows = self.con.execute("""
@@ -1077,7 +1076,7 @@ class ContinuousTrainingManager:
             FROM model_deployments
             ORDER BY model_type
         """).fetchall()
-        
+
         status = {}
         for model_type, active_version, deployed_at, prev_version in rows:
             status[model_type] = {
@@ -1085,9 +1084,9 @@ class ContinuousTrainingManager:
                 "deployed_at": deployed_at,
                 "previous_version": prev_version,
             }
-        
+
         return status
-    
+
     def get_retraining_status(self) -> dict:
         """Get retraining readiness for all models"""
         rows = self.con.execute("""
@@ -1095,22 +1094,22 @@ class ContinuousTrainingManager:
             FROM retraining_schedules
             WHERE enabled = TRUE
         """).fetchall()
-        
+
         status = {}
         for model_type, threshold, last_trained in rows:
             n_new = self.con.execute("""
-                SELECT COUNT(*) FROM matches 
+                SELECT COUNT(*) FROM matches
                 WHERE status = 'FINISHED' AND home_goals IS NOT NULL
                 AND utc_date > COALESCE(?, '1900-01-01'::timestamp)
             """, [last_trained]).fetchone()[0]
-            
+
             status[model_type] = {
                 "new_matches": n_new,
                 "threshold": threshold,
                 "ready": n_new >= threshold,
                 "last_trained": last_trained,
             }
-        
+
         return status
 
     # ------------------------------------------------------------------
@@ -1265,7 +1264,8 @@ class ContinuousTrainingManager:
             "confidence_sum": 0.0, "by_comp": defaultdict(lambda: {"correct": 0, "total": 0}),
         })
 
-        import json, math
+        import json
+        import math
         for match_id, breakdown_json, hg, ag, comp in rows:
             try:
                 data = json.loads(breakdown_json) if isinstance(breakdown_json, str) else breakdown_json
@@ -1410,33 +1410,33 @@ class ContinuousTrainingManager:
             return {}
         return {name: value / raw_total for name, value in weights.items()}
 
-    def check_for_drift(self, recent_predictions: list, recent_outcomes: list, 
+    def check_for_drift(self, recent_predictions: list, recent_outcomes: list,
                        threshold: float = 0.05, window_size: int = 30) -> bool:
         """Check if model performance has drifted using CUSUM control chart.
-        
+
         CUSUM (Cumulative Sum Control Chart) detects shifts in process mean
         by accumulating deviations from expected value. Applied here to detect
         gradual degradation in prediction accuracy over recent matches.
-        
+
         Args:
             recent_predictions: List of predicted probabilities (must be sorted by time)
                                Each element is [p_home, p_draw, p_away]
             recent_outcomes: List of actual outcomes (0=home, 1=draw, 2=away)
             threshold: CUSUM control threshold (default 0.05 corresponds to ~5% accuracy drop)
             window_size: Lookback window size for rolling mean (default 30 matches)
-            
+
         Returns:
             True if drift detected (performance degradation), False otherwise
         """
         if len(recent_predictions) == 0 or len(recent_outcomes) == 0:
             return False
-        
+
         if len(recent_predictions) < window_size:
             return False
-        
+
         try:
             from footy.models.math.scoring import brier_score
-            
+
             # Compute Brier scores for recent predictions
             scores = []
             for pred_probs, outcome_idx in zip(recent_predictions, recent_outcomes):
@@ -1445,36 +1445,36 @@ class ContinuousTrainingManager:
                     scores.append(bs)
                 except Exception:
                     continue
-            
+
             if len(scores) < window_size:
                 return False
-            
+
             # Compute rolling mean and CUSUM statistics
             recent_scores = scores[-window_size:]
             baseline_mean = np.mean(recent_scores[:window_size//2])
-            
+
             # CUSUM calculation: accumulate deviations from baseline
             cusum_pos = 0.0  # Accumulates positive drift
             cusum_neg = 0.0  # Accumulates negative drift
             drift_detected = False
-            
+
             for score in recent_scores[window_size//2:]:
                 deviation = score - baseline_mean
-                
+
                 # One-sided CUSUM: looking for increase in error (drift)
                 cusum_pos = max(0.0, cusum_pos + deviation - threshold)
-                
+
                 # Two-sided: also check for improvement
                 cusum_neg = max(0.0, cusum_neg - deviation - threshold)
-                
+
                 # Control limits: if CUSUM exceeds 5.0, drift likely
                 if cusum_pos > 5.0:
                     log.warning("[drift] CUSUM positive drift detected (pos=%.2f)", cusum_pos)
                     drift_detected = True
                     break
-            
+
             return drift_detected
-        
+
         except Exception as e:
             log.debug("check_for_drift error: %s", e)
             return False

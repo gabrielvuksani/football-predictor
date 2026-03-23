@@ -19,17 +19,13 @@ Reference:
 """
 from __future__ import annotations
 
-import math
 
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson as poisson_dist
 
-from footy.models.experts._base import Expert, ExpertResult, _f, _is_finished, _norm3
+from footy.models.experts._base import Expert, ExpertResult, _is_finished
 from footy.models.experimental_math import (
-    zero_inflated_poisson_pmf,
     build_zip_score_matrix,
-    kalman_attack_defence_update,
 )
 
 
