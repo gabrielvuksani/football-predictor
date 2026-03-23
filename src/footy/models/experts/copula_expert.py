@@ -1,9 +1,11 @@
-"""CopulaExpert — Multi-family copula joint distributions for 1X2 prediction.
+"""CopulaExpert — Frank-primary copula joint distributions for 1X2 prediction.
 
-Uses Frank, Clayton, and Gumbel copulas to model score dependencies,
-averaging across families for robust probability estimates. Each copula
-captures different tail-dependency structures (symmetric, lower-tail,
-upper-tail), and disagreement between families is itself a useful signal.
+Uses the Frank copula as the PRIMARY probability source because it correctly
+models negative dependence between home/away goals (empirical Spearman rho
+approx -0.143 in football). Clayton (lower-tail only, positive dependence)
+and Gumbel (upper-tail only) are retained as secondary FEATURE signals —
+their probabilities are exposed to the ensemble but do NOT enter the main
+probability output. Disagreement between families is itself a useful signal.
 """
 from __future__ import annotations
 
@@ -17,8 +19,8 @@ from footy.models.math.copulas import build_copula_score_matrix
 class CopulaExpert(Expert):
     """
     Per-team attack/defence EMA rates -> expected goals -> copula score
-    matrices (Frank, Clayton, Gumbel) -> averaged 1X2 probabilities plus
-    copula-specific market features.
+    matrices (Frank, Clayton, Gumbel) -> Frank-primary 1X2 probabilities
+    with Clayton/Gumbel retained as secondary feature signals.
     """
 
     name = "copula"
@@ -54,19 +56,32 @@ class CopulaExpert(Expert):
 
         cop_lambda_h = np.zeros(n)
         cop_lambda_a = np.zeros(n)
-        cop_ph = np.zeros(n)
-        cop_pd = np.zeros(n)
-        cop_pa = np.zeros(n)
+
+        # Frank-primary 1X2 (used for probs output)
+        cop_frank_home = np.zeros(n)
+        cop_frank_draw = np.zeros(n)
+        cop_frank_away = np.zeros(n)
+        cop_frank_theta = np.full(n, self.THETA_FRANK)
+
+        # Clayton / Gumbel as feature-only signals
+        cop_clayton_home = np.zeros(n)
+        cop_clayton_draw = np.zeros(n)
+        cop_clayton_away = np.zeros(n)
+        cop_gumbel_home = np.zeros(n)
+        cop_gumbel_draw = np.zeros(n)
+        cop_gumbel_away = np.zeros(n)
+
+        # Averaged 1X2 across all families (secondary feature)
+        cop_avg_ph = np.zeros(n)
+        cop_avg_pd = np.zeros(n)
+        cop_avg_pa = np.zeros(n)
+
+        # Market / derived features
         cop_p00 = np.zeros(n)
         cop_btts = np.zeros(n)
         cop_o25 = np.zeros(n)
         cop_entropy = np.zeros(n)
         cop_model_spread = np.zeros(n)
-
-        # Per-family home-win probabilities
-        cop_frank_home = np.zeros(n)
-        cop_clayton_home = np.zeros(n)
-        cop_gumbel_home = np.zeros(n)
 
         def _att(t: str) -> float:
             return attack.get(t, self.AVG)
@@ -90,8 +105,6 @@ class CopulaExpert(Expert):
             family_p00 = []
             family_btts = []
             family_o25 = []
-            family_home = {}    # family_name -> p_home
-
             for family_name, theta in self.FAMILIES:
                 mx = build_copula_score_matrix(
                     l_h, l_a,
@@ -106,7 +119,6 @@ class CopulaExpert(Expert):
                 p_home, p_draw, p_away = _norm3(p_home, p_draw, p_away)
 
                 family_probs.append((p_home, p_draw, p_away))
-                family_home[family_name] = p_home
 
                 # P(0-0)
                 family_p00.append(float(mx[0, 0]))
@@ -125,28 +137,38 @@ class CopulaExpert(Expert):
                 )
                 family_o25.append(1.0 - under25)
 
-            # Average across copula families
+            # --- PRIMARY output: Frank copula only ---
+            frank_ph, frank_pd, frank_pa = family_probs[0]  # Frank is FAMILIES[0]
+            probs[i] = [frank_ph, frank_pd, frank_pa]
+
+            cop_frank_home[i] = frank_ph
+            cop_frank_draw[i] = frank_pd
+            cop_frank_away[i] = frank_pa
+
+            # Per-family full 1X2 (Clayton, Gumbel as feature signals)
+            cop_clayton_home[i] = family_probs[1][0]
+            cop_clayton_draw[i] = family_probs[1][1]
+            cop_clayton_away[i] = family_probs[1][2]
+            cop_gumbel_home[i] = family_probs[2][0]
+            cop_gumbel_draw[i] = family_probs[2][1]
+            cop_gumbel_away[i] = family_probs[2][2]
+
+            # Averaged 1X2 across all families (secondary feature, not probs)
             avg_ph = np.mean([p[0] for p in family_probs])
             avg_pd = np.mean([p[1] for p in family_probs])
             avg_pa = np.mean([p[2] for p in family_probs])
             avg_ph, avg_pd, avg_pa = _norm3(avg_ph, avg_pd, avg_pa)
+            cop_avg_ph[i] = avg_ph
+            cop_avg_pd[i] = avg_pd
+            cop_avg_pa[i] = avg_pa
 
-            probs[i] = [avg_ph, avg_pd, avg_pa]
-            cop_ph[i] = avg_ph
-            cop_pd[i] = avg_pd
-            cop_pa[i] = avg_pa
+            # Market stats: use Frank-primary values (index 0)
+            cop_p00[i] = float(family_p00[0])
+            cop_btts[i] = float(family_btts[0])
+            cop_o25[i] = float(family_o25[0])
 
-            cop_p00[i] = float(np.mean(family_p00))
-            cop_btts[i] = float(np.mean(family_btts))
-            cop_o25[i] = float(np.mean(family_o25))
-
-            # Per-family home probabilities
-            cop_frank_home[i] = family_home.get("frank", avg_ph)
-            cop_clayton_home[i] = family_home.get("clayton", avg_ph)
-            cop_gumbel_home[i] = family_home.get("gumbel", avg_ph)
-
-            # Entropy of averaged prediction
-            p_arr = np.array([avg_ph, avg_pd, avg_pa])
+            # Entropy of Frank-primary prediction
+            p_arr = np.array([frank_ph, frank_pd, frank_pa])
             p_arr = np.clip(p_arr, 1e-12, 1.0)
             cop_entropy[i] = float(-(p_arr * np.log(p_arr)).sum())
 
@@ -186,9 +208,25 @@ class CopulaExpert(Expert):
             probs=probs,
             confidence=conf,
             features={
-                "cop_ph": cop_ph,
-                "cop_pd": cop_pd,
-                "cop_pa": cop_pa,
+                # Frank-primary 1X2 (same as probs)
+                "cop_frank_home": cop_frank_home,
+                "cop_frank_draw": cop_frank_draw,
+                "cop_frank_away": cop_frank_away,
+                "cop_frank_theta": cop_frank_theta,
+                "cop_frank_primary": np.ones(n),  # indicator: Frank-only probs
+                # Clayton secondary signal
+                "cop_clayton_home": cop_clayton_home,
+                "cop_clayton_draw": cop_clayton_draw,
+                "cop_clayton_away": cop_clayton_away,
+                # Gumbel secondary signal
+                "cop_gumbel_home": cop_gumbel_home,
+                "cop_gumbel_draw": cop_gumbel_draw,
+                "cop_gumbel_away": cop_gumbel_away,
+                # Averaged 1X2 across all families (secondary)
+                "cop_avg_ph": cop_avg_ph,
+                "cop_avg_pd": cop_avg_pd,
+                "cop_avg_pa": cop_avg_pa,
+                # Expected goals & market features
                 "cop_lambda_h": cop_lambda_h,
                 "cop_lambda_a": cop_lambda_a,
                 "cop_p00": cop_p00,
@@ -196,8 +234,5 @@ class CopulaExpert(Expert):
                 "cop_o25": cop_o25,
                 "cop_entropy": cop_entropy,
                 "cop_model_spread": cop_model_spread,
-                "cop_frank_home": cop_frank_home,
-                "cop_clayton_home": cop_clayton_home,
-                "cop_gumbel_home": cop_gumbel_home,
             },
         )

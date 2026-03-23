@@ -77,7 +77,7 @@ class XPtsExpert(Expert):
                 if s > 0:
                     probs[i] = [p_h / s, p_d / s, p_a / s]
 
-                conf[i] = min(0.35, 0.1 + abs(luck_diff[i]) * 0.15)
+                conf[i] = min(0.85, 0.1 + abs(luck_diff[i]) * 0.15)
 
         return ExpertResult(
             probs=probs,

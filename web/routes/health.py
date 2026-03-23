@@ -18,7 +18,7 @@ async def api_health():
         "status": "ok",
         "app": "footy-predictor",
         "version": "12.0",
-        "model": "v12_analyst",
+        "model": "v13_oracle",
         "experts": 34,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -34,7 +34,7 @@ async def api_last_updated():
 
     try:
         row = db.execute(
-            "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v12_analyst'"
+            "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v13_oracle'"
         ).fetchone()
         return {"last_updated": str(row[0])[:19] if row and row[0] else None}
     except Exception:
@@ -51,7 +51,7 @@ async def api_data_freshness():
         row = db.execute("SELECT MAX(utc_date), COUNT(*) FROM matches WHERE status='FINISHED'").fetchone()
         sources["matches"] = {"last_updated": str(row[0]) if row[0] else None, "count": int(row[1] or 0)}
 
-        row = db.execute("SELECT MAX(created_at), COUNT(*) FROM predictions WHERE model_version='v12_analyst'").fetchone()
+        row = db.execute("SELECT MAX(created_at), COUNT(*) FROM predictions WHERE model_version='v13_oracle'").fetchone()
         sources["predictions"] = {"last_updated": str(row[0]) if row[0] else None, "count": int(row[1] or 0)}
 
         for table, key in [
@@ -74,7 +74,7 @@ async def api_data_freshness():
         except Exception:
             sources["weather"] = {"last_updated": None, "count": 0}
 
-        return {"sources": sources, "model_version": "v12_analyst"}
+        return {"sources": sources, "model_version": "v13_oracle"}
     except Exception as e:
         return safe_error(e, "data freshness")
 

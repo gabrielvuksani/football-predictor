@@ -435,27 +435,73 @@ def build_all_score_matrices(lambda_h: float, lambda_a: float, max_goals: int = 
     return matrices
 
 
-def aggregate_model_predictions(lambda_h: float, lambda_a: float) -> dict[str, float]:
+def aggregate_model_predictions(
+    lambda_h: float,
+    lambda_a: float,
+    recent_lambdas: list[tuple[float, float]] | None = None,
+    recent_home_goals: list[int] | None = None,
+    recent_away_goals: list[int] | None = None,
+) -> dict[str, float]:
     """Aggregate predictions from all 12 models with BMA.
 
-    Combines score matrices using Bayesian Model Averaging
-    and extracts comprehensive match probabilities.
+    Combines score matrices using Bayesian Model Averaging.
+    When historical match data is provided (recent lambdas and actual goals),
+    computes per-model log-likelihoods so that better-fitting models receive
+    higher weight. Without historical data, falls back to uniform weights.
 
     Args:
-        lambda_h: Home expected goals
-        lambda_a: Away expected goals
+        lambda_h: Home expected goals for current match
+        lambda_a: Away expected goals for current match
+        recent_lambdas: List of (lambda_h, lambda_a) for recent historical matches.
+                        Used to build retrospective score matrices per model.
+        recent_home_goals: Actual home goals for each historical match.
+        recent_away_goals: Actual away goals for each historical match.
 
     Returns:
         Dict with BMA probabilities, entropy, model agreement metrics
     """
-    from footy.models.math.bma import bayesian_model_average
+    from footy.models.math.bma import bayesian_model_average, compute_model_likelihoods
     from footy.models.math.simulation import extract_match_probs
 
     matrices = build_all_score_matrices(lambda_h, lambda_a)
+    model_names = list(matrices.keys())
     mat_list = list(matrices.values())
 
-    # BMA with uniform weights (no likelihood data)
-    bma_mat = bayesian_model_average(mat_list)
+    # Compute per-model log-likelihoods from historical data if available
+    model_log_likelihoods = None
+
+    has_history = (
+        recent_lambdas is not None
+        and recent_home_goals is not None
+        and recent_away_goals is not None
+        and len(recent_lambdas) > 0
+        and len(recent_lambdas) == len(recent_home_goals) == len(recent_away_goals)
+    )
+
+    if has_history:
+        # Build score matrices for each model on each historical match
+        history: dict[str, list[np.ndarray]] = {name: [] for name in model_names}
+
+        for lh, la in recent_lambdas:
+            hist_matrices = build_all_score_matrices(lh, la)
+            for name in model_names:
+                history[name].append(hist_matrices[name])
+
+        # Compute how well each model predicted the actual outcomes
+        lls = compute_model_likelihoods(
+            history,
+            np.array(recent_home_goals, dtype=int),
+            np.array(recent_away_goals, dtype=int),
+        )
+
+        # Maintain model_names ordering for the list passed to BMA
+        model_log_likelihoods = [lls[name] for name in model_names]
+
+    # BMA with computed likelihoods (or uniform if no history)
+    bma_mat = bayesian_model_average(
+        mat_list,
+        model_log_likelihoods=model_log_likelihoods,
+    )
 
     # Extract probabilities
     result = extract_match_probs(bma_mat)

@@ -19,7 +19,6 @@ from collections import Counter
 from typing import Sequence
 
 import numpy as np
-from scipy.optimize import minimize_scalar
 from scipy.stats import poisson as poisson_dist
 
 
@@ -237,31 +236,30 @@ def platt_scale(
 def find_optimal_temperature(
     probs: np.ndarray,
     labels: np.ndarray,
-    t_range: tuple[float, float] = (0.5, 3.0),
+    t_range: tuple[float, float] = (0.1, 10.0),
 ) -> float:
     """Find optimal temperature T that minimizes NLL on validation set.
 
-    Uses scipy bounded optimization to find the T that gives
-    best-calibrated probabilities.
+    Delegates to the upgraded implementation in
+    ``footy.models.math.scoring.find_optimal_temperature`` which uses
+    L-BFGS-B with proper multiclass NLL minimization.
+
+    This wrapper is kept for backward compatibility.  New code should
+    import directly from ``footy.models.math.scoring``.
 
     Args:
-        probs: Predicted probabilities (N, K)
+        probs: Predicted probabilities or logits (N, K)
         labels: True class indices (N,) — 0, 1, or 2
         t_range: Search bounds for temperature
 
     Returns:
         Optimal temperature value
     """
-    def nll(t: float) -> float:
-        scaled = platt_scale(probs, temperature=t)
-        eps = 1e-12
-        ll = 0.0
-        for i in range(len(labels)):
-            ll -= math.log(max(scaled[i, int(labels[i])], eps))
-        return ll
+    from footy.models.math.scoring import (
+        find_optimal_temperature as _find_optimal_temperature,
+    )
 
-    result = minimize_scalar(nll, bounds=t_range, method="bounded")
-    return float(result.x)
+    return _find_optimal_temperature(probs, labels, bounds=t_range)
 
 
 # ═══════════════════════════════════════════════════════════════════

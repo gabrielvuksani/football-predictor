@@ -26,8 +26,18 @@ class FBrefAdvancedExpert(Expert):
 
     WINDOW = 8  # rolling window for synthetic stats
 
+    # FBref column names to check for
+    FBREF_COLS = [
+        "fb_xg", "fb_npxg", "fb_shots", "fb_sot",
+        "fb_passes_completed", "fb_passes_attempted",
+        "fb_tackles_won", "fb_interceptions", "fb_clean_sheets",
+    ]
+
     def compute(self, df: pd.DataFrame) -> ExpertResult:
         n = len(df)
+
+        # Check if FBref advanced columns exist in the DataFrame
+        has_fbref = all(c in df.columns for c in ["fb_xg", "fb_npxg"])
 
         # Per-team rolling stats (when FBref data unavailable)
         team_shots: dict[str, list[float]] = {}
@@ -36,6 +46,14 @@ class FBrefAdvancedExpert(Expert):
         team_goals: dict[str, list[float]] = {}
         team_conceded: dict[str, list[float]] = {}
         team_yellows: dict[str, list[float]] = {}
+
+        # Per-team rolling FBref stats (when available)
+        team_fb_npxg: dict[str, list[float]] = {}
+        team_fb_xg: dict[str, list[float]] = {}
+        team_fb_passes_comp: dict[str, list[float]] = {}
+        team_fb_passes_att: dict[str, list[float]] = {}
+        team_fb_tackles: dict[str, list[float]] = {}
+        team_fb_interceptions: dict[str, list[float]] = {}
 
         # Output arrays
         fb_att_quality_h = np.zeros(n)
@@ -54,6 +72,15 @@ class FBrefAdvancedExpert(Expert):
         fb_discipline_a = np.zeros(n)
         fb_quality_mismatch = np.zeros(n)
         fb_has_data = np.zeros(n)
+        # FBref-specific output features
+        fb_npxg_diff = np.zeros(n)
+        fb_pass_accuracy_h = np.zeros(n)
+        fb_pass_accuracy_a = np.zeros(n)
+        fb_pressing_h = np.zeros(n)
+        fb_pressing_a = np.zeros(n)
+        fb_progressive_h = np.zeros(n)
+        fb_progressive_a = np.zeros(n)
+        fb_has_fbref = np.zeros(n)
 
         probs = np.full((n, 3), 1 / 3)
         conf = np.zeros(n)
@@ -75,7 +102,92 @@ class FBrefAdvancedExpert(Expert):
             yc_h = team_yellows.get(h, [])
             yc_a = team_yellows.get(a, [])
 
-            if len(sh_h) >= 3 and len(sh_a) >= 3:
+            # --- FBref advanced stats path (when fbref_team_stats joined) ---
+            fb_npxg_h_list = team_fb_npxg.get(h, [])
+            fb_npxg_a_list = team_fb_npxg.get(a, [])
+            fb_used_fbref = False
+
+            if has_fbref and len(fb_npxg_h_list) >= 3 and len(fb_npxg_a_list) >= 3:
+                fb_used_fbref = True
+                fb_has_fbref[i] = 1.0
+                fb_has_data[i] = 1.0
+                w = self.WINDOW
+
+                # npxG-based attacking quality
+                avg_npxg_h = np.mean(fb_npxg_h_list[-w:])
+                avg_npxg_a = np.mean(fb_npxg_a_list[-w:])
+                avg_xg_h = np.mean(team_fb_xg.get(h, [0.0])[-w:])
+                avg_xg_a = np.mean(team_fb_xg.get(a, [0.0])[-w:])
+                fb_att_quality_h[i] = avg_npxg_h * 0.6 + avg_xg_h * 0.4
+                fb_att_quality_a[i] = avg_npxg_a * 0.6 + avg_xg_a * 0.4
+
+                # npxG differential
+                fb_npxg_diff[i] = avg_npxg_h - avg_npxg_a
+
+                # Pass accuracy
+                pc_h = team_fb_passes_comp.get(h, [])
+                pa_h = team_fb_passes_att.get(h, [])
+                pc_a = team_fb_passes_comp.get(a, [])
+                pa_a = team_fb_passes_att.get(a, [])
+                if len(pc_h) >= 3 and len(pa_h) >= 3:
+                    avg_pc_h = np.mean(pc_h[-w:])
+                    avg_pa_h = np.mean(pa_h[-w:])
+                    fb_pass_accuracy_h[i] = avg_pc_h / max(avg_pa_h, 1.0)
+                if len(pc_a) >= 3 and len(pa_a) >= 3:
+                    avg_pc_a = np.mean(pc_a[-w:])
+                    avg_pa_a = np.mean(pa_a[-w:])
+                    fb_pass_accuracy_a[i] = avg_pc_a / max(avg_pa_a, 1.0)
+
+                # Pressing intensity: (tackles_won + interceptions) per match
+                tk_h = team_fb_tackles.get(h, [])
+                int_h = team_fb_interceptions.get(h, [])
+                tk_a = team_fb_tackles.get(a, [])
+                int_a = team_fb_interceptions.get(a, [])
+                if len(tk_h) >= 3 and len(int_h) >= 3:
+                    fb_pressing_h[i] = np.mean(tk_h[-w:]) + np.mean(int_h[-w:])
+                if len(tk_a) >= 3 and len(int_a) >= 3:
+                    fb_pressing_a[i] = np.mean(tk_a[-w:]) + np.mean(int_a[-w:])
+
+                # Defensive quality from pressing + low conceded xG
+                fb_def_quality_h[i] = fb_pressing_h[i] * 0.05 + max(0.0, 2.0 - avg_npxg_a) * 0.5
+                fb_def_quality_a[i] = fb_pressing_a[i] * 0.05 + max(0.0, 2.0 - avg_npxg_h) * 0.5
+
+                # Progressive quality: pass accuracy * npxG (style indicator)
+                fb_progressive_h[i] = fb_pass_accuracy_h[i] * avg_npxg_h
+                fb_progressive_a[i] = fb_pass_accuracy_a[i] * avg_npxg_a
+
+                # Shot quality and accuracy from FBref shots/SoT if available
+                fb_sh_h = team_shots.get(h, [])
+                fb_sh_a = team_shots.get(a, [])
+                fb_sot_h_list = team_sot.get(h, [])
+                fb_sot_a_list = team_sot.get(a, [])
+                if len(fb_sh_h) >= 3:
+                    avg_sh = np.mean(fb_sh_h[-w:])
+                    avg_sot = np.mean(fb_sot_h_list[-w:]) if fb_sot_h_list else 0.0
+                    fb_shot_volume_h[i] = avg_sh
+                    fb_shot_accuracy_h[i] = avg_sot / max(avg_sh, 1.0)
+                    fb_shot_quality_h[i] = avg_npxg_h / max(avg_sh, 1.0)
+                if len(fb_sh_a) >= 3:
+                    avg_sh = np.mean(fb_sh_a[-w:])
+                    avg_sot = np.mean(fb_sot_a_list[-w:]) if fb_sot_a_list else 0.0
+                    fb_shot_volume_a[i] = avg_sh
+                    fb_shot_accuracy_a[i] = avg_sot / max(avg_sh, 1.0)
+                    fb_shot_quality_a[i] = avg_npxg_a / max(avg_sh, 1.0)
+
+                # Quality mismatch and probabilities
+                quality_h = fb_att_quality_h[i] + fb_def_quality_h[i]
+                quality_a = fb_att_quality_a[i] + fb_def_quality_a[i]
+                fb_quality_mismatch[i] = quality_h - quality_a
+
+                adj = np.clip(fb_quality_mismatch[i] * 0.06, -0.15, 0.15)
+                p_h = 0.40 + adj
+                p_d = 0.28 - abs(adj) * 0.2
+                p_a = 0.32 - adj
+                probs[i] = _norm3(max(0.05, p_h), max(0.10, p_d), max(0.05, p_a))
+                conf[i] = min(0.6, 0.15 + abs(fb_quality_mismatch[i]) * 0.15)
+
+            # --- Fallback: basic stats from match_extras ---
+            elif len(sh_h) >= 3 and len(sh_a) >= 3:
                 fb_has_data[i] = 1.0
                 w = self.WINDOW
 
@@ -149,7 +261,7 @@ class FBrefAdvancedExpert(Expert):
             hy = _f(getattr(r, "hy", None))
             ay = _f(getattr(r, "ay", None))
 
-            # Store for home team (when playing at home)
+            # Store basic stats for home team (when playing at home)
             team_shots.setdefault(h, []).append(hs)
             team_sot.setdefault(h, []).append(hst)
             team_corners.setdefault(h, []).append(hc)
@@ -157,13 +269,43 @@ class FBrefAdvancedExpert(Expert):
             team_conceded.setdefault(h, []).append(float(ag))
             team_yellows.setdefault(h, []).append(hy)
 
-            # Store for away team (when playing away)
+            # Store basic stats for away team (when playing away)
             team_shots.setdefault(a, []).append(as_)
             team_sot.setdefault(a, []).append(ast)
             team_corners.setdefault(a, []).append(ac)
             team_goals.setdefault(a, []).append(float(ag))
             team_conceded.setdefault(a, []).append(float(hg))
             team_yellows.setdefault(a, []).append(ay)
+
+            # Store FBref advanced stats (if columns exist)
+            if has_fbref:
+                fb_xg_h = _f(getattr(r, "fb_xg", None))
+                fb_npxg_h_val = _f(getattr(r, "fb_npxg", None))
+                fb_shots_h = _f(getattr(r, "fb_shots", None))
+                fb_sot_h_val = _f(getattr(r, "fb_sot", None))
+                fb_pc_h = _f(getattr(r, "fb_passes_completed", None))
+                fb_pa_h = _f(getattr(r, "fb_passes_attempted", None))
+                fb_tk_h = _f(getattr(r, "fb_tackles_won", None))
+                fb_int_h = _f(getattr(r, "fb_interceptions", None))
+
+                # Home team FBref stats
+                team_fb_xg.setdefault(h, []).append(fb_xg_h)
+                team_fb_npxg.setdefault(h, []).append(fb_npxg_h_val)
+                team_fb_passes_comp.setdefault(h, []).append(fb_pc_h)
+                team_fb_passes_att.setdefault(h, []).append(fb_pa_h)
+                team_fb_tackles.setdefault(h, []).append(fb_tk_h)
+                team_fb_interceptions.setdefault(h, []).append(fb_int_h)
+
+                # Away team: use same row values (FBref data is per-match for home team,
+                # so away team gets opponent's defensive stats inverted)
+                # For a proper implementation, we'd need separate away columns;
+                # here we track what we have for the away team from their home matches
+                team_fb_xg.setdefault(a, [])
+                team_fb_npxg.setdefault(a, [])
+                team_fb_passes_comp.setdefault(a, [])
+                team_fb_passes_att.setdefault(a, [])
+                team_fb_tackles.setdefault(a, [])
+                team_fb_interceptions.setdefault(a, [])
 
         return ExpertResult(
             probs=probs,
@@ -185,5 +327,14 @@ class FBrefAdvancedExpert(Expert):
                 "fb_discipline_a": fb_discipline_a,
                 "fb_quality_mismatch": fb_quality_mismatch,
                 "fb_has_data": fb_has_data,
+                # FBref advanced features (populated when fbref_team_stats joined)
+                "fb_npxg_diff": fb_npxg_diff,
+                "fb_pass_accuracy_h": fb_pass_accuracy_h,
+                "fb_pass_accuracy_a": fb_pass_accuracy_a,
+                "fb_pressing_h": fb_pressing_h,
+                "fb_pressing_a": fb_pressing_a,
+                "fb_progressive_h": fb_progressive_h,
+                "fb_progressive_a": fb_progressive_a,
+                "fb_has_fbref": fb_has_fbref,
             },
         )

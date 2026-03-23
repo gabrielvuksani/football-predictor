@@ -30,7 +30,7 @@ document.addEventListener('alpine:init', () => {
     loadingPerf: false,
     lastUpdated: null,
     days: 14,
-    model: 'v12_analyst',
+    model: 'v13_oracle',
     sortMode: 'kickoff',
     searchQuery: '',
 

@@ -47,6 +47,12 @@ class PoissonExpert(Expert):
         _rho_cache: dict[str, float] = {}   # comp → estimated ρ
         _RHO_MIN_SAMPLES = 200  # need at least 200 finished matches for MLE
 
+        # Per-league home attack advantage: running avg of home_goals/away_goals
+        _home_adv_sum_hg: dict[str, float] = {}  # comp → cumulative home goals
+        _home_adv_sum_ag: dict[str, float] = {}  # comp → cumulative away goals
+        _home_adv_count: dict[str, int] = {}      # comp → number of finished matches
+        _HOME_ADV_MIN = 20  # minimum matches before using learned multiplier
+
         lam_h = np.zeros(n); lam_a = np.zeros(n)
         probs = np.full((n, 3), 1 / 3)
         conf = np.zeros(n)
@@ -116,7 +122,14 @@ class PoissonExpert(Expert):
             att_a = 0.7 * aa + 0.3 * aa_a
             def_a = 0.7 * da + 0.3 * ad_a
 
-            l_h = max(0.3, min(4.5, att_h * def_a / self.AVG * 1.05))
+            # Per-league home attack multiplier (learned from data)
+            comp = getattr(r, 'competition', None) or 'default'
+            if _home_adv_count.get(comp, 0) >= _HOME_ADV_MIN:
+                home_mult = _home_adv_sum_hg[comp] / max(_home_adv_sum_ag[comp], 0.01)
+                home_mult = max(0.90, min(1.25, home_mult))  # clamp to reasonable range
+            else:
+                home_mult = 1.05  # default for competitions with <20 matches
+            l_h = max(0.3, min(4.5, att_h * def_a / self.AVG * home_mult))
             l_a = max(0.3, min(4.5, att_a * def_h / self.AVG))
             lam_h[i] = l_h; lam_a[i] = l_a
 
@@ -167,7 +180,7 @@ class PoissonExpert(Expert):
             pois_skew[i] = float(np.sum(gd_probs * ((gd_range - mu) / std) ** 3))
 
             # v10: Dixon-Coles adjusted score matrix (MLE-estimated ρ per competition)
-            comp = getattr(r, 'competition', None) or 'default'
+            # comp already set above for home advantage multiplier
             if comp not in _rho_cache:
                 _rho_cache[comp] = -0.13  # initial prior
             rho_est = _rho_cache[comp]
@@ -272,6 +285,11 @@ class PoissonExpert(Expert):
                 away_def[a] = float(hg) if hg > 0 else self.AVG * 0.9
             game_count[h] = game_count.get(h, 0) + 1
             game_count[a] = game_count.get(a, 0) + 1
+
+            # --- Per-league home attack advantage tracking ---
+            _home_adv_sum_hg[comp] = _home_adv_sum_hg.get(comp, 0.0) + hg
+            _home_adv_sum_ag[comp] = _home_adv_sum_ag.get(comp, 0.0) + ag
+            _home_adv_count[comp] = _home_adv_count.get(comp, 0) + 1
 
             # --- MLE rho estimation: accumulate per-competition history ---
             if hg is not None and ag is not None:

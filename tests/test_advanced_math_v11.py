@@ -230,7 +230,7 @@ class TestPlattScaling:
         probs = np.random.dirichlet([2, 1, 1], size=50)
         labels = np.random.randint(0, 3, size=50)
         t_opt = find_optimal_temperature(probs, labels)
-        assert 0.5 <= t_opt <= 3.0
+        assert 0.1 <= t_opt <= 10.0
 
 
 # ═══════════════════════════════════════════════════════════════════

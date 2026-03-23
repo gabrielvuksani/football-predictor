@@ -341,6 +341,62 @@ def ingest(days_back: int = 30, days_forward: int = 7, chunk_days: int = 10, ver
 
     return n
 
+def enrich_with_soccerdata(con, competitions=None, verbose=True):
+    """Fetch advanced stats from soccerdata library (FBref, Understat, ClubElo).
+
+    This supplements the existing data pipeline with richer statistical data
+    from maintained scrapers via the soccerdata library.
+    """
+    from footy.providers.soccerdata_provider import SoccerDataProvider
+
+    provider = SoccerDataProvider()
+    results = {}
+
+    comps = competitions or settings().tracked_competitions
+
+    for comp in comps:
+        try:
+            # FBref team stats
+            stats = provider.get_team_season_stats(comp, "standard")
+            if not stats.empty:
+                # Store in fbref_team_stats table
+                stored = 0
+                for _, row in stats.iterrows():
+                    try:
+                        con.execute(
+                            """INSERT OR REPLACE INTO fbref_team_stats
+                               (team, competition, season, games, xg, npxg,
+                                shots, shots_on_target, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                            [str(row.get('team', '')), comp, '2024-2025',
+                             int(row.get('games', 0)), float(row.get('xg', 0)),
+                             float(row.get('npxg', 0)), int(row.get('shots', 0)),
+                             int(row.get('shots_on_target', 0))]
+                        )
+                        stored += 1
+                    except Exception:
+                        pass
+                results[f"{comp}_fbref"] = stored
+                if verbose:
+                    print(f"[soccerdata] FBref {comp}: {stored} teams", flush=True)
+        except Exception as e:
+            if verbose:
+                print(f"[soccerdata] FBref {comp} failed: {e}", flush=True)
+
+    # ClubElo ratings
+    try:
+        elo_df = provider.get_elo_ratings()
+        if not elo_df.empty:
+            results["clubelo"] = len(elo_df)
+            if verbose:
+                print(f"[soccerdata] ClubElo: {len(elo_df)} teams", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[soccerdata] ClubElo failed: {e}", flush=True)
+
+    return results
+
+
 def update_elo_from_finished(verbose: bool = True) -> int:
     """
     Applies Elo updates ONLY ONCE per finished match (tracks applied match_ids).

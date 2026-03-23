@@ -135,16 +135,57 @@ def _shin_implied(odds: list[float], max_iter: int = 1000, tol: float = 1e-12) -
     return probs
 
 
-def _implied(h, d, a):
-    """Convert decimal odds to implied probabilities using Shin method.
+def _power_implied(odds: list[float]) -> list[float]:
+    """Remove overround via the power method — outperforms Shin.
 
-    Falls back to basic normalisation if Shin fails.
+    Finds k > 1 such that sum(raw_i^k) = 1, where raw_i = 1/odds_i.
+    Since all raw_i < 1, raising to k > 1 shrinks longshots more than
+    favourites, naturally correcting the favourite-longshot bias.
+    Never produces out-of-range probabilities (raw_i in (0,1) => raw_i^k in (0,1)).
+
+    Reference:
+        Keith Cheung (2015) "Overround Removal Methods"
+        — power method universally outperforms multiplicative,
+          outperforms or matches Shin.
+    """
+    from scipy.optimize import brentq
+
+    raw = 1.0 / np.array(odds, dtype=float)
+    total = raw.sum()
+    if total <= 1.0:
+        return raw.tolist()  # no overround to remove
+
+    # At k=1: sum(raw^1) = booksum > 1 (positive objective)
+    # As k grows: raw^k -> 0 for all raw < 1 (negative objective)
+    # So the root lies in (1, upper) for any reasonable overround.
+    def objective(k):
+        return np.sum(raw ** k) - 1.0
+
+    try:
+        k = brentq(objective, 1.0, 100.0, xtol=1e-8)
+        probs = raw ** k
+        return probs.tolist()
+    except (ValueError, RuntimeError):
+        # Fallback to simple normalisation if brentq fails
+        return (raw / total).tolist()
+
+
+def _implied(h, d, a):
+    """Convert decimal odds to implied probabilities.
+
+    Uses the power method (superior overround removal) as default,
+    falls back to Shin, then to basic normalisation.
     Returns (p_home, p_draw, p_away, overround).
     """
     h, d, a = _f(h), _f(d), _f(a)
     if h <= 1 or d <= 1 or a <= 1:
         return (0.0, 0.0, 0.0, 0.0)
     overround = (1.0 / h + 1.0 / d + 1.0 / a) - 1.0
+    try:
+        probs = _power_implied([h, d, a])
+        return (probs[0], probs[1], probs[2], overround)
+    except Exception:
+        pass
     try:
         probs = _shin_implied([h, d, a])
         return (probs[0], probs[1], probs[2], overround)

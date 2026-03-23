@@ -19,6 +19,7 @@ import math
 from typing import Sequence
 
 import numpy as np
+from scipy.optimize import minimize
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -467,3 +468,170 @@ def odds_dispersion(
     """
     probs_arr = np.array(probs, dtype=float)
     return float(np.std(probs_arr))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TEMPERATURE SCALING (Guo et al. 2017)
+# ═══════════════════════════════════════════════════════════════════
+def _softmax(logits: np.ndarray) -> np.ndarray:
+    """Numerically stable softmax over last axis.
+
+    softmax(z)_i = exp(z_i - max(z)) / Σ exp(z_j - max(z))
+
+    Subtracting the max prevents overflow in exp().
+
+    Args:
+        logits: Array of shape (N, K) — unnormalized log-probabilities.
+
+    Returns:
+        Probabilities of shape (N, K), each row sums to 1.
+    """
+    shifted = logits - logits.max(axis=-1, keepdims=True)
+    exp_z = np.exp(shifted)
+    return exp_z / exp_z.sum(axis=-1, keepdims=True)
+
+
+def find_optimal_temperature(
+    logits: np.ndarray,
+    labels: np.ndarray,
+    bounds: tuple[float, float] = (0.1, 10.0),
+) -> float:
+    """Find optimal temperature T minimizing NLL on a validation set.
+
+    Temperature scaling (Guo et al. 2017) learns a single scalar T
+    to post-hoc calibrate a multiclass classifier.  The calibrated
+    probabilities are:
+
+        p_calibrated = softmax(logits / T)
+
+    where logits are the pre-softmax outputs of the model.
+
+    The optimal T is found by minimizing the negative log-likelihood
+    (cross-entropy) of the true labels under the scaled distribution:
+
+        NLL(T) = -1/N  Σ log softmax(z_i / T)_{y_i}
+
+    A single parameter avoids overfitting and preserves the top-1
+    accuracy (softmax is monotonic, so argmax is unchanged).
+
+    This implementation accepts *either* raw logits or probability
+    vectors.  When probabilities are passed (rows that sum to ~1 and
+    all values are in (0,1]), they are converted to logits via
+    log(p + eps) before optimisation — this is mathematically
+    equivalent because softmax(log(p)/T) = softmax(logit-space / T).
+
+    Optimization uses L-BFGS-B with a single bounded variable, which
+    typically converges in < 20 evaluations.
+
+    Args:
+        logits: Pre-softmax logits of shape (N, K) where K=3 for
+            football (home/draw/away).  Probabilities are also
+            accepted and auto-converted.
+        labels: Integer class labels of shape (N,) with values in
+            {0, 1, ..., K-1}.
+        bounds: Search bounds for T as (lower, upper).  Default
+            (0.1, 10.0) covers everything from extreme sharpening
+            to heavy smoothing.
+
+    Returns:
+        Optimal temperature T (float).  T=1 means the model is
+        already well-calibrated; T>1 means it was overconfident;
+        T<1 means it was underconfident.
+
+    Example:
+        >>> logits = np.array([[2.1, 0.3, -0.5], [0.1, 1.8, 0.4]])
+        >>> labels = np.array([0, 1])
+        >>> T = find_optimal_temperature(logits, labels)
+        >>> calibrated = _softmax(logits / T)
+    """
+    logits = np.asarray(logits, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.int64)
+
+    if logits.ndim == 1:
+        logits = logits[np.newaxis, :]
+
+    n, k = logits.shape
+
+    # Auto-detect probabilities: if every row sums to ~1 and all
+    # values are in (0, 1], treat as probabilities and convert.
+    row_sums = logits.sum(axis=1)
+    if np.all(logits > -1e-6) and np.allclose(row_sums, 1.0, atol=0.05):
+        logits = np.log(np.clip(logits, 1e-12, None))
+
+    def nll(t_arr: np.ndarray) -> float:
+        t = float(t_arr[0])
+        scaled = logits / t
+        # Numerically stable log-softmax: log(softmax(z)) = z - max(z) - log(sum(exp(z - max(z))))
+        shifted = scaled - scaled.max(axis=1, keepdims=True)
+        log_sum_exp = np.log(np.exp(shifted).sum(axis=1))
+        log_probs = shifted - log_sum_exp[:, np.newaxis]
+        # NLL = -mean of log-prob at the true class
+        nll_val = -np.mean(log_probs[np.arange(n), labels])
+        return float(nll_val)
+
+    result = minimize(
+        nll,
+        x0=[1.0],
+        method="L-BFGS-B",
+        bounds=[bounds],
+    )
+    return float(result.x[0])
+
+
+def apply_temperature_scaling(
+    probs: np.ndarray,
+    temperature: float,
+) -> np.ndarray:
+    """Apply temperature scaling to existing probability predictions.
+
+    Converts probabilities to log-space, divides by T, and applies
+    softmax to produce re-calibrated probabilities.
+
+    The pipeline is:
+        1. logits  = log(probs + eps)          — invert softmax
+        2. scaled  = logits / T                — temperature divide
+        3. calibrated = softmax(scaled)        — re-normalize
+
+    This is the *inference-time* companion to ``find_optimal_temperature``
+    which finds the best T on a validation set.
+
+    Temperature effects:
+        T = 1.0 : identity (probabilities unchanged)
+        T > 1.0 : softer / less confident (entropy increases)
+        T < 1.0 : sharper / more confident (entropy decreases)
+
+    The function handles both single-sample (K,) and batch (N, K) input
+    and always returns probabilities that sum to 1 along the last axis.
+
+    Args:
+        probs: Predicted probabilities of shape (N, K) or (K,).
+            Values should be in (0, 1] and each row should sum to ~1.
+        temperature: Temperature parameter T > 0.  Use the value
+            returned by ``find_optimal_temperature``.
+
+    Returns:
+        Calibrated probabilities, same shape as input, each row
+        summing to 1.0.
+
+    Example:
+        >>> probs = np.array([[0.7, 0.2, 0.1], [0.3, 0.4, 0.3]])
+        >>> calibrated = apply_temperature_scaling(probs, T=1.5)
+        >>> np.allclose(calibrated.sum(axis=1), 1.0)
+        True
+    """
+    eps = 1e-12
+    probs = np.asarray(probs, dtype=np.float64)
+    single = probs.ndim == 1
+    if single:
+        probs = probs[np.newaxis, :]
+
+    # Step 1: convert to logits
+    logits = np.log(np.clip(probs, eps, None))
+
+    # Step 2: scale by temperature
+    scaled = logits / max(temperature, eps)
+
+    # Step 3: numerically stable softmax
+    calibrated = _softmax(scaled)
+
+    return calibrated[0] if single else calibrated

@@ -28,6 +28,38 @@ from scipy.stats import nbinom, skellam as skellam_dist
 
 
 # ═══════════════════════════════════════════════════════════════════
+# PARAMETER ESTIMATION HELPERS
+# ═══════════════════════════════════════════════════════════════════
+def estimate_com_poisson_nu(goals_series):
+    """Estimate COM-Poisson nu from empirical variance/mean ratio.
+    Football goals are underdispersed (nu > 1 in CMP convention).
+    """
+    mu = np.mean(goals_series)
+    var = np.var(goals_series)
+    if var < 0.1 or mu < 0.1:
+        return 1.0
+    nu = mu / max(var, 0.5)
+    return float(np.clip(nu, 0.5, 2.0))
+
+
+def estimate_zip_zero_inflation(goals_series):
+    """Estimate zero-inflation parameter from empirical 0-0 rate vs Poisson prediction."""
+    mu = np.mean(goals_series)
+    actual_zero_rate = float(np.mean(goals_series == 0))
+    poisson_zero_rate = float(np.exp(-mu))
+    if poisson_zero_rate >= 1.0 - 1e-6:
+        return 0.0
+    zi = max(0.0, (actual_zero_rate - poisson_zero_rate) / (1.0 - poisson_zero_rate))
+    return float(np.clip(zi, 0.0, 0.3))
+
+
+def estimate_bivariate_lambda3(home_goals, away_goals):
+    """Estimate bivariate Poisson covariance parameter from empirical goal correlation."""
+    cov = np.cov(home_goals, away_goals)[0, 1]
+    return float(max(0.01, min(0.5, cov)))
+
+
+# ═══════════════════════════════════════════════════════════════════
 # SKELLAM DISTRIBUTION
 # ═══════════════════════════════════════════════════════════════════
 def skellam_probs(
@@ -478,3 +510,37 @@ def build_dc_score_matrix(
         mat /= total
 
     return mat
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DIAGONAL-INFLATED BIVARIATE POISSON (DIBP)
+# ═══════════════════════════════════════════════════════════════════
+def build_dibp_score_matrix(lambda_h, lambda_a, lambda_3=0.1, diag_inflate=0.05, max_goals=8):
+    """Diagonal-Inflated Bivariate Poisson score matrix.
+
+    State of the art: RPS = 0.189 on La Liga (2025 research).
+    Inflates draw scorelines (0-0, 1-1, 2-2...) to match empirical draw rates.
+    """
+    base = build_bivariate_poisson_matrix(lambda_h, lambda_a, lambda_3, max_goals)
+
+    # Compute diagonal inflation: redistribute mass to draw scorelines
+    n = max_goals + 1
+    diag_probs = np.zeros((n, n))
+    for k in range(n):
+        # Probability of k-k draw under independent Poisson
+        diag_probs[k, k] = poisson_dist.pmf(k, lambda_h) * poisson_dist.pmf(k, lambda_a)
+
+    # Normalize diagonal probs
+    diag_total = diag_probs.sum()
+    if diag_total > 0:
+        diag_probs = diag_probs / diag_total
+
+    # Mix: (1-diag_inflate) * base + diag_inflate * diag_probs
+    adjusted = (1.0 - diag_inflate) * base + diag_inflate * diag_probs
+
+    # Renormalize
+    total = adjusted.sum()
+    if total > 0:
+        adjusted = adjusted / total
+
+    return adjusted

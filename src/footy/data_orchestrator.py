@@ -178,7 +178,7 @@ class DataOrchestrator:
         return updated
 
     def refresh_fbref_stats(self, competition: str, season: str = "2025-2026") -> int:
-        """Fetch and store FBref stats for a competition."""
+        """Fetch and store FBref stats for a competition into fbref_team_stats."""
         try:
             stats = self.fbref.fetch_team_stats(competition, season)
         except Exception as exc:
@@ -188,17 +188,32 @@ class DataOrchestrator:
         stored = 0
         for team_stats in stats:
             team = team_stats.get("team", "")
-            xg = team_stats.get("xg", 0)
-            npxg = team_stats.get("npxg", 0)
-            games = team_stats.get("games", 0)
-            if team and games > 0:
+            if not team:
+                continue
+            try:
                 con.execute(
-                    """INSERT OR REPLACE INTO provider_status
-                       (match_id, provider, status, detail)
-                       VALUES (?, 'fbref', 'ok', ?)""",
-                    [int(hashlib.blake2b(str((competition, team, season)).encode(), digest_size=8).hexdigest(), 16) & 0x7FFFFFFFFFFFFFFF, f"{team}: xG={xg}, npxG={npxg}, games={games}"],
+                    """INSERT OR REPLACE INTO fbref_team_stats
+                       (team, competition, season, games, xg, npxg,
+                        shots, shots_on_target, passes_completed, passes_attempted,
+                        tackles_won, interceptions, clean_sheets, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    [
+                        team, competition, season,
+                        team_stats.get("games", 0),
+                        team_stats.get("xg", 0),
+                        team_stats.get("npxg", 0),
+                        team_stats.get("shots", 0),
+                        team_stats.get("shots_on_target", 0),
+                        team_stats.get("passes_completed", 0),
+                        team_stats.get("passes_attempted", 0),
+                        team_stats.get("tackles_won", 0),
+                        team_stats.get("interceptions", 0),
+                        team_stats.get("clean_sheets", 0),
+                    ],
                 )
                 stored += 1
+            except Exception as exc:
+                log.debug("FBref insert failed for %s/%s: %s", competition, team, exc)
         return stored
 
     def refresh_transfermarkt_values(self, competition: str, season: str = "2025") -> int:

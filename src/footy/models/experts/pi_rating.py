@@ -108,11 +108,13 @@ class PiRatingExpert(Expert):
                 lr_h = _learning_rate(matches_h)
                 lr_a = _learning_rate(matches_a)
 
-                # Update ratings
+                # Update only venue-specific ratings:
+                # Home team played at home → update home_ratings[h] only
+                # Away team played away → update away_ratings[a] only
                 home_ratings[h] = hr_h + lr_h * error_h
-                away_ratings[h] = ar_h + lr_h * error_h
+                # away_ratings[h] unchanged — team h didn't play away
 
-                home_ratings[a] = hr_a + lr_a * error_a
+                # home_ratings[a] unchanged — team a didn't play at home
                 away_ratings[a] = ar_a + lr_a * error_a
 
                 # Increment match counts

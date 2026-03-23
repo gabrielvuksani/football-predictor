@@ -106,6 +106,82 @@ def bayesian_model_average(
     return result
 
 
+def compute_model_likelihoods(
+    score_matrices_history: dict[str, list[np.ndarray]],
+    actual_home_goals: np.ndarray | list[int],
+    actual_away_goals: np.ndarray | list[int],
+) -> dict[str, float]:
+    """Compute log-likelihoods for each score model from historical predictions.
+
+    For each model, evaluates how well its predicted score distributions matched
+    actual match outcomes. Models that assigned higher probability to the
+    observed scorelines get higher log-likelihood, and therefore more weight
+    in Bayesian Model Averaging.
+
+    Log-likelihood for model m:
+        LL_m = sum_i log P_m(home_i, away_i)
+
+    where P_m(h, a) is the probability model m assigned to scoreline (h, a)
+    for match i.
+
+    Args:
+        score_matrices_history: Dict mapping model_name to a list of score matrices,
+                                one per historical match. Each matrix is shape
+                                (max_goals+1, max_goals+1).
+        actual_home_goals: Array of actual home goals for each match.
+        actual_away_goals: Array of actual away goals for each match.
+
+    Returns:
+        Dict mapping model_name to total log-likelihood (higher = better fit).
+
+    Example:
+        >>> from footy.models.math.bma import compute_model_likelihoods
+        >>> # Suppose we have 3 past matches with predictions from 2 models
+        >>> history = {
+        ...     "dixon_coles": [dc_mat_1, dc_mat_2, dc_mat_3],
+        ...     "bivariate_poisson": [bp_mat_1, bp_mat_2, bp_mat_3],
+        ... }
+        >>> home_goals = [2, 0, 1]
+        >>> away_goals = [1, 0, 3]
+        >>> lls = compute_model_likelihoods(history, home_goals, away_goals)
+        >>> # lls = {"dixon_coles": -4.32, "bivariate_poisson": -4.67}
+    """
+    home_g = np.asarray(actual_home_goals, dtype=int)
+    away_g = np.asarray(actual_away_goals, dtype=int)
+    n_matches = len(home_g)
+
+    if n_matches == 0:
+        return {name: 0.0 for name in score_matrices_history}
+
+    # Floor for log(0) protection
+    LOG_FLOOR = 1e-12
+
+    log_likelihoods: dict[str, float] = {}
+
+    for model_name, matrices in score_matrices_history.items():
+        if len(matrices) != n_matches:
+            # Mismatch: skip this model, give it neutral likelihood
+            log_likelihoods[model_name] = 0.0
+            continue
+
+        total_ll = 0.0
+        for i in range(n_matches):
+            mat = matrices[i]
+            h, a = int(home_g[i]), int(away_g[i])
+
+            # Clamp to matrix bounds (e.g., if actual goals > max_goals)
+            max_idx = mat.shape[0] - 1
+            h_clamped = min(h, max_idx)
+            a_clamped = min(a, max_idx)
+
+            prob = float(mat[h_clamped, a_clamped])
+            total_ll += np.log(max(prob, LOG_FLOOR))
+
+        log_likelihoods[model_name] = total_ll
+
+    return log_likelihoods
+
+
 def opponent_adjusted_xg(
     raw_xg: float,
     opponent_defensive_strength: float,

@@ -73,7 +73,7 @@ def _seed_matches(con, n=30, days_span=60):
         )
 
 
-def _seed_predictions(con, match_ids, model_version="v10_council"):
+def _seed_predictions(con, match_ids, model_version="v13_oracle"):
     """Insert dummy predictions for given match_ids."""
     for mid in match_ids:
         con.execute(
@@ -102,16 +102,16 @@ class TestSchema:
 
 class TestSetup:
     def test_setup(self, manager):
-        result = manager.setup_continuous_training("v10_council", 20, 0.005)
-        assert result["model_type"] == "v10_council"
+        result = manager.setup_continuous_training("v13_oracle", 20, 0.005)
+        assert result["model_type"] == "v13_oracle"
         assert result["retrain_threshold_matches"] == 20
         assert result["enabled"] is True
 
     def test_setup_idempotent(self, manager):
-        manager.setup_continuous_training("v10_council", 10, 0.01)
-        manager.setup_continuous_training("v10_council", 20, 0.005)
+        manager.setup_continuous_training("v13_oracle", 10, 0.01)
+        manager.setup_continuous_training("v13_oracle", 20, 0.005)
         row = manager.con.execute(
-            "SELECT retrain_threshold_matches FROM retraining_schedules WHERE model_type = 'v10_council'"
+            "SELECT retrain_threshold_matches FROM retraining_schedules WHERE model_type = 'v13_oracle'"
         ).fetchone()
         assert row[0] == 20
 
@@ -123,18 +123,18 @@ class TestSetup:
 class TestNewMatchesCounting:
     def test_first_time_counts_all(self, manager):
         _seed_matches(manager.con, 15)
-        manager.setup_continuous_training("v10_council")
-        count = manager.get_new_matches_since_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
+        count = manager.get_new_matches_since_training("v13_oracle")
         assert count == 15
 
     def test_after_training_resets(self, manager):
         _seed_matches(manager.con, 15)
-        manager.setup_continuous_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
         # Simulate training by updating last_trained
         manager.con.execute(
-            "UPDATE retraining_schedules SET last_trained = CURRENT_TIMESTAMP WHERE model_type = 'v10_council'"
+            "UPDATE retraining_schedules SET last_trained = CURRENT_TIMESTAMP WHERE model_type = 'v13_oracle'"
         )
-        count = manager.get_new_matches_since_training("v10_council")
+        count = manager.get_new_matches_since_training("v13_oracle")
         assert count == 0  # No new matches since "training"
 
 
@@ -145,16 +145,16 @@ class TestNewMatchesCounting:
 class TestCheckRetrain:
     def test_waiting_when_below_threshold(self, manager):
         _seed_matches(manager.con, 5)
-        manager.setup_continuous_training("v10_council", retrain_threshold_matches=10)
-        result = manager.check_and_retrain("v10_council")
-        assert result["v10_council"]["status"] == "waiting"
-        assert result["v10_council"]["ready_in"] == 5
+        manager.setup_continuous_training("v13_oracle", retrain_threshold_matches=10)
+        result = manager.check_and_retrain("v13_oracle")
+        assert result["v13_oracle"]["status"] == "waiting"
+        assert result["v13_oracle"]["ready_in"] == 5
 
     def test_ready_when_above_threshold(self, manager):
         _seed_matches(manager.con, 25)
-        manager.setup_continuous_training("v10_council", retrain_threshold_matches=10)
-        result = manager.check_and_retrain("v10_council")
-        assert result["v10_council"]["status"] == "ready_to_retrain"
+        manager.setup_continuous_training("v13_oracle", retrain_threshold_matches=10)
+        result = manager.check_and_retrain("v13_oracle")
+        assert result["v13_oracle"]["status"] == "ready_to_retrain"
 
     def test_not_configured(self, manager):
         result = manager.check_and_retrain("nonexistent_model")
@@ -167,14 +167,14 @@ class TestCheckRetrain:
 
 class TestDriftDetection:
     def test_insufficient_data(self, manager):
-        drift = manager.detect_drift("v10_council")
+        drift = manager.detect_drift("v13_oracle")
         assert drift["drifted"] is False
         assert drift["reason"] == "insufficient_data"
 
     def test_no_drift_when_stable(self, manager):
         now = datetime.utcnow()
         _seed_predictions_with_matches(manager.con, now, baseline_acc=0.55, recent_acc=0.55)
-        drift = manager.detect_drift("v10_council", recent_window=30, baseline_window=180)
+        drift = manager.detect_drift("v13_oracle", recent_window=30, baseline_window=180)
         # Should detect no drift since accuracies are equal
         if drift.get("reason") != "insufficient_data":
             assert drift["drifted"] is False
@@ -182,7 +182,7 @@ class TestDriftDetection:
     def test_drift_when_degraded(self, manager):
         now = datetime.utcnow()
         _seed_predictions_with_matches(manager.con, now, baseline_acc=0.65, recent_acc=0.50)
-        drift = manager.detect_drift("v10_council", recent_window=30, baseline_window=180)
+        drift = manager.detect_drift("v13_oracle", recent_window=30, baseline_window=180)
         if drift.get("reason") != "insufficient_data":
             assert drift["drifted"] is True
             assert drift["accuracy_drop"] > 0.05
@@ -202,7 +202,7 @@ def _seed_predictions_with_matches(con, now, baseline_acc=0.55, recent_acc=0.55)
             hg, ag = 0, 2  # Away win
             ph, pd, pa = 0.6, 0.2, 0.2  # Wrong prediction
         con.execute("INSERT INTO matches VALUES (?, 'FINISHED', ?, ?, ?, ?)", [mid, hg, ag, dt, "PL"])
-        con.execute("INSERT INTO predictions VALUES (?, 'v10_council', ?, ?, ?)", [mid, ph, pd, pa])
+        con.execute("INSERT INTO predictions VALUES (?, 'v13_oracle', ?, ?, ?)", [mid, ph, pd, pa])
         mid += 1
 
     # Recent period: last 30 days
@@ -215,7 +215,7 @@ def _seed_predictions_with_matches(con, now, baseline_acc=0.55, recent_acc=0.55)
             hg, ag = 0, 2
             ph, pd, pa = 0.6, 0.2, 0.2
         con.execute("INSERT INTO matches VALUES (?, 'FINISHED', ?, ?, ?, ?)", [mid, hg, ag, dt, "PL"])
-        con.execute("INSERT INTO predictions VALUES (?, 'v10_council', ?, ?, ?)", [mid, ph, pd, pa])
+        con.execute("INSERT INTO predictions VALUES (?, 'v13_oracle', ?, ?, ?)", [mid, ph, pd, pa])
         mid += 1
 
 
@@ -307,10 +307,10 @@ def _seed_expert_cache(con):
 
 class TestRecordTraining:
     def test_record_first_training(self, manager):
-        manager.setup_continuous_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
         result = manager.record_training(
             model_version="v10_test_001",
-            model_type="v10_council",
+            model_type="v13_oracle",
             training_window_days=365,
             n_matches_used=500,
             n_matches_test=100,
@@ -322,18 +322,18 @@ class TestRecordTraining:
         assert result["previous_version"] is None
 
     def test_record_improvement(self, manager):
-        manager.setup_continuous_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
         # First training
         manager.record_training(
-            model_version="v1", model_type="v10_council",
+            model_version="v1", model_type="v13_oracle",
             training_window_days=365, n_matches_used=500, n_matches_test=100,
             metrics={"accuracy": 0.50}, test_metrics={"accuracy": 0.50},
         )
-        manager.deploy_model("v1", "v10_council", force=True)
+        manager.deploy_model("v1", "v13_oracle", force=True)
 
         # Second training (improved)
         result = manager.record_training(
-            model_version="v2", model_type="v10_council",
+            model_version="v2", model_type="v13_oracle",
             training_window_days=365, n_matches_used=600, n_matches_test=120,
             metrics={"accuracy": 0.55}, test_metrics={"accuracy": 0.55},
         )
@@ -347,50 +347,50 @@ class TestRecordTraining:
 
 class TestDeployRollback:
     def test_deploy(self, manager):
-        manager.setup_continuous_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
         manager.record_training(
-            model_version="dep_v1", model_type="v10_council",
+            model_version="dep_v1", model_type="v13_oracle",
             training_window_days=365, n_matches_used=500, n_matches_test=100,
             metrics={"accuracy": 0.55},
         )
-        result = manager.deploy_model("dep_v1", "v10_council", force=True)
+        result = manager.deploy_model("dep_v1", "v13_oracle", force=True)
         assert result["status"] == "deployed"
         assert result["model_version"] == "dep_v1"
 
     def test_deployment_status(self, manager):
-        manager.setup_continuous_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
         manager.record_training(
-            model_version="ds_v1", model_type="v10_council",
+            model_version="ds_v1", model_type="v13_oracle",
             training_window_days=365, n_matches_used=500, n_matches_test=100,
             metrics={"accuracy": 0.55},
         )
-        manager.deploy_model("ds_v1", "v10_council", force=True)
+        manager.deploy_model("ds_v1", "v13_oracle", force=True)
         status = manager.get_deployment_status()
-        assert "v10_council" in status
-        assert status["v10_council"]["active_version"] == "ds_v1"
+        assert "v13_oracle" in status
+        assert status["v13_oracle"]["active_version"] == "ds_v1"
 
     def test_rollback(self, manager):
-        manager.setup_continuous_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
         manager.record_training(
-            model_version="rb_v1", model_type="v10_council",
+            model_version="rb_v1", model_type="v13_oracle",
             training_window_days=365, n_matches_used=500, n_matches_test=100,
             metrics={"accuracy": 0.50},
         )
-        manager.deploy_model("rb_v1", "v10_council", force=True)
+        manager.deploy_model("rb_v1", "v13_oracle", force=True)
 
         manager.record_training(
-            model_version="rb_v2", model_type="v10_council",
+            model_version="rb_v2", model_type="v13_oracle",
             training_window_days=365, n_matches_used=600, n_matches_test=120,
             metrics={"accuracy": 0.55},
         )
-        manager.deploy_model("rb_v2", "v10_council", force=True)
+        manager.deploy_model("rb_v2", "v13_oracle", force=True)
 
-        result = manager.rollback_model("v10_council")
+        result = manager.rollback_model("v13_oracle")
         assert result["status"] == "rolled_back"
         assert result["restored_version"] == "rb_v1"
 
     def test_rollback_no_previous(self, manager):
-        result = manager.rollback_model("v10_council")
+        result = manager.rollback_model("v13_oracle")
         assert result["status"] == "error"
 
 
@@ -400,18 +400,18 @@ class TestDeployRollback:
 
 class TestHistory:
     def test_empty_history(self, manager):
-        hist = manager.get_training_history("v10_council")
+        hist = manager.get_training_history("v13_oracle")
         assert hist == []
 
     def test_history_after_training(self, manager):
-        manager.setup_continuous_training("v10_council")
+        manager.setup_continuous_training("v13_oracle")
         for i in range(3):
             manager.record_training(
-                model_version=f"hist_v{i}", model_type="v10_council",
+                model_version=f"hist_v{i}", model_type="v13_oracle",
                 training_window_days=365, n_matches_used=500 + i * 100,
                 n_matches_test=100, metrics={"accuracy": 0.50 + i * 0.01},
             )
-        hist = manager.get_training_history("v10_council", limit=2)
+        hist = manager.get_training_history("v13_oracle", limit=2)
         assert len(hist) == 2
         # Most recent first
         assert hist[0]["model_version"] == "hist_v2"
@@ -424,17 +424,17 @@ class TestHistory:
 class TestRetrainingStatus:
     def test_status(self, manager):
         _seed_matches(manager.con, 15)
-        manager.setup_continuous_training("v10_council", retrain_threshold_matches=10)
+        manager.setup_continuous_training("v13_oracle", retrain_threshold_matches=10)
         status = manager.get_retraining_status()
-        assert "v10_council" in status
-        assert status["v10_council"]["ready"] is True
-        assert status["v10_council"]["new_matches"] == 15
+        assert "v13_oracle" in status
+        assert status["v13_oracle"]["ready"] is True
+        assert status["v13_oracle"]["new_matches"] == 15
 
     def test_not_ready(self, manager):
         _seed_matches(manager.con, 5)
-        manager.setup_continuous_training("v10_council", retrain_threshold_matches=10)
+        manager.setup_continuous_training("v13_oracle", retrain_threshold_matches=10)
         status = manager.get_retraining_status()
-        assert status["v10_council"]["ready"] is False
+        assert status["v13_oracle"]["ready"] is False
 
 
 # ---------------------------------------------------------------------------

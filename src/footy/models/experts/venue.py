@@ -101,7 +101,7 @@ class VenueExpert(Expert):
             if s > 0:
                 probs[i] = [p_h / s, p_d / s, p_a / s]
 
-            conf[i] = min(0.30, has_venue[i] * 0.08 + (1.0 if travel_km[i] > 0 else 0.0) * 0.07)
+            conf[i] = min(0.85, has_venue[i] * 0.08 + (1.0 if travel_km[i] > 0 else 0.0) * 0.07)
 
         return ExpertResult(
             probs=probs,

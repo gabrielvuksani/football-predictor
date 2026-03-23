@@ -141,30 +141,39 @@ class OrderedProbitExpert(Expert):
             if len(calibration_data) > self.WINDOW:
                 calibration_data = calibration_data[-self.WINDOW:]
 
-            # Re-estimate cutpoints every 50 matches
-            if len(calibration_data) >= 50 and len(calibration_data) % 50 == 0:
+            # Re-estimate cutpoints every 100 matches via grid search MLE
+            if len(calibration_data) >= 100 and len(calibration_data) % 100 == 0:
                 mus = np.array([d[0] for d in calibration_data])
                 outs = np.array([d[1] for d in calibration_data])
 
-                # Simple MLE: find c1, c2 that maximize likelihood
-                # Use percentile-based initialization
-                home_wins = mus[outs == 0]
-                draws = mus[outs == 1]
-                away_wins = mus[outs == 2]
+                # Grid search over c1, c2 in [-1.0, 1.0] with step 0.05
+                # Minimize classification error (equivalent to MLE approximation)
+                best_c1, best_c2 = c1, c2
+                best_error = float('inf')
+                grid = np.arange(-1.0, 1.05, 0.05)
 
-                if len(away_wins) >= 5 and len(draws) >= 5 and len(home_wins) >= 5:
-                    # c1 separates away wins from draws
-                    c1_new = (np.mean(away_wins) + np.mean(draws)) / 2.0
-                    # c2 separates draws from home wins
-                    c2_new = (np.mean(draws) + np.mean(home_wins)) / 2.0
+                for c1_cand in grid:
+                    for c2_cand in grid:
+                        if c2_cand <= c1_cand + 0.05:
+                            continue  # enforce c1 < c2 with minimum gap
+                        # Compute predicted outcomes for all samples
+                        pred = np.where(
+                            mus > c2_cand, 0,  # home win: mu > c2
+                            np.where(mus < c1_cand, 2, 1)  # away win: mu < c1, else draw
+                        )
+                        err = float(np.sum(pred != outs))
+                        if err < best_error:
+                            best_error = err
+                            best_c1 = c1_cand
+                            best_c2 = c2_cand
 
-                    # Smooth update
-                    c1 = c1 * 0.8 + c1_new * 0.2
-                    c2 = c2 * 0.8 + c2_new * 0.2
+                # Smooth update to avoid sudden jumps
+                c1 = c1 * 0.7 + best_c1 * 0.3
+                c2 = c2 * 0.7 + best_c2 * 0.3
 
-                    # Ensure c1 < c2
-                    if c1 >= c2:
-                        c1 = c2 - 0.3
+                # Ensure c1 < c2
+                if c1 >= c2:
+                    c1 = c2 - 0.3
 
         return ExpertResult(
             probs=probs,

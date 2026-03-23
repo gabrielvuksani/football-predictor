@@ -6,7 +6,7 @@ Tracks model versions, training windows, validates improvements, and auto-deploy
 
 Features:
 - Drift detection: monitors prediction accuracy on recent results
-- Auto-retrain: triggers v12_analyst retraining when new-match or drift thresholds are met
+- Auto-retrain: triggers v13_oracle retraining when new-match or drift thresholds are met
 - Performance gating: only deploys if new model beats current on held-out set
 - Automatic rollback: reverts if deployed model degrades within grace window
 - Full audit trail: every train/deploy/rollback is logged with metrics
@@ -75,7 +75,7 @@ class ContinuousTrainingManager:
     Example usage:
         manager = ContinuousTrainingManager()
         manager.setup_continuous_training(
-            model_type="v12_analyst",
+            model_type="v13_oracle",
             retrain_threshold_matches=10,
             performance_threshold_improvement=0.01,
             grace_window_hours=24,
@@ -88,6 +88,12 @@ class ContinuousTrainingManager:
         self.con = connect()
         self._ensure_schema()
         self._training_history: dict[str, list] = {}  # model_type -> list of training records
+
+        # Drift-triggered retraining state
+        self.needs_retrain: bool = False
+        self._drift_triggered: bool = False
+        self._drift_detectors_triggered: list[str] = []
+        self._drift_event_timestamp: Optional[str] = None
     
     def _ensure_schema(self):
         """Create training records table with enhanced schema."""
@@ -164,6 +170,22 @@ class ContinuousTrainingManager:
                 baseline_accuracy DOUBLE,
                 baseline_logloss DOUBLE,
                 computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        self.con.execute("""
+            CREATE TABLE IF NOT EXISTS drift_events (
+                id INTEGER PRIMARY KEY,
+                model_type VARCHAR NOT NULL,
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                detectors_triggered VARCHAR,
+                severity VARCHAR,
+                accuracy_drop DOUBLE,
+                baseline_accuracy DOUBLE,
+                recent_accuracy DOUBLE,
+                retrain_triggered BOOLEAN DEFAULT FALSE,
+                retrain_completed BOOLEAN DEFAULT FALSE,
+                notes VARCHAR
             )
         """)
 
@@ -484,15 +506,56 @@ class ContinuousTrainingManager:
         drift["cusum_triggered"] = cusum_drift
         drift["combined_drift"] = drift.get("drifted", False) or cusum_drift
 
+        # Collect which detectors triggered for the audit log
+        detectors_triggered: list[str] = []
+        if drift.get("drifted"):
+            detectors_triggered.append("accuracy_comparison")
+        if cusum_drift:
+            detectors_triggered.append("cusum")
+
+        # Majority-vote drift: at least one detector flagged degradation
+        majority_drift = len(detectors_triggered) >= 1 and drift.get("combined_drift", False)
+
+        if majority_drift:
+            # Set the needs_retrain flag so the next training cycle reacts
+            self.needs_retrain = True
+            self._drift_triggered = True
+            self._drift_detectors_triggered = detectors_triggered
+            self._drift_event_timestamp = datetime.now(timezone.utc).isoformat()
+
+            # Log the drift event to the database for a full audit trail
+            self._log_drift_event(
+                model_type=model_type,
+                detectors_triggered=detectors_triggered,
+                severity="sudden" if len(detectors_triggered) >= 2 else "gradual",
+                accuracy_drop=drift.get("accuracy_drop"),
+                baseline_accuracy=drift.get("baseline_acc") or drift.get("baseline_accuracy"),
+                recent_accuracy=drift.get("recent_acc") or drift.get("recent_accuracy"),
+            )
+
         if drift.get("drifted"):
             return {
                 "status": "drift_detected",
                 "new_matches": n_new,
                 "threshold": retrain_threshold,
                 "drift_info": drift,
+                "needs_retrain": self.needs_retrain,
+                "detectors_triggered": detectors_triggered,
                 "reason": f"Accuracy dropped from {drift['baseline_acc']:.1%} to {drift['recent_acc']:.1%}",
             }
-        
+
+        # CUSUM-only drift (accuracy comparison didn't fire but CUSUM did)
+        if cusum_drift and self.needs_retrain:
+            return {
+                "status": "drift_detected",
+                "new_matches": n_new,
+                "threshold": retrain_threshold,
+                "drift_info": drift,
+                "needs_retrain": True,
+                "detectors_triggered": detectors_triggered,
+                "reason": "CUSUM detector flagged performance degradation",
+            }
+
         if n_new < retrain_threshold:
             return {
                 "status": "waiting",
@@ -573,6 +636,64 @@ class ContinuousTrainingManager:
         }
 
     # ------------------------------------------------------------------
+    # Drift event logging
+    # ------------------------------------------------------------------
+    def _log_drift_event(
+        self,
+        model_type: str,
+        detectors_triggered: list[str],
+        severity: str = "gradual",
+        accuracy_drop: float | None = None,
+        baseline_accuracy: float | None = None,
+        recent_accuracy: float | None = None,
+        notes: str = "",
+    ) -> None:
+        """Persist a drift event to the audit table.
+
+        Every drift detection is logged with a timestamp, the detectors
+        that agreed, severity classification, and accuracy numbers so
+        that the team can retrospectively analyse drift patterns.
+
+        Args:
+            model_type: Which model experienced drift.
+            detectors_triggered: List of detector names that flagged.
+            severity: "gradual", "sudden", or "recurring".
+            accuracy_drop: Absolute drop in accuracy (baseline - recent).
+            baseline_accuracy: Long-term baseline accuracy.
+            recent_accuracy: Recent-window accuracy.
+            notes: Free-text annotation.
+        """
+        try:
+            self.con.execute(
+                """INSERT INTO drift_events
+                   (model_type, detectors_triggered, severity,
+                    accuracy_drop, baseline_accuracy, recent_accuracy,
+                    retrain_triggered, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)""",
+                [
+                    model_type,
+                    json.dumps(detectors_triggered),
+                    severity,
+                    accuracy_drop,
+                    baseline_accuracy,
+                    recent_accuracy,
+                    notes or f"Drift detected by {', '.join(detectors_triggered)}",
+                ],
+            )
+            log.warning(
+                "[drift-event] %s — detectors=%s severity=%s drop=%.4f "
+                "(baseline=%.3f recent=%.3f)",
+                model_type,
+                detectors_triggered,
+                severity,
+                accuracy_drop or 0.0,
+                baseline_accuracy or 0.0,
+                recent_accuracy or 0.0,
+            )
+        except Exception as e:
+            log.debug("Failed to log drift event: %s", e)
+
+    # ------------------------------------------------------------------
     # Auto-retrain
     # ------------------------------------------------------------------
     def auto_retrain(self, force: bool = False, verbose: bool = True) -> dict:
@@ -580,15 +701,15 @@ class ContinuousTrainingManager:
         End-to-end auto-retrain: check thresholds → train → validate → deploy/rollback.
         
         1. Checks if retraining is needed (new matches or drift detected)
-        2. Trains new v12_analyst model
+        2. Trains new v13_oracle model
         3. Compares test-set performance vs current model
         4. Deploys only if performance improves (or force=True)
         5. Backs up old model artifact for rollback
         
         Returns summary dict.
         """
-        check = self.check_and_retrain("v12_analyst")
-        result = check.get("v12_analyst", {})
+        check = self.check_and_retrain("v13_oracle")
+        result = check.get("v13_oracle", {})
         status = result.get("status", "")
 
         if not force and status not in ("ready_to_retrain", "drift_detected"):
@@ -597,21 +718,42 @@ class ContinuousTrainingManager:
             return {"action": "none", "check": result}
 
         reason = "forced" if force else status
+        drift_triggered = self._drift_triggered or status == "drift_detected"
         if verbose:
-            log.info("Auto-retrain: triggered (%s)", reason)
+            log.info(
+                "Auto-retrain: triggered (%s, drift_triggered=%s, detectors=%s)",
+                reason,
+                drift_triggered,
+                self._drift_detectors_triggered,
+            )
 
         # ---- Backup current model artifact ----
         model_dir = Path("data/models")
-        current_artifact = model_dir / "v12_analyst.joblib"
-        backup_artifact = model_dir / "v12_analyst.joblib.bak"
+        current_artifact = model_dir / "v13_oracle.joblib"
+        backup_artifact = model_dir / "v13_oracle.joblib.bak"
         if current_artifact.exists():
             shutil.copy2(current_artifact, backup_artifact)
+
+        # ---- Build training kwargs ----
+        # When drift was the trigger, use a higher exponential decay (xi * 2)
+        # to weight recent data more heavily and adapt faster to the new
+        # data distribution.
+        train_kwargs: dict = {"eval_days": 365, "verbose": verbose}
+        if drift_triggered:
+            # Double the exponential time-decay so recent matches dominate
+            train_kwargs["xi"] = 0.02  # default is ~0.01; doubled for drift
+            if verbose:
+                log.info(
+                    "Auto-retrain: drift mode — using xi=%.3f (2x normal) "
+                    "to prioritise recent data",
+                    train_kwargs["xi"],
+                )
 
         # ---- Train new model ----
         from footy.models.council import train_and_save as council_train
 
         try:
-            train_result = council_train(self.con, eval_days=365, verbose=verbose)
+            train_result = council_train(self.con, **train_kwargs)
         except Exception as e:
             log.error("Auto-retrain: training failed: %s", e)
             # Restore backup
@@ -647,7 +789,7 @@ class ContinuousTrainingManager:
         # ---- Record training ----
         from datetime import timezone as _tz
         ts = datetime.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
-        new_version = f"v12_analyst_{ts}"
+        new_version = f"v13_oracle_{ts}"
 
         versioned_artifact = model_dir / f"{new_version}.joblib"
         if current_artifact.exists():
@@ -655,7 +797,7 @@ class ContinuousTrainingManager:
 
         record = self.record_training(
             model_version=new_version,
-            model_type="v12_analyst",
+            model_type="v13_oracle",
             training_window_days=train_result.get("window_days", 3650),
             n_matches_used=new_metrics["n_train"],
             n_matches_test=new_metrics["n_test"],
@@ -666,12 +808,38 @@ class ContinuousTrainingManager:
         # ---- Deploy or rollback ----
         perf_row = self.con.execute(
             "SELECT performance_threshold_improvement FROM retraining_schedules WHERE model_type = ?",
-            ["v12_analyst"],
+            ["v13_oracle"],
         ).fetchone()
         threshold = perf_row[0] if perf_row else 0.01
         improved = record.get("improvement_pct", 0) >= threshold or force
+
+        # Mark drift event as retrain-completed in the audit log
+        if drift_triggered:
+            try:
+                self.con.execute(
+                    """UPDATE drift_events
+                       SET retrain_completed = TRUE,
+                           notes = notes || ' | retrain_completed'
+                       WHERE model_type = 'v13_oracle'
+                         AND retrain_completed = FALSE
+                         AND retrain_triggered = TRUE""",
+                )
+            except Exception as e:
+                log.debug("Failed to update drift event record: %s", e)
+
+        # Reset drift state regardless of outcome — we acted on it
+        drift_info = {
+            "drift_triggered": drift_triggered,
+            "detectors": list(self._drift_detectors_triggered),
+            "drift_timestamp": self._drift_event_timestamp,
+        }
+        self.needs_retrain = False
+        self._drift_triggered = False
+        self._drift_detectors_triggered = []
+        self._drift_event_timestamp = None
+
         if improved:
-            deploy = self.deploy_model(new_version, "v12_analyst", force=True)
+            deploy = self.deploy_model(new_version, "v13_oracle", force=True)
             if verbose:
                 log.info("Auto-retrain: deployed %s (improvement %.2f%%)",
                          new_version, record["improvement_pct"] * 100.0)
@@ -681,6 +849,7 @@ class ContinuousTrainingManager:
                 "improvement_pct": record["improvement_pct"],
                 "metrics": new_metrics,
                 "deploy": deploy,
+                "drift_info": drift_info,
             }
         else:
             # Rollback to backup
@@ -697,6 +866,7 @@ class ContinuousTrainingManager:
                 "improvement_pct": record["improvement_pct"],
                 "metrics": new_metrics,
                 "reason": "performance_regression",
+                "drift_info": drift_info,
             }
     
     def record_training(
@@ -714,7 +884,7 @@ class ContinuousTrainingManager:
         
         Args:
             model_version: New version identifier (e.g., "v5_ultimate_20260214_v2")
-            model_type: Model type (v5_ultimate, v12_analyst, etc.)
+            model_type: Model type (v5_ultimate, v13_oracle, etc.)
             training_window_days: Number of days of data used for training
             n_matches_used: Number of matches in training set
             n_matches_test: Number of matches in test set
@@ -962,11 +1132,11 @@ class ContinuousTrainingManager:
         from footy.models.advanced_math import extract_match_probs
 
         ensemble = SelfCalibratingEnsemble()
-        active_model = "v12_analyst"
+        active_model = "v13_oracle"
         try:
             active_row = self.con.execute(
                 "SELECT active_version FROM model_deployments WHERE model_type = ?",
-                ["v12_analyst"],
+                ["v13_oracle"],
             ).fetchone()
             if active_row and active_row[0]:
                 active_model = str(active_row[0])

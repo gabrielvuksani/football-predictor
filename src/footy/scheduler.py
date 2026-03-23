@@ -294,8 +294,8 @@ class TrainingScheduler:
                 result["experts_tracked"] = len(expert_result)
 
                 # Check and trigger retraining if ready
-                retrain_check = mgr.check_and_retrain("v12_analyst")
-                v12_status = retrain_check.get("v12_analyst", {})
+                retrain_check = mgr.check_and_retrain("v13_oracle")
+                v12_status = retrain_check.get("v13_oracle", {})
                 if v12_status.get("status") in ("ready_to_retrain", "drift_detected"):
                     log.info("Retraining ready: %s", v12_status.get("status"))
                     retrain_result = mgr.auto_retrain(verbose=True)

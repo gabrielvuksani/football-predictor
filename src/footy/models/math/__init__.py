@@ -30,10 +30,14 @@ from footy.models.math.distributions import (
     build_bivariate_poisson_matrix,
     build_com_poisson_matrix,
     build_dc_score_matrix,
+    build_dibp_score_matrix,
     build_negative_binomial_matrix,
     build_zip_score_matrix,
     com_poisson_pmf,
     dixon_coles_tau,
+    estimate_bivariate_lambda3,
+    estimate_com_poisson_nu,
+    estimate_zip_zero_inflation,
     negative_binomial_pmf,
     skellam_probs,
     zero_inflated_poisson_pmf,
@@ -53,8 +57,10 @@ from footy.models.math.copulas import (
 
 # Scoring
 from footy.models.math.scoring import (
+    apply_temperature_scaling,
     brier_score,
     expected_calibration_error,
+    find_optimal_temperature,
     inv_logit,
     jensen_shannon_divergence,
     kl_divergence,
@@ -73,7 +79,6 @@ from footy.models.math.scoring import (
 from footy.models.math.simulation import (
     bradley_terry_probs,
     extract_match_probs,
-    find_optimal_temperature,
     monte_carlo_simulate,
     platt_scale,
 )
@@ -99,15 +104,21 @@ __all__ = [
     "negative_binomial_pmf",
     "skellam_probs",
     "zero_inflated_poisson_pmf",
+    "build_dibp_score_matrix",
+    "estimate_com_poisson_nu",
+    "estimate_zip_zero_inflation",
+    "estimate_bivariate_lambda3",
     # Empirical Bayes
     "beta_binomial_shrink",
     "estimate_rho_mle",
     "league_specific_prior",
     # Copulas
     "build_copula_score_matrix",
-    # Scoring
+    # Scoring & Calibration
+    "apply_temperature_scaling",
     "brier_score",
     "expected_calibration_error",
+    "find_optimal_temperature",
     "inv_logit",
     "jensen_shannon_divergence",
     "kl_divergence",
@@ -123,7 +134,6 @@ __all__ = [
     # Simulation
     "bradley_terry_probs",
     "extract_match_probs",
-    "find_optimal_temperature",
     "monte_carlo_simulate",
     "platt_scale",
     # Transforms

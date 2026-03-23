@@ -74,7 +74,7 @@ class MarketValueExpert(Expert):
                 if s > 0:
                     probs[i] = [p_h / s, p_d / s, p_a / s]
 
-                conf[i] = min(0.50, 0.2 + abs(log_ratio) * 0.1)
+                conf[i] = min(0.85, 0.2 + abs(log_ratio) * 0.1)
 
         return ExpertResult(
             probs=probs,

@@ -163,10 +163,10 @@ def _create_test_db(path: str) -> None:
     """)
     db.execute("""
         INSERT INTO predictions VALUES
-        (1001, 'v10_council', 0.5, 0.3, 0.2, 1.8, 0.9,
+        (1001, 'v13_oracle', 0.5, 0.3, 0.2, 1.8, 0.9,
          '{"btts": 0.55, "o25": 0.65, "predicted_score": [2, 1], "lambda_home": 1.8, "lambda_away": 0.9}',
          CURRENT_TIMESTAMP),
-        (1002, 'v10_council', 0.5, 0.3, 0.2, 1.8, 0.9, NULL, CURRENT_TIMESTAMP)
+        (1002, 'v13_oracle', 0.5, 0.3, 0.2, 1.8, 0.9, NULL, CURRENT_TIMESTAMP)
     """)
     db.execute("""
         INSERT INTO match_extras (match_id, b365h, b365d, b365a) VALUES
@@ -177,22 +177,22 @@ def _create_test_db(path: str) -> None:
     """)
     db.execute("""
         INSERT INTO prediction_scores VALUES
-        (1002, 'v10_council', CURRENT_TIMESTAMP, 0, 0.693, 0.38, TRUE, 0.5, NULL, NULL, NULL)
+        (1002, 'v13_oracle', CURRENT_TIMESTAMP, 0, 0.693, 0.38, TRUE, 0.5, NULL, NULL, NULL)
     """)
     db.execute("""
-        INSERT INTO metrics VALUES ('v10_council', 100, 1.05, 0.22, 0.51)
+        INSERT INTO metrics VALUES ('v13_oracle', 100, 1.05, 0.22, 0.51)
     """)
     db.execute("""
         INSERT INTO model_deployments VALUES
-        ('v10_council', 'v10_council_20260321', CURRENT_TIMESTAMP, NULL, 'test', '{"accuracy":0.51}')
+        ('v13_oracle', 'v13_oracle_20260321', CURRENT_TIMESTAMP, NULL, 'test', '{"accuracy":0.51}')
     """)
     db.execute("""
         INSERT INTO retraining_schedules VALUES
-        ('v10_council', 10, 0.01, TRUE, CURRENT_TIMESTAMP, 3, NULL)
+        ('v13_oracle', 10, 0.01, TRUE, CURRENT_TIMESTAMP, 3, NULL)
     """)
     db.execute("""
         INSERT INTO model_training_records VALUES
-        (1, 'v10_council_20260321', 'v10_council', CURRENT_TIMESTAMP, 3650, 1200, 240,
+        (1, 'v13_oracle_20260321', 'v13_oracle', CURRENT_TIMESTAMP, 3650, 1200, 240,
          '{"accuracy":0.51,"logloss":1.05}', '{"accuracy":0.51,"logloss":1.05}', NULL, 0.025, TRUE, CURRENT_TIMESTAMP, 'test run')
     """)
     db.execute("""
@@ -262,7 +262,7 @@ class TestApiMatches:
         assert r.status_code == 200
 
     def test_matches_with_model_param(self, client):
-        r = client.get("/api/matches?model=v10_council")
+        r = client.get("/api/matches?model=v13_oracle")
         assert r.status_code == 200
 
     def test_match_detail_not_found(self, client):
@@ -375,7 +375,7 @@ class TestTrainingAndModelLab:
         r = client.get("/api/training/status")
         assert r.status_code == 200
         data = r.json()
-        assert data["active_version"] == "v10_council_20260321"
+        assert data["active_version"] == "v13_oracle_20260321"
         assert isinstance(data["expert_rankings"], list)
         assert isinstance(data["history"], list)
 
@@ -397,7 +397,7 @@ class TestTrainingAndModelLab:
         r = client.get("/api/model-lab")
         assert r.status_code == 200
         data = r.json()
-        assert data["active_version"] == "v10_council_20260321"
+        assert data["active_version"] == "v13_oracle_20260321"
         assert isinstance(data["ensemble_weights"], list)
         assert isinstance(data["expert_weights"], list)
 

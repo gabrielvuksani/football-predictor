@@ -41,7 +41,7 @@ async def api_bayesian_predict(match_id: int):
 
     try:
         pred = db.execute(
-            "SELECT p_home, p_draw, p_away, eg_home, eg_away FROM predictions WHERE match_id = $1 AND model_version = 'v12_analyst'",
+            "SELECT p_home, p_draw, p_away, eg_home, eg_away FROM predictions WHERE match_id = $1 AND model_version = 'v13_oracle'",
             [match_id]
         ).fetchone()
 
@@ -84,7 +84,7 @@ async def api_unified_prediction(match_id: int):
             return JSONResponse({"error": "Match not found"}, 404)
 
         pred = db.execute(
-            "SELECT p_home, p_draw, p_away, eg_home, eg_away, notes FROM predictions WHERE match_id = $1 AND model_version = 'v12_analyst'",
+            "SELECT p_home, p_draw, p_away, eg_home, eg_away, notes FROM predictions WHERE match_id = $1 AND model_version = 'v13_oracle'",
             [match_id]
         ).fetchone()
 
@@ -152,7 +152,7 @@ async def api_upset_alerts(min_risk: float = Query(0.3, ge=0, le=1)):
             FROM matches m
             JOIN predictions p ON m.match_id = p.match_id
             WHERE m.status = 'UPCOMING'
-              AND p.model_version = 'v12_analyst'
+              AND p.model_version = 'v13_oracle'
               AND p.p_home IS NOT NULL
             ORDER BY m.utc_date ASC LIMIT 100
         """).fetchall()
@@ -201,7 +201,7 @@ async def api_upset_alerts(min_risk: float = Query(0.3, ge=0, le=1)):
 
 @router.get("/export/predictions")
 async def api_export_predictions(
-    model: str = Query("v12_analyst"),
+    model: str = Query("v13_oracle"),
     days: int = Query(14, ge=1, le=90),
     status: str = Query("ALL", regex="^(UPCOMING|FINISHED|ALL)$"),
 ):

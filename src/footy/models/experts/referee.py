@@ -80,7 +80,7 @@ class RefereeExpert(Expert):
                 probs[i] = [p_h / s, p_d / s, p_a / s]
 
             # Confidence based on data availability
-            conf[i] = min(0.35, nm * 0.005 + has_referee[i] * 0.05)
+            conf[i] = min(0.85, nm * 0.005 + has_referee[i] * 0.05)
 
         return ExpertResult(
             probs=probs,

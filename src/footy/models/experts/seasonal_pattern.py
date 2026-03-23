@@ -28,6 +28,9 @@ class SeasonalPatternExpert(Expert):
     EARLY_CUTOFF = 6   # first N matchdays = early season
     LATE_CUTOFF = 6    # last N matchdays = late season
 
+    def __init__(self, tracker=None):
+        self._tracker = tracker
+
     def compute(self, df: pd.DataFrame) -> ExpertResult:
         n = len(df)
         probs = np.full((n, 3), 1.0 / 3.0)
@@ -44,21 +47,9 @@ class SeasonalPatternExpert(Expert):
         phase_x_pos_a = np.zeros(n)
         fixture_congestion = np.zeros(n)
 
-        # Track league standings internally for position interaction
-        team_points: dict[str, int] = {}
-        team_games: dict[str, int] = {}
-        league_team_count: int = 0
-
         for i, r in enumerate(df.itertuples(index=False)):
             home = str(r.home_team)
             away = str(r.away_team)
-
-            # Track unique teams for league size estimation
-            for t in (home, away):
-                if t not in team_points:
-                    team_points[t] = 0
-                    team_games[t] = 0
-                    league_team_count = len(team_points)
 
             # ── Matchday-based features ──
             md = _f(getattr(r, "matchday", None))
@@ -126,17 +117,19 @@ class SeasonalPatternExpert(Expert):
 
             # ── Season phase x league position interaction ──
             progress_val = season_progress[i]
-            if league_team_count >= 4 and progress_val > 0.05:
-                # Compute position proxy: points per game relative to league
-                h_ppg = team_points.get(home, 0) / max(team_games.get(home, 0), 1)
-                a_ppg = team_points.get(away, 0) / max(team_games.get(away, 0), 1)
-                # Normalize ppg to [-1, 1] range (3.0 = max ppg, 0 = min)
-                h_pos_signal = (h_ppg - 1.5) / 1.5
-                a_pos_signal = (a_ppg - 1.5) / 1.5
-                # Interaction: late season amplifies position differences
-                # Top teams fight for title, bottom teams fight relegation
-                phase_x_pos_h[i] = progress_val * h_pos_signal
-                phase_x_pos_a[i] = progress_val * a_pos_signal
+            if self._tracker is not None and progress_val > 0.05:
+                from footy.models.experts._league_table_tracker import LeagueTableTracker
+                sk = LeagueTableTracker.season_key(r)
+                n_teams = self._tracker.n_teams(sk)
+                if n_teams >= 4:
+                    h_entry = self._tracker.get_entry(sk, home)
+                    a_entry = self._tracker.get_entry(sk, away)
+                    h_ppg = h_entry.pts / max(h_entry.played, 1)
+                    a_ppg = a_entry.pts / max(a_entry.played, 1)
+                    h_pos_signal = (h_ppg - 1.5) / 1.5
+                    a_pos_signal = (a_ppg - 1.5) / 1.5
+                    phase_x_pos_h[i] = progress_val * h_pos_signal
+                    phase_x_pos_a[i] = progress_val * a_pos_signal
 
             # ── Probability adjustments ──
             draw_boost = 0.0
@@ -168,21 +161,7 @@ class SeasonalPatternExpert(Expert):
             if s > 0:
                 probs[i] = [p_h / s, p_d / s, p_a / s]
 
-            conf[i] = min(0.35, 0.12 + abs(draw_boost) * 2.5 + abs(home_boost) * 3.0)
-
-            # ── Update internal standings (after prediction, only finished) ──
-            if _is_finished(r):
-                hg = int(r.home_goals)
-                ag = int(r.away_goals)
-                if hg > ag:
-                    team_points[home] = team_points.get(home, 0) + 3
-                elif hg == ag:
-                    team_points[home] = team_points.get(home, 0) + 1
-                    team_points[away] = team_points.get(away, 0) + 1
-                else:
-                    team_points[away] = team_points.get(away, 0) + 3
-                team_games[home] = team_games.get(home, 0) + 1
-                team_games[away] = team_games.get(away, 0) + 1
+            conf[i] = min(0.85, 0.12 + abs(draw_boost) * 2.5 + abs(home_boost) * 3.0)
 
         return ExpertResult(
             probs=probs,

@@ -76,7 +76,7 @@ def retrain(force: bool = False):
 
     manager = get_training_manager()
     try:
-        manager.setup_continuous_training("v12_analyst", 20, 0.005)
+        manager.setup_continuous_training("v13_oracle", 20, 0.005)
     except Exception:
         pass
 
@@ -111,7 +111,7 @@ def drift_check():
     from footy.continuous_training import get_training_manager
 
     manager = get_training_manager()
-    drift = manager.detect_drift("v12_analyst")
+    drift = manager.detect_drift("v13_oracle")
 
     if drift.get("reason") == "insufficient_data":
         console.print(f"[yellow]Not enough data for drift detection[/yellow]")
@@ -137,7 +137,7 @@ def setup(
 ):
     """Setup continuous retraining for a model type.
 
-    Model types: v12_analyst (current), v5_ultimate (legacy)
+    Model types: v13_oracle (current), v5_ultimate (legacy)
     """
     from footy.continuous_training import get_training_manager
 
