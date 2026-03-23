@@ -85,7 +85,7 @@ class WeatherExpert(Expert):
                 for val in (temp_c[i], precipitation[i], wind_kmh[i], humidity[i], rain_24h[i])
                 if val > 0
             )
-            conf[i] = min(0.45, observed * 0.08 + bad_weather[i] * 0.05)
+            conf[i] = min(0.85, observed * 0.08 + bad_weather[i] * 0.05)
 
         return ExpertResult(
             probs=probs,

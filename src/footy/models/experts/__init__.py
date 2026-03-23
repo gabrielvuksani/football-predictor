@@ -12,7 +12,7 @@ v12 changes:
   SkellamRegression, FBrefAdvanced
 """
 
-from footy.models.experts._base import Expert, ExpertResult, _entropy3, _f, _implied, _is_finished, _label, _norm3, _pts, _raw
+from footy.models.experts._base import Expert, ExpertResult, _entropy3, _f, _implied, _is_finished, _label, _norm3, _power_implied, _pts, _raw, _shin_implied
 from footy.models.experts._league_table_tracker import LeagueTableTracker
 from footy.models.experts.bayesian_rate import BayesianRateExpert
 from footy.models.experts.bayesian_ss import BayesianStateSpaceExpert
@@ -50,6 +50,19 @@ from footy.models.experts.xg_regression_expert import xGRegressionExpert
 from footy.models.experts.ordered_probit_expert import OrderedProbitExpert
 from footy.models.experts.skellam_regression_expert import SkellamRegressionExpert
 from footy.models.experts.fbref_advanced_expert import FBrefAdvancedExpert
+
+# v13 new experts
+from footy.models.experts.pythagorean_expert import PythagoreanExpert
+from footy.models.experts.gas_expert import GASExpert
+from footy.models.experts.adaptive_bayesian_expert import AdaptiveBayesianExpert
+from footy.models.experts.hmm_expert import HMMExpert
+from footy.models.experts.transfer_expert import TransferExpert
+from footy.models.experts.news_sentiment_expert import NewsSentimentExpert
+from footy.models.experts.betting_movement_expert import BettingMovementExpert
+from footy.models.experts.manager_expert import ManagerExpert
+from footy.models.experts.lineup_expert import LineupExpert
+from footy.models.experts.match_dynamics_expert import MatchDynamicsExpert
+from footy.models.experts.schedule_context_expert import ScheduleContextExpert
 
 try:
     from footy.models.experts.trueskill import TrueSkillExpert
@@ -106,8 +119,21 @@ ALL_EXPERTS: list[Expert] = [
 
     # Structural (3) — shares league table tracker
     LeagueTableExpert(tracker=_shared_league_tracker),
-    SeasonalPatternExpert(),   # Season phase, matchday, cyclical calendar
+    SeasonalPatternExpert(tracker=_shared_league_tracker),   # Season phase, matchday, cyclical calendar
     VenueExpert(),             # RE-ENABLED: Venue/stadium factors
+
+    # v13 new experts (3) — Pythagorean regression, GAS dynamic strength, Adaptive Bayesian
+    PythagoreanExpert(),       # Pythagorean expectation regression-to-mean
+    GASExpert(),               # Score-driven dynamic strength (Koopman & Lit 2019)
+    AdaptiveBayesianExpert(),  # Spike-and-slab adaptive shrinkage
+    HMMExpert(),               # Hidden Markov Model regime detection
+    TransferExpert(),          # Transfer window activity impact
+    NewsSentimentExpert(),     # News disruption and media sentiment
+    BettingMovementExpert(),   # Smart money and line movement signals
+    ManagerExpert(),           # Manager/coaching change detection
+    LineupExpert(),            # Lineup strength and rotation detection
+    MatchDynamicsExpert(),     # HT/FT patterns, comebacks, streaks, set pieces, cards
+    ScheduleContextExpert(),   # Midweek fatigue, intl breaks, promotion honeymoon, congestion
 ]
 
 # Add TrueSkill expert if available
@@ -118,7 +144,7 @@ __all__ = [
     "Expert",
     "ExpertResult",
     "ALL_EXPERTS",
-    "_f", "_raw", "_pts", "_label", "_entropy3", "_norm3", "_implied", "_is_finished",
+    "_f", "_raw", "_pts", "_label", "_entropy3", "_norm3", "_implied", "_power_implied", "_shin_implied", "_is_finished",
     "EloExpert", "MarketExpert", "FormExpert", "PoissonExpert",
     "H2HExpert", "ContextExpert", "GoalPatternExpert", "LeagueTableExpert",
     "MomentumExpert", "BayesianRateExpert", "Glicko2Expert", "PiRatingExpert",
@@ -129,4 +155,8 @@ __all__ = [
     "MotivationExpert", "SquadRotationExpert", "MomentumIndicatorsExpert",
     "NegBinExpert", "KalmanEloExpert", "xGRegressionExpert",
     "OrderedProbitExpert", "SkellamRegressionExpert", "FBrefAdvancedExpert",
+    "PythagoreanExpert", "GASExpert", "AdaptiveBayesianExpert",
+    "HMMExpert", "TransferExpert",
+    "NewsSentimentExpert", "BettingMovementExpert", "ManagerExpert", "LineupExpert",
+    "MatchDynamicsExpert", "ScheduleContextExpert",
 ]

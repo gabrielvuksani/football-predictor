@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "footy"
-version = "12.0.0"
+version = "13.0.0"
 requires-python = ">=3.10"
-description = "Football prediction system — v12 Analyst with 30+ expert council, LightGBM/CatBoost ensemble, and comprehensive data pipeline"
+description = "Football prediction system — v13 Oracle with 34+ expert council, CatBoost ensemble, temperature scaling, and focused feature selection"
 dependencies = [
   "httpx>=0.27,<1.0",
   "beautifulsoup4>=4.12,<5.0",
@@ -28,6 +28,8 @@ dependencies = [
   "catboost>=1.2",
   "optuna>=3.5",
   "soccerdata>=1.8",
+  "xgboost>=2.0",
+  "statsbombpy>=0.6",
 ]
 
 [project.optional-dependencies]

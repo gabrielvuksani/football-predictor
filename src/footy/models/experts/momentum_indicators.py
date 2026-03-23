@@ -151,11 +151,18 @@ class MomentumIndicatorsExpert(Expert):
     # Main compute
     # ---------------------------------------------------------------------------
 
+    # EMA smoothing for PPG fallback
+    PPG_EMA_ALPHA = 0.3
+
     def compute(self, df: pd.DataFrame) -> ExpertResult:
         n = len(df)
 
-        # Per-team PPG series (rolling, one entry per match played)
+        # Per-team continuous "expected performance" series (replaces raw PPG)
+        # Uses: xpts = form_xg_diff * 0.5 + form_pts * 0.5
+        # Falls back to EMA-smoothed PPG if xG data unavailable
         team_ppg: dict[str, list[float]] = defaultdict(list)
+        # Track EMA-smoothed PPG per team for fallback
+        team_ppg_ema: dict[str, float] = {}
 
         # Output arrays
         rsi_h = np.zeros(n)
@@ -242,8 +249,44 @@ class MomentumIndicatorsExpert(Expert):
             hg, ag = int(r.home_goals), int(r.away_goals)
             h_pts_val = float(_pts(hg, ag)) / 3.0  # PPG: 0, 1/3, or 1
             a_pts_val = float(_pts(ag, hg)) / 3.0
-            team_ppg[h].append(h_pts_val)
-            team_ppg[a].append(a_pts_val)
+
+            # Compute continuous "expected performance" signal (xPts)
+            # Check for xG data: form_xg_diff column from match data
+            form_xg_h = 0.0
+            form_xg_a = 0.0
+            has_xg = False
+            xg_h_val = getattr(r, 'home_xg', None)
+            xg_a_val = getattr(r, 'away_xg', None)
+            if xg_h_val is not None and xg_a_val is not None:
+                try:
+                    xg_h_f = float(xg_h_val)
+                    xg_a_f = float(xg_a_val)
+                    if xg_h_f > 0 or xg_a_f > 0:
+                        has_xg = True
+                        # xG diff normalized to [-1, 1] range approx
+                        form_xg_h = (xg_h_f - xg_a_f) / max(xg_h_f + xg_a_f, 0.5)
+                        form_xg_a = (xg_a_f - xg_h_f) / max(xg_h_f + xg_a_f, 0.5)
+                except (ValueError, TypeError):
+                    pass
+
+            if has_xg:
+                # Continuous xPts: blend xG performance with actual points
+                xpts_h = form_xg_h * 0.5 + h_pts_val * 0.5
+                xpts_a = form_xg_a * 0.5 + a_pts_val * 0.5
+            else:
+                # Fallback: EMA-smoothed PPG for continuous signal
+                alpha = self.PPG_EMA_ALPHA
+                prev_ema_h = team_ppg_ema.get(h, 0.5)
+                prev_ema_a = team_ppg_ema.get(a, 0.5)
+                xpts_h = alpha * h_pts_val + (1.0 - alpha) * prev_ema_h
+                xpts_a = alpha * a_pts_val + (1.0 - alpha) * prev_ema_a
+
+            # Update EMA tracker
+            team_ppg_ema[h] = xpts_h if not has_xg else (self.PPG_EMA_ALPHA * h_pts_val + (1.0 - self.PPG_EMA_ALPHA) * team_ppg_ema.get(h, 0.5))
+            team_ppg_ema[a] = xpts_a if not has_xg else (self.PPG_EMA_ALPHA * a_pts_val + (1.0 - self.PPG_EMA_ALPHA) * team_ppg_ema.get(a, 0.5))
+
+            team_ppg[h].append(xpts_h)
+            team_ppg[a].append(xpts_a)
 
         return ExpertResult(
             probs=probs,

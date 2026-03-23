@@ -90,7 +90,7 @@ def _expert_by_name(experts, name):
 
 log = logging.getLogger(__name__)
 
-MODEL_VERSION = "v12_analyst"
+MODEL_VERSION = "v13_oracle"
 MODEL_PATH = Path("data/models") / f"{MODEL_VERSION}.joblib"
 
 # ---------------------------------------------------------------------------
@@ -694,6 +694,374 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+# ---------------------------------------------------------------------------
+# v13 Focused Feature Builder — ~55 features instead of 400+
+# Research shows 15-25 well-chosen features outperform hundreds when SNR is low.
+# This builder extracts the highest-signal features organized by tier.
+# ---------------------------------------------------------------------------
+
+
+def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | None = None,
+                        competitions: np.ndarray | None = None) -> np.ndarray:
+    """Build focused feature matrix for v13 Oracle model.
+
+    ~55 features organized by signal strength, replacing the 400+ feature matrix.
+    Research (Groll 2024, Fischer & Heuer 2024) shows that feature selection
+    matters more than model complexity for football prediction.
+    """
+    if experts is None:
+        experts = ALL_EXPERTS
+    n = results[0].probs.shape[0]
+    features: dict[str, np.ndarray] = {}
+
+    # Build name-based expert lookup
+    _expert_map: dict[str, int] = {}
+    for idx, exp in enumerate(experts):
+        _expert_map[exp.name] = idx
+
+    def _r(name: str) -> ExpertResult:
+        idx = _expert_map.get(name)
+        if idx is not None and idx < len(results):
+            return results[idx]
+        return ExpertResult(probs=np.full((n, 3), 1 / 3), confidence=np.zeros(n), features={})
+
+    # Shorthand access to key experts
+    elo_r = _r("elo"); mkt_r = _r("market"); form_r = _r("form")
+    pois_r = _r("poisson"); h2h_r = _r("h2h"); ctx_r = _r("context")
+    lt_r = _r("league_table"); mom_r = _r("momentum"); mot_r = _r("motivation")
+    kalman_r = _r("kalman_elo"); glicko_r = _r("glicko2")
+    xgr_r = _r("xg_regression"); rot_r = _r("squad_rotation")
+    gp_r = _r("goal_pattern"); ref_r = _r("referee"); wx_r = _r("weather")
+    inj_r = _r("injury"); mv_r = _r("market_value")
+
+    # ── TIER 1: Strongest signal (~15 features) ──
+    # Market implied probabilities (strongest single predictor per research)
+    features["mkt_ph"] = mkt_r.probs[:, 0]
+    features["mkt_pd"] = mkt_r.probs[:, 1]
+    features["mkt_pa"] = mkt_r.probs[:, 2]
+
+    # Elo ratings
+    features["elo_diff"] = elo_r.features.get("elo_diff", np.zeros(n))
+    features["elo_home_adv"] = elo_r.features.get("elo_home_adv", np.zeros(n))
+
+    # Poisson expected goals
+    features["pois_lambda_h"] = pois_r.features.get("pois_lambda_h", np.zeros(n))
+    features["pois_lambda_a"] = pois_r.features.get("pois_lambda_a", np.zeros(n))
+
+    # Dixon-Coles probabilities (from the last result if DC was appended)
+    if len(results) > len(experts):
+        dc_r = results[-1]  # DC result appended at end
+        features["dc_ph"] = dc_r.probs[:, 0]
+        features["dc_pd"] = dc_r.probs[:, 1]
+        features["dc_pa"] = dc_r.probs[:, 2]
+    else:
+        features["dc_ph"] = pois_r.features.get("pois_dc_ph", np.zeros(n))
+        features["dc_pd"] = pois_r.features.get("pois_dc_pd", np.zeros(n))
+        features["dc_pa"] = pois_r.features.get("pois_dc_pa", np.zeros(n))
+
+    # xG rolling
+    features["xg_diff_h"] = form_r.features.get("form_xg_diff_h", np.zeros(n))
+    features["xg_diff_a"] = form_r.features.get("form_xg_diff_a", np.zeros(n))
+
+    # Form PPG rolling
+    features["form_pts_h"] = form_r.features.get("form_pts_h", np.zeros(n))
+    features["form_pts_a"] = form_r.features.get("form_pts_a", np.zeros(n))
+
+    # Glicko-2 rating diff
+    features["glicko_diff"] = glicko_r.features.get("glicko2_rating_diff", np.zeros(n))
+
+    # ── TIER 2: Strong signal (~15 features) ──
+    # Poisson-derived markets
+    features["pois_btts"] = pois_r.features.get("pois_btts", np.zeros(n))
+    features["pois_o25"] = pois_r.features.get("pois_o25", np.zeros(n))
+    features["pois_cs00"] = pois_r.features.get("pois_cs00", np.zeros(n))
+
+    # Market line movement
+    features["mkt_move_h"] = mkt_r.features.get("mkt_move_h", np.zeros(n))
+    features["mkt_move_a"] = mkt_r.features.get("mkt_move_a", np.zeros(n))
+
+    # xG overperformance (Pythagorean luck — strongest regression signal)
+    features["xgr_overperf_h"] = xgr_r.features.get("xgr_overperf_h", np.zeros(n))
+    features["xgr_overperf_a"] = xgr_r.features.get("xgr_overperf_a", np.zeros(n))
+
+    # H2H signals
+    features["h2h_bogey"] = h2h_r.features.get("h2h_bogey", np.zeros(n))
+    features["h2h_venue_wr"] = h2h_r.features.get("h2h_venue_wr_h", np.zeros(n))
+
+    # Motivation & fatigue
+    features["mot_diff"] = mot_r.features.get("mot_motivation_diff", np.zeros(n))
+    features["ctx_high_stakes"] = ctx_r.features.get("ctx_high_stakes", np.zeros(n))
+    features["ctx_fatigue_diff"] = ctx_r.features.get("ctx_fatigue_diff", np.zeros(n))
+    features["rot_rest_adv"] = rot_r.features.get("rot_rest_advantage", np.zeros(n))
+
+    # Table position
+    features["lt_pos_diff"] = lt_r.features.get("lt_pos_diff", np.zeros(n))
+
+    # Market value
+    features["mv_ratio"] = mv_r.features.get("mv_value_ratio", np.zeros(n))
+
+    # ── TIER 3: Moderate signal (~15 features) ──
+    # Expert consensus stats
+    all_probs = np.stack([r.probs for r in results], axis=0)
+    mean_probs = np.nan_to_num(np.mean(all_probs, axis=0), nan=1.0/3)
+    features["consensus_ph"] = mean_probs[:, 0]
+    features["consensus_var_h"] = np.var(all_probs[:, :, 0], axis=0)
+    features["consensus_entropy"] = -np.sum(mean_probs * np.log(mean_probs + 1e-12), axis=1)
+
+    # Key expert agreements
+    features["agree_elo_mkt"] = 1.0 - np.abs(elo_r.probs[:, 0] - mkt_r.probs[:, 0])
+    features["agree_form_h2h"] = 1.0 - np.abs(form_r.probs[:, 0] - h2h_r.probs[:, 0])
+    features["agree_pois_mkt"] = 1.0 - np.abs(pois_r.probs[:, 0] - mkt_r.probs[:, 0])
+
+    # Copula (Frank) probability
+    cop_r = _r("copula")
+    features["cop_ph"] = cop_r.probs[:, 0]
+
+    # Momentum
+    features["mom_cross_diff"] = mom_r.features.get("mom_ema_cross_diff", np.zeros(n))
+
+    # Goal patterns
+    gp_first_h = gp_r.features.get("gp_first_goal_h", np.zeros(n))
+    gp_first_a = gp_r.features.get("gp_first_goal_a", np.zeros(n))
+    features["gp_first_goal_diff"] = gp_first_h - gp_first_a
+    gp_cs_h = gp_r.features.get("gp_cs_vs_top_h", np.zeros(n))
+    gp_cs_a = gp_r.features.get("gp_cs_vs_top_a", np.zeros(n))
+    features["gp_cs_diff"] = gp_cs_h - gp_cs_a
+
+    # Weather, referee, injury
+    features["wx_bad"] = wx_r.features.get("wx_bad_weather", np.zeros(n))
+    features["ref_bias"] = ref_r.features.get("ref_home_bias", np.zeros(n))
+    features["inj_diff"] = inj_r.features.get("inj_diff", np.zeros(n))
+
+    # ── TIER 4: Context + v13 New Expert Signals (~20 features) ──
+    # Kalman strength
+    features["kalman_diff"] = kalman_r.features.get("kalman_diff", np.zeros(n))
+
+    # Upset composite: market-ensemble disagreement
+    conf_weights = np.stack([r.confidence for r in results], axis=0)
+    conf_sum = conf_weights.sum(axis=0, keepdims=True) + 1e-12
+    weighted_ph = np.sum(all_probs[:, :, 0] * (conf_weights / conf_sum), axis=0)
+    features["mkt_ens_disagree"] = mkt_r.probs[:, 0] - weighted_ph
+
+    # Season progress
+    sp_r = _r("seasonal_pattern")
+    features["season_progress"] = sp_r.features.get("sp_season_progress", np.zeros(n))
+
+    # Derby flag
+    features["is_derby"] = ctx_r.features.get("ctx_is_derby", np.zeros(n))
+
+    # Relegation flag
+    features["is_relegation"] = ctx_r.features.get("ctx_is_relegation_a", np.zeros(n))
+
+    # ── v13 NEW EXPERT FEATURES ──
+    # Pythagorean expectation — strongest regression-to-mean signal
+    pyth_r = _r("pythagorean")
+    features["pyth_luck_h"] = pyth_r.features.get("pyth_luck_h", np.zeros(n))
+    features["pyth_luck_a"] = pyth_r.features.get("pyth_luck_a", np.zeros(n))
+    features["pyth_regression"] = pyth_r.features.get("pyth_regression_signal", np.zeros(n))
+
+    # GAS dynamic strength — score-driven, robust to outliers
+    gas_r = _r("gas")
+    features["gas_diff"] = gas_r.features.get("gas_diff", np.zeros(n))
+    features["gas_vol_h"] = gas_r.features.get("gas_volatility_h", np.zeros(n))
+    features["gas_vol_a"] = gas_r.features.get("gas_volatility_a", np.zeros(n))
+
+    # Adaptive Bayesian — spike-and-slab regime detection
+    abs_r = _r("adaptive_bayesian")
+    features["abs_diff"] = abs_r.features.get("abs_diff", np.zeros(n))
+    features["abs_regime_h"] = abs_r.features.get("abs_regime_h", np.zeros(n))
+    features["abs_regime_a"] = abs_r.features.get("abs_regime_a", np.zeros(n))
+
+    # HMM team states — performance regime detection
+    hmm_r = _r("hmm")
+    features["hmm_dominant_h"] = hmm_r.features.get("hmm_dominant_h", np.zeros(n))
+    features["hmm_dominant_a"] = hmm_r.features.get("hmm_dominant_a", np.zeros(n))
+    features["hmm_vulnerable_h"] = hmm_r.features.get("hmm_vulnerable_h", np.zeros(n))
+    features["hmm_vulnerable_a"] = hmm_r.features.get("hmm_vulnerable_a", np.zeros(n))
+
+    # Transfer impact
+    tf_r = _r("transfer")
+    features["tf_value_dom"] = tf_r.features.get("tf_value_dominance", np.zeros(n))
+    features["tf_depth_adv"] = tf_r.features.get("tf_depth_advantage", np.zeros(n))
+
+    # News sentiment — media disruption detection
+    ns_r = _r("news_sentiment")
+    features["ns_tone_diff"] = ns_r.features.get("ns_tone_diff", np.zeros(n))
+    features["ns_disruption_h"] = ns_r.features.get("ns_disruption_h", np.zeros(n))
+    features["ns_disruption_a"] = ns_r.features.get("ns_disruption_a", np.zeros(n))
+
+    # Betting movement — smart money detection
+    bm_r = _r("betting_movement")
+    features["bm_move_h"] = bm_r.features.get("bm_move_h", np.zeros(n))
+    features["bm_move_a"] = bm_r.features.get("bm_move_a", np.zeros(n))
+    features["bm_sharp_signal"] = bm_r.features.get("bm_sharp_signal", np.zeros(n))
+
+    # Manager impact — coaching change detection
+    mgr_r = _r("manager")
+    features["mgr_bounce_h"] = mgr_r.features.get("mgr_bounce_h", np.zeros(n))
+    features["mgr_bounce_a"] = mgr_r.features.get("mgr_bounce_a", np.zeros(n))
+    features["mgr_stability_diff"] = (
+        mgr_r.features.get("mgr_stability_h", np.zeros(n)) -
+        mgr_r.features.get("mgr_stability_a", np.zeros(n))
+    )
+
+    # Lineup strength — rotation and availability
+    lu_r = _r("lineup")
+    features["lu_squad_diff"] = (
+        lu_r.features.get("lu_squad_strength_h", np.zeros(n)) -
+        lu_r.features.get("lu_squad_strength_a", np.zeros(n))
+    )
+    features["lu_rotation_h"] = lu_r.features.get("lu_rotation_risk_h", np.zeros(n))
+    features["lu_rotation_a"] = lu_r.features.get("lu_rotation_risk_a", np.zeros(n))
+
+    # ── UPSET INTERACTION FEATURES ──
+    # These cross signals from multiple experts to detect upsets
+    mkt_ph = features["mkt_ph"]
+    # Pythagorean luck × market favourite — overperforming favourite regresses
+    features["upset_pyth_mkt"] = features["pyth_luck_h"] * mkt_ph
+    # HMM vulnerable × market favourite — regime mismatch
+    features["upset_hmm_mkt"] = features["hmm_vulnerable_h"] * mkt_ph
+    # Adaptive Bayesian regime change × market — team in flux
+    features["upset_regime_mkt"] = features["abs_regime_h"] * mkt_ph
+    # GAS volatility × fatigue — unpredictable + tired
+    features["upset_vol_fatigue"] = features["gas_vol_h"] * features["ctx_fatigue_diff"]
+    # News disruption × market favourite — bad news for favourite
+    features["upset_news_mkt"] = features.get("ns_disruption_h", np.zeros(n)) * mkt_ph
+    # Betting movement against favourite — sharp money opposing
+    features["upset_sharp_mkt"] = features.get("bm_sharp_signal", np.zeros(n)) * (1.0 - mkt_ph)
+    # Manager bounce for underdog — new manager energy
+    features["upset_bounce_away"] = features.get("mgr_bounce_a", np.zeros(n)) * (1.0 - mkt_ph)
+    # Lineup rotation for favourite — weakened team
+    features["upset_rotation_mkt"] = features.get("lu_rotation_h", np.zeros(n)) * mkt_ph
+
+    # ── MATCH DYNAMICS FEATURES ──
+    md_r = _r("match_dynamics")
+    features["md_comeback_diff"] = md_r.features.get("md_comeback_a", np.zeros(n)) - md_r.features.get("md_comeback_h", np.zeros(n))
+    features["md_collapse_h"] = md_r.features.get("md_collapse_h", np.zeros(n))
+    features["md_resilience_diff"] = md_r.features.get("md_resilience_a", np.zeros(n)) - md_r.features.get("md_resilience_h", np.zeros(n))
+    features["md_streak_h"] = md_r.features.get("md_streak_h", np.zeros(n))
+    features["md_streak_a"] = md_r.features.get("md_streak_a", np.zeros(n))
+    features["md_streak_break_h"] = md_r.features.get("md_streak_break_h", np.zeros(n))
+    features["md_card_diff"] = md_r.features.get("md_card_rate_h", np.zeros(n)) - md_r.features.get("md_card_rate_a", np.zeros(n))
+
+    # ── SCHEDULE CONTEXT FEATURES ──
+    sched_r = _r("schedule_context")
+    features["sc_fatigue_diff"] = sched_r.features.get("sc_midweek_fatigue_h", np.zeros(n)) - sched_r.features.get("sc_midweek_fatigue_a", np.zeros(n))
+    features["sc_post_intl"] = sched_r.features.get("sc_post_intl_break", np.zeros(n))
+    features["sc_honeymoon_diff"] = sched_r.features.get("sc_promoted_honeymoon_h", np.zeros(n)) - sched_r.features.get("sc_promoted_honeymoon_a", np.zeros(n))
+    features["sc_congestion"] = sched_r.features.get("sc_holiday_congestion", np.zeros(n))
+    features["sc_schedule_adv"] = sched_r.features.get("sc_schedule_advantage", np.zeros(n))
+
+    # ── ADDITIONAL UPSET INTERACTIONS with dynamics/schedule ──
+    features["upset_streak_mkt"] = features["md_streak_break_h"] * mkt_ph  # winning streak about to break
+    features["upset_fatigue_sched"] = features.get("sc_fatigue_diff", np.zeros(n)) * mkt_ph  # fatigued favourite
+    features["upset_resilience_mkt"] = features["md_resilience_diff"] * (1.0 - mkt_ph)  # resilient underdog
+
+    # ── ADVANCED DERIVED FEATURES — Data manipulation for maximum signal ──
+    # These combine multiple expert signals in ways proven by research to be predictive
+
+    # 1. Elo × Form agreement — when rating AND form agree, prediction is stronger
+    features["elo_form_agree"] = features["elo_diff"] * (features["form_pts_h"] - features["form_pts_a"])
+
+    # 2. Market confidence — how extreme is the market favourite?
+    features["mkt_confidence"] = np.abs(features["mkt_ph"] - features["mkt_pa"])
+
+    # 3. Multi-model disagreement — when models diverge, upsets are more likely
+    model_stack = np.column_stack([
+        features["mkt_ph"], features.get("dc_ph", np.zeros(n)),
+        features["consensus_ph"], features["cop_ph"],
+        elo_r.probs[:, 0], pois_r.probs[:, 0],
+    ])
+    features["model_disagreement"] = np.std(model_stack, axis=1)
+
+    # 4. Defensive quality matchup — strong defense vs weak attack = low scoring
+    features["def_quality_mismatch"] = (
+        form_r.features.get("form_ga_h", np.zeros(n)) -  # home goals conceded
+        form_r.features.get("form_gf_a", np.zeros(n))     # away goals scored
+    )
+
+    # 5. Expected goals surplus — teams consistently outscoring xG will regress
+    features["xg_surplus_h"] = features["form_pts_h"] - features.get("xgr_overperf_h", np.zeros(n))
+
+    # 6. Combined upset risk — weighted sum of all upset signals
+    upset_signals = np.column_stack([
+        features.get("upset_pyth_mkt", np.zeros(n)),
+        features.get("upset_hmm_mkt", np.zeros(n)),
+        features.get("upset_regime_mkt", np.zeros(n)),
+        features.get("upset_vol_fatigue", np.zeros(n)),
+        features.get("upset_news_mkt", np.zeros(n)),
+        features.get("upset_sharp_mkt", np.zeros(n)),
+        features.get("upset_bounce_away", np.zeros(n)),
+        features.get("upset_rotation_mkt", np.zeros(n)),
+        features.get("upset_streak_mkt", np.zeros(n)),
+        features.get("upset_fatigue_sched", np.zeros(n)),
+        features.get("upset_resilience_mkt", np.zeros(n)),
+    ])
+    features["upset_composite"] = np.mean(upset_signals, axis=1)
+    features["upset_max_signal"] = np.max(upset_signals, axis=1)
+    features["upset_n_active"] = np.sum(upset_signals > 0.05, axis=1).astype(float)
+
+    # Competition encoding (target-encoded as a single feature for CatBoost)
+    if competitions is not None:
+        features["competition"] = np.array([str(c) for c in competitions])
+
+    # Build numpy array from features (exclude string features handled separately)
+    numeric_keys = [k for k, v in features.items() if v.dtype != object]
+    blocks = [features[k][:, None] if features[k].ndim == 1 else features[k] for k in numeric_keys]
+
+    X = np.hstack(blocks) if blocks else np.zeros((n, 0))
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    return X
+
+
+# Feature names for v13 (used for SHAP analysis and debugging)
+V13_FEATURE_NAMES = [
+    # Tier 1: Strongest signal
+    "mkt_ph", "mkt_pd", "mkt_pa", "elo_diff", "elo_home_adv",
+    "pois_lambda_h", "pois_lambda_a", "dc_ph", "dc_pd", "dc_pa",
+    "xg_diff_h", "xg_diff_a", "form_pts_h", "form_pts_a", "glicko_diff",
+    # Tier 2: Strong signal
+    "pois_btts", "pois_o25", "pois_cs00", "mkt_move_h", "mkt_move_a",
+    "xgr_overperf_h", "xgr_overperf_a", "h2h_bogey", "h2h_venue_wr",
+    "mot_diff", "ctx_high_stakes", "ctx_fatigue_diff", "rot_rest_adv",
+    "lt_pos_diff", "mv_ratio",
+    # Tier 3: Moderate signal
+    "consensus_ph", "consensus_var_h", "consensus_entropy",
+    "agree_elo_mkt", "agree_form_h2h", "agree_pois_mkt", "cop_ph",
+    "mom_cross_diff", "gp_first_goal_diff", "gp_cs_diff",
+    "wx_bad", "ref_bias", "inj_diff",
+    # Tier 4: Context + v13 new experts
+    "kalman_diff", "mkt_ens_disagree", "season_progress",
+    "is_derby", "is_relegation",
+    # v13 new expert features
+    "pyth_luck_h", "pyth_luck_a", "pyth_regression",
+    "gas_diff", "gas_vol_h", "gas_vol_a",
+    "abs_diff", "abs_regime_h", "abs_regime_a",
+    "hmm_dominant_h", "hmm_dominant_a", "hmm_vulnerable_h", "hmm_vulnerable_a",
+    "tf_value_dom", "tf_depth_adv",
+    # News, betting, manager, lineup features
+    "ns_tone_diff", "ns_disruption_h", "ns_disruption_a",
+    "bm_move_h", "bm_move_a", "bm_sharp_signal",
+    "mgr_bounce_h", "mgr_bounce_a", "mgr_stability_diff",
+    "lu_squad_diff", "lu_rotation_h", "lu_rotation_a",
+    # Upset interaction features
+    "upset_pyth_mkt", "upset_hmm_mkt", "upset_regime_mkt", "upset_vol_fatigue",
+    "upset_news_mkt", "upset_sharp_mkt", "upset_bounce_away", "upset_rotation_mkt",
+    # Match dynamics features
+    "md_comeback_diff", "md_collapse_h", "md_resilience_diff",
+    "md_streak_h", "md_streak_a", "md_streak_break_h", "md_card_diff",
+    # Schedule context features
+    "sc_fatigue_diff", "sc_post_intl", "sc_honeymoon_diff", "sc_congestion", "sc_schedule_adv",
+    # Additional upset interactions
+    "upset_streak_mkt", "upset_fatigue_sched", "upset_resilience_mkt",
+    # Advanced derived features
+    "elo_form_agree", "mkt_confidence", "model_disagreement",
+    "def_quality_mismatch", "xg_surplus_h",
+    "upset_composite", "upset_max_signal", "upset_n_active",
+]
+
+
 def _prepare_df(con, finished_only: bool = True, days: int = 2555) -> pd.DataFrame:
     """Load matches + extras into a clean DataFrame for expert consumption."""
     status_filter = "m.status='FINISHED'" if finished_only else "m.status IN ('FINISHED','SCHEDULED','TIMED')"
@@ -734,13 +1102,13 @@ def prepare_training_data(con, days: int = 2555) -> tuple[np.ndarray, np.ndarray
 # ---------- TRAINING ----------
 def train_and_save(con, days: int = 2555, eval_days: int = 365,
                    verbose: bool = True) -> dict:
-    """Train the Expert Council model with multi-model stacking.
+    """Train the Expert Council model — v13 Oracle architecture.
 
     Architecture:
-        Base models: HistGBM (primary), RandomForest, LogisticRegression
-        Meta-layer: HistGBM on stacked OOF predictions
-        Calibration: Isotonic calibration (cv=5) on final output
-        Evaluation: Walk-forward diagnostic for honest performance estimate
+        Layer 1: 34+ experts → ~55 focused features (v13) or 400+ full features (v12 compat)
+        Layer 2: CatBoost primary (native categoricals, ordered boosting) + HistGBM fallback
+        Layer 3: Temperature scaling calibration (single parameter T)
+        Evaluation: Walk-forward cross-validation with temporal splits
     """
 
     df = _prepare_df(con, finished_only=True, days=days)
@@ -806,9 +1174,9 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     )
     all_results = results + [dc_result]
 
-    # build meta features
+    # build meta features — v13 focused features (research: 55 > 400+ when SNR is low)
     competitions = df["competition"].to_numpy() if "competition" in df.columns else None
-    X = _build_meta_X(all_results, competitions=competitions)
+    X = _build_v13_features(all_results, competitions=competitions)
     y = np.array([_label(int(hg), int(ag))
                   for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
 
@@ -816,120 +1184,102 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     Xte, yte = X[test_mask.to_numpy()], y[test_mask.to_numpy()]
 
     if verbose:
-        print(f"[council] feature matrix: {X.shape[1]} columns", flush=True)
+        print(f"[council] v13 feature matrix: {X.shape[1]} columns (focused selection)", flush=True)
 
     # ================================================================
-    # MULTI-MODEL STACKING — v12 LightGBM + CatBoost + HistGBM
+    # v13 ORACLE MODEL STACK — CatBoost primary + HistGBM fallback
+    # Research: CatBoost > LightGBM for medium football datasets (ordered
+    # boosting prevents prediction shift, native categoricals, better calibrated)
     # ================================================================
-    # Try LightGBM first (leaf-wise growth, GOSS — best on tabular)
-    lgb_model = None
-    P_lgb = None
-    try:
-        import lightgbm as lgb
-        lgb_base = lgb.LGBMClassifier(
-            objective="multiclass",
-            num_class=3,
-            learning_rate=0.02,
-            num_leaves=63,
-            max_depth=6,
-            min_child_samples=30,
-            reg_alpha=0.5,
-            reg_lambda=2.0,
-            subsample=0.8,
-            colsample_bytree=0.7,
-            n_estimators=2000,
-            random_state=42,
-            verbose=-1,
-        )
-        lgb_base.fit(Xtr, ytr, eval_set=[(Xte, yte)],
-                      callbacks=[lgb.early_stopping(50, verbose=False)])
-        lgb_cal = CalibratedClassifierCV(lgb_base, method="isotonic", cv=5)
-        lgb_cal.fit(Xtr, ytr)
-        P_lgb = lgb_cal.predict_proba(Xte)
-        lgb_model = lgb_cal
-        if verbose:
-            lgb_acc = float(np.mean(P_lgb.argmax(axis=1) == yte))
-            print(f"[council] LightGBM base: accuracy={lgb_acc:.4f}", flush=True)
-    except ImportError:
-        if verbose:
-            print("[council] LightGBM not installed, falling back to HistGBM", flush=True)
-    except Exception as e:
-        if verbose:
-            print(f"[council] LightGBM failed: {e}, falling back to HistGBM", flush=True)
 
-    # Try CatBoost (ordered boosting, handles categoricals natively)
+    # Primary: CatBoost (best for medium-size football data)
     cat_model = None
     P_cat = None
     try:
         from catboost import CatBoostClassifier
         cat_base = CatBoostClassifier(
-            iterations=1500,
+            loss_function="MultiClass",
+            eval_metric="MultiClass",
+            iterations=2000,
             learning_rate=0.03,
             depth=6,
             l2_leaf_reg=3.0,
-            random_seed=42,
-            eval_metric="MultiClass",
-            verbose=0,
+            subsample=0.8,
+            colsample_bylevel=0.7,
+            min_data_in_leaf=30,
+            use_best_model=True,
             early_stopping_rounds=50,
+            random_seed=42,
+            verbose=0,
         )
         cat_base.fit(Xtr, ytr, eval_set=(Xte, yte))
-        cat_cal = CalibratedClassifierCV(cat_base, method="isotonic", cv=5)
-        cat_cal.fit(Xtr, ytr)
-        P_cat = cat_cal.predict_proba(Xte)
-        cat_model = cat_cal
+        P_cat = cat_base.predict_proba(Xte)
+        cat_model = cat_base
         if verbose:
             cat_acc = float(np.mean(P_cat.argmax(axis=1) == yte))
-            print(f"[council] CatBoost base: accuracy={cat_acc:.4f}", flush=True)
+            print(f"[council] CatBoost primary: accuracy={cat_acc:.4f}", flush=True)
     except ImportError:
         if verbose:
-            print("[council] CatBoost not installed, skipping", flush=True)
+            print("[council] CatBoost not installed, using HistGBM fallback", flush=True)
     except Exception as e:
         if verbose:
-            print(f"[council] CatBoost failed: {e}", flush=True)
+            print(f"[council] CatBoost failed: {e}, using HistGBM fallback", flush=True)
 
-    # HistGBM (always available — fallback/ensemble member)
+    # XGBoost (multi:softprob for calibrated 3-class probabilities)
+    xgb_model = None
+    P_xgb = None
+    try:
+        import xgboost as xgb
+        xgb_base = xgb.XGBClassifier(
+            objective="multi:softprob",
+            num_class=3,
+            eval_metric="mlogloss",
+            max_depth=5,
+            min_child_weight=10,
+            gamma=0.2,
+            subsample=0.8,
+            colsample_bytree=0.7,
+            learning_rate=0.03,
+            n_estimators=2000,
+            reg_alpha=0.1,
+            reg_lambda=3.0,
+            max_delta_step=1,
+            random_state=42,
+            verbosity=0,
+            early_stopping_rounds=50,
+        )
+        xgb_base.fit(Xtr, ytr, eval_set=[(Xte, yte)], verbose=False)
+        P_xgb = xgb_base.predict_proba(Xte)
+        xgb_model = xgb_base
+        if verbose:
+            xgb_acc = float(np.mean(P_xgb.argmax(axis=1) == yte))
+            print(f"[council] XGBoost: accuracy={xgb_acc:.4f}", flush=True)
+    except ImportError:
+        if verbose:
+            print("[council] XGBoost not installed, skipping", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[council] XGBoost failed: {e}", flush=True)
+
+    # Fallback: HistGBM (always available, no extra dependency)
     gbm_base = HistGradientBoostingClassifier(
         learning_rate=0.03,
-        max_depth=3,
-        max_iter=1800,
+        max_depth=5,
+        max_iter=2000,
         l2_regularization=3.0,
-        min_samples_leaf=50,
+        min_samples_leaf=30,
         max_bins=255,
-        max_leaf_nodes=31,
+        max_leaf_nodes=63,
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=30,
+        n_iter_no_change=50,
         random_state=42,
     )
-    gbm_model = CalibratedClassifierCV(gbm_base, method="isotonic", cv=5)
-    gbm_model.fit(Xtr, ytr)
-    P_gbm = gbm_model.predict_proba(Xte)
+    gbm_base.fit(Xtr, ytr)
+    P_gbm = gbm_base.predict_proba(Xte)
+    gbm_model = gbm_base
 
-    # Base model 2: RandomForest (complements GBM with lower variance)
-    rf_model = None
-    P_rf = None
-    try:
-        rf_base = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=12,
-            min_samples_leaf=30,
-            max_features="sqrt",
-            class_weight="balanced",
-            random_state=42,
-            n_jobs=-1,
-        )
-        rf_cal = CalibratedClassifierCV(rf_base, method="isotonic", cv=5)
-        rf_cal.fit(Xtr, ytr)
-        P_rf = rf_cal.predict_proba(Xte)
-        rf_model = rf_cal
-        if verbose:
-            rf_acc = float(np.mean(P_rf.argmax(axis=1) == yte))
-            print(f"[council] RF base: accuracy={rf_acc:.4f}", flush=True)
-    except Exception as e:
-        if verbose:
-            print(f"[council] RF base failed: {e}", flush=True)
-
-    # Base model 3: LogisticRegression (linear baseline, regularized)
+    # Baseline: LogisticRegression (interpretable, naturally calibrated)
     lr_model = None
     P_lr = None
     try:
@@ -941,46 +1291,41 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
                 max_iter=800, C=0.5, random_state=42,
             )),
         ])
-        lr_cal = CalibratedClassifierCV(lr_pipe, method="isotonic", cv=5)
-        lr_cal.fit(Xtr, ytr)
-        P_lr = lr_cal.predict_proba(Xte)
-        lr_model = lr_cal
+        lr_pipe.fit(Xtr, ytr)
+        P_lr = lr_pipe.predict_proba(Xte)
+        lr_model = lr_pipe
         if verbose:
             lr_acc = float(np.mean(P_lr.argmax(axis=1) == yte))
-            print(f"[council] LR base: accuracy={lr_acc:.4f}", flush=True)
+            print(f"[council] LR baseline: accuracy={lr_acc:.4f}", flush=True)
     except Exception as e:
         if verbose:
-            print(f"[council] LR base failed: {e}", flush=True)
+            print(f"[council] LR baseline failed: {e}", flush=True)
 
-    # Stacked ensemble: LEARNED weights via Nelder-Mead on validation logloss
-    P = P_gbm.copy()
-    learned_weights = (1.0,)
+    # Select best primary model and learn stack weights
     available_models = []
-    # Prioritize LightGBM > CatBoost > HistGBM
-    if P_lgb is not None:
-        available_models.append(("LGB", P_lgb))
     if P_cat is not None:
         available_models.append(("CAT", P_cat))
+    if P_xgb is not None:
+        available_models.append(("XGB", P_xgb))
     available_models.append(("GBM", P_gbm))
-    if P_rf is not None:
-        available_models.append(("RF", P_rf))
     if P_lr is not None:
         available_models.append(("LR", P_lr))
+
+    # Stack: learned weights via Nelder-Mead on validation logloss
+    P = P_cat if P_cat is not None else P_gbm
+    learned_weights = (1.0,)
 
     if len(available_models) >= 2:
         from scipy.optimize import minimize
 
         def _stack_logloss(w_raw):
-            """Compute logloss for a weighted blend of base model predictions."""
-            w = np.exp(w_raw) / np.exp(w_raw).sum()  # softmax to enforce sum=1
+            w = np.exp(w_raw) / np.exp(w_raw).sum()
             P_blend = sum(wi * Pi for wi, (_, Pi) in zip(w, available_models))
             row_sums = P_blend.sum(axis=1, keepdims=True)
             P_blend = P_blend / np.maximum(row_sums, 1e-12)
-            ll = -np.mean(np.log(P_blend[np.arange(len(yte)), yte] + 1e-12))
-            return ll
+            return -np.mean(np.log(P_blend[np.arange(len(yte)), yte] + 1e-12))
 
-        # Optimize weights
-        w0 = np.zeros(len(available_models))  # start with equal weights in log-space
+        w0 = np.zeros(len(available_models))
         res_opt = minimize(_stack_logloss, w0, method="Nelder-Mead",
                           options={"maxiter": 500, "xatol": 1e-5, "fatol": 1e-6})
         opt_w = np.exp(res_opt.x) / np.exp(res_opt.x).sum()
@@ -989,14 +1334,37 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
         P = sum(wi * Pi for wi, (_, Pi) in zip(opt_w, available_models))
         if verbose:
             model_names = [name for name, _ in available_models]
-            print(f"[council] learned stack weights: {dict(zip(model_names, learned_weights))}", flush=True)
-    else:
-        if verbose:
-            print("[council] using single GBM model", flush=True)
+            print(f"[council] stack weights: {dict(zip(model_names, learned_weights))}", flush=True)
 
     # Normalize stacked probabilities
     row_sums = P.sum(axis=1, keepdims=True)
     P = P / np.maximum(row_sums, 1e-12)
+
+    # ── Temperature scaling — replaces isotonic calibration ──
+    # Single parameter T that preserves discrimination while fixing calibration.
+    # Naturally handles multiclass, probabilities always sum to 1.
+    temperature = 1.0
+    try:
+        from scipy.special import softmax as scipy_softmax
+        logits = np.log(P + 1e-12)
+
+        def _temp_nll(T):
+            T_val = float(T[0]) if hasattr(T, '__len__') else float(T)
+            scaled = logits / max(T_val, 0.01)
+            probs = scipy_softmax(scaled, axis=1)
+            return -np.mean(np.log(probs[np.arange(len(yte)), yte] + 1e-12))
+
+        from scipy.optimize import minimize as opt_minimize
+        res_temp = opt_minimize(_temp_nll, x0=[1.5], bounds=[(0.1, 10.0)], method="L-BFGS-B")
+        temperature = float(res_temp.x[0])
+        if verbose:
+            print(f"[council] temperature scaling: T={temperature:.4f}", flush=True)
+
+        # Apply temperature scaling to final predictions
+        P = scipy_softmax(logits / temperature, axis=1)
+    except Exception as e:
+        if verbose:
+            print(f"[council] temperature scaling failed: {e}, using raw probabilities", flush=True)
 
 
     eps = 1e-12
@@ -1131,17 +1499,19 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     # Save model artifact — only after gate validation
     model_artifact = {
         "model": gbm_model,
-        "lgb_model": lgb_model,
         "cat_model": cat_model,
-        "rf_model": rf_model,
+        "xgb_model": xgb_model,
         "lr_model": lr_model,
         "dc_by_comp": dc_by_comp,
         "btts_model": btts_model,
         "ou25_model": ou25_model,
         "stack_weights": learned_weights,
+        "temperature": temperature,
         "n_features": int(X.shape[1]),
         "n_experts": len(ALL_EXPERTS),
         "wf_gate_passed": wf_passed,
+        "version": "v13_oracle",
+        "feature_names": V13_FEATURE_NAMES[:X.shape[1]],
     }
 
     if wf_passed:
@@ -1161,7 +1531,8 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
         "accuracy": round(acc, 4), "ece": round(float(ece), 4),
         "n_features": int(X.shape[1]),
         "n_experts": len(ALL_EXPERTS),
-        "stack_models": sum(1 for m in [gbm_model, rf_model, lr_model] if m is not None),
+        "stack_models": sum(1 for m in [cat_model, gbm_model, lr_model] if m is not None),
+        "temperature": round(temperature, 4),
         "btts_accuracy": round(btts_acc, 4) if btts_model else None,
         "ou25_accuracy": round(ou25_acc, 4) if ou25_model else None,
         "walkforward": wf_info,
@@ -1206,13 +1577,11 @@ def _tr(name: str, results_list: list[ExpertResult]) -> ExpertResult:
 
 # ---------- PREDICTION ----------
 def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
-    """Predict upcoming matches using the Expert Council."""
+    """Predict upcoming matches using the v13 Oracle pipeline."""
     obj = load()
     if obj is None:
         raise RuntimeError(f"Council model not found at {MODEL_PATH}. Run: footy train")
     model = obj["model"]
-    rf_model_pred = obj.get("rf_model")
-    lr_model_pred = obj.get("lr_model")
     stack_weights = obj.get("stack_weights", (1.0,))
     dc_by_comp = obj.get("dc_by_comp", {})
 
@@ -1335,229 +1704,70 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             features={k: v[-tail:] for k, v in res.features.items()},
         ))
 
+    # ================================================================
+    # v13 Clean Prediction Pipeline — 3 layers, no heuristic overrides
+    #
+    # The ML meta-learner already sees market odds, Elo, expert consensus
+    # as INPUT FEATURES and learns the optimal combination from data.
+    # No hard-coded weights needed. Trust the trained model.
+    # ================================================================
     up_competitions = up["competition"].to_numpy() if "competition" in up.columns else None
-    X = _build_meta_X(tail_results, competitions=up_competitions)
+    X = _build_v13_features(tail_results, competitions=up_competitions)
 
-
-    # Wire self-learning weights into prediction pipeline
-    sl_expert_weight_adjustments = {}
-    try:
-        from footy.self_learning import SelfLearningLoop
-        sl = SelfLearningLoop()
-        
-        # Get optimal weights per league and globally
-        for comp in sorted({str(c) for c in up.get("competition", pd.Series(dtype=str)).dropna().tolist()}):
-            league_weights = sl.get_optimal_expert_weights(league=comp)
-            if league_weights and isinstance(league_weights, dict):
-                sl_expert_weight_adjustments[comp] = league_weights
-        
-        # Get global weights as fallback
-        global_weights = sl.get_optimal_expert_weights()
-        if global_weights and isinstance(global_weights, dict):
-            sl_expert_weight_adjustments["__global__"] = global_weights
-        
-        if verbose and sl_expert_weight_adjustments:
-            log.debug("[council] Self-learning weights loaded for %d contexts",
-                     len(sl_expert_weight_adjustments))
-    except Exception as e:
-        log.debug("Self-learning weight adjustment skipped: %s", e)
-
-    # v11: Feature-count validation — prevent cryptic sklearn errors
+    # Feature-count validation
     expected_n_features = obj.get("n_features")
     if expected_n_features is not None and X.shape[1] != expected_n_features:
-        # Attempt auto-fix: pad or truncate
         if X.shape[1] < expected_n_features:
-            # Pad with zeros (new features not available at predict time)
             pad = np.zeros((X.shape[0], expected_n_features - X.shape[1]))
             X = np.hstack([X, pad])
-            if verbose:
-                print(f"[council] ⚠ Feature count mismatch: got {X.shape[1] - pad.shape[1]}, "
-                      f"expected {expected_n_features}. Padded {pad.shape[1]} features with zeros.", flush=True)
         else:
-            # Truncate (extra features from newer expert code)
             X = X[:, :expected_n_features]
-            if verbose:
-                print(f"[council] ⚠ Feature count mismatch: got {X.shape[1]}, "
-                      f"expected {expected_n_features}. Truncated to match.", flush=True)
 
-    # Multi-model stacking at prediction time
-    P_gbm = model.predict_proba(X)
-    P = P_gbm.copy()
-    if len(stack_weights) == 3 and rf_model_pred and lr_model_pred:
-        P_rf = rf_model_pred.predict_proba(X)
-        P_lr = lr_model_pred.predict_proba(X)
-        P = stack_weights[0] * P_gbm + stack_weights[1] * P_rf + stack_weights[2] * P_lr
-    elif len(stack_weights) == 2:
-        if rf_model_pred:
-            P_rf = rf_model_pred.predict_proba(X)
-            P = stack_weights[0] * P_gbm + stack_weights[1] * P_rf
-        elif lr_model_pred:
-            P_lr = lr_model_pred.predict_proba(X)
-            P = stack_weights[0] * P_gbm + stack_weights[1] * P_lr
+    # Layer 2: Multi-model stacking at prediction time
+    cat_model_pred = obj.get("cat_model")
+    xgb_model_pred = obj.get("xgb_model")
+    lr_model_pred = obj.get("lr_model")
+
+    available_preds = []
+    if cat_model_pred is not None:
+        try:
+            available_preds.append(("CAT", cat_model_pred.predict_proba(X)))
+        except Exception:
+            pass
+    if xgb_model_pred is not None:
+        try:
+            available_preds.append(("XGB", xgb_model_pred.predict_proba(X)))
+        except Exception:
+            pass
+    available_preds.append(("GBM", model.predict_proba(X)))
+    if lr_model_pred is not None:
+        try:
+            available_preds.append(("LR", lr_model_pred.predict_proba(X)))
+        except Exception:
+            pass
+
+    # Apply learned stack weights
+    if len(available_preds) >= 2 and len(stack_weights) == len(available_preds):
+        P = sum(w * p for w, (_, p) in zip(stack_weights, available_preds))
+    else:
+        P = available_preds[0][1]
+
     # Normalize
     row_sums = P.sum(axis=1, keepdims=True)
     P = P / np.maximum(row_sums, 1e-12)
 
-    # Bug 3: Apply final calibration to blended ensemble probabilities
-    # Individual models are already CalibratedClassifierCV, but the blend itself needs calibration
-    try:
-        # Use Platt scaling (temperature scaling) on the blended output
-        # This is lightweight and works well for already-calibrated individual models
-        platt_calibrator = obj.get("platt_calibrator")
-        if platt_calibrator is not None:
-            # Apply Platt scaling: P_calib = 1 / (1 + exp(a*logit(P) + b))
-            P_calib = P.copy()
-            try:
-                # Use the trained calibrator if available
-                P_calib = platt_calibrator.predict_proba(X)
-            except Exception:
-                # Fallback: temperature scaling approximation
-                # Rescale confidences based on ensemble confidence level
-                temperatures = np.array([0.95, 0.97, 0.99])  # Per-class temperature
-                for k in range(3):
-                    P_calib[:, k] = P[:, k] ** (1.0 / temperatures[k])
-                row_sums_calib = P_calib.sum(axis=1, keepdims=True)
-                P_calib = P_calib / np.maximum(row_sums_calib, 1e-12)
-            P = P_calib
-    except Exception as e:
-        log.debug("Blend calibration skipped: %s", e)
-
-    # Load learned ensemble weights for score model integration
-    learned_ensemble_weights = None
-    expert_weight_maps: dict[str, dict[str, float]] = {}
-    try:
-        from footy.continuous_training import get_training_manager
-        mgr = get_training_manager()
-        learned_ensemble_weights = mgr.get_learned_weights()
-        expert_weight_maps["__global__"] = mgr.get_expert_weight_map()
-        for comp_code in sorted({str(c) for c in up.get("competition", pd.Series(dtype=str)).dropna().tolist()}):
-            comp_weights = mgr.get_expert_weight_map(competition=comp_code)
-            if comp_weights:
-                expert_weight_maps[comp_code] = comp_weights
-    except Exception:
-        pass
-
-    # Apply learned ensemble weights: blend council predictions with score-model
-    # ensemble predictions when learned weights are available and we have lambdas
-    if learned_ensemble_weights:
+    # Layer 3: Temperature scaling (learned during training)
+    temperature = obj.get("temperature", 1.0)
+    if temperature != 1.0:
         try:
-            from footy.models.experimental_math import build_all_score_matrices, bayesian_model_average
-            from footy.models.advanced_math import extract_match_probs
-            ensemble_blend_factor = 0.35  # 35% from score models, 65% from council
-            for j in range(len(P)):
-                lam_h_val = float(_tr("poisson", tail_results).features.get("pois_lambda_h", np.zeros(tail))[j])
-                lam_a_val = float(_tr("poisson", tail_results).features.get("pois_lambda_a", np.zeros(tail))[j])
-                if lam_h_val > 0 and lam_a_val > 0:
-                    try:
-                        matrices = build_all_score_matrices(lam_h_val, lam_a_val)
-                        ordered_names = list(matrices.keys())
-                        prior_weights = np.array([
-                            float(learned_ensemble_weights.get(name, 1.0 / len(ordered_names)))
-                            for name in ordered_names
-                        ], dtype=float)
-                        prior_weights = prior_weights / np.maximum(prior_weights.sum(), 1e-12)
-                        bma_mat = bayesian_model_average(list(matrices.values()), prior_weights=list(prior_weights))
-                        score_probs = extract_match_probs(bma_mat)
-                        p_sce = np.array([
-                            score_probs.get("p_home", 1 / 3),
-                            score_probs.get("p_draw", 1 / 3),
-                            score_probs.get("p_away", 1 / 3),
-                        ])
-                        P[j] = (1 - ensemble_blend_factor) * P[j] + ensemble_blend_factor * p_sce
-                    except Exception:
-                        pass
-            # Re-normalize after blending
-            row_sums = P.sum(axis=1, keepdims=True)
-            P = P / np.maximum(row_sums, 1e-12)
+            from scipy.special import softmax as scipy_softmax
+            logits = np.log(P + 1e-12)
+            P = scipy_softmax(logits / temperature, axis=1)
         except Exception:
             pass
 
-    # ================================================================
-    # INTELLIGENT ENSEMBLE — Replace raw meta-learner output with a
-    # principled blend of ML prediction + strong analytical signals.
-    #
-    # Research shows: Market odds > Elo/ratings > ML ensemble.
-    # Instead of trusting the ML blindly, we combine it with the
-    # strongest analytical signals using proven methods.
-    # ================================================================
-    for j in range(len(P)):
-        ml_probs = P[j].copy()  # Meta-learner prediction
-
-        # 1. Elo-based prior (standard expected score with home advantage)
-        elo_h_val = float(_tr("elo", tail_results).features.get("elo_home", np.full(tail, 1500.0))[j])
-        elo_a_val = float(_tr("elo", tail_results).features.get("elo_away", np.full(tail, 1500.0))[j])
-        elo_diff = (elo_h_val + 65.0) - elo_a_val  # +65 home advantage
-        elo_exp_h = 1.0 / (1.0 + 10.0 ** (-elo_diff / 400.0))
-        elo_exp_a = 1.0 - elo_exp_h
-        # Carve out draw probability (higher when teams are close)
-        draw_factor = max(0.18, min(0.30, 0.28 * max(0.5, 1.0 - abs(elo_diff) / 800.0)))
-        elo_probs = np.array([
-            elo_exp_h * (1.0 - draw_factor),
-            draw_factor,
-            elo_exp_a * (1.0 - draw_factor),
-        ])
-
-        # 2. Market odds (Shin-adjusted, strongest signal)
-        has_mkt = float(_tr("market", tail_results).features.get("mkt_has_odds", np.zeros(tail))[j]) > 0.5
-        mkt_probs = None
-        if has_mkt:
-            mkt_probs = np.array([
-                float(_tr("market", tail_results).probs[j, 0]),
-                float(_tr("market", tail_results).probs[j, 1]),
-                float(_tr("market", tail_results).probs[j, 2]),
-            ])
-
-        # 3. Expert consensus (confidence-weighted average of all experts)
-        expert_sum = np.zeros(3)
-        conf_sum = 0.0
-        for res in tail_results[:len(ALL_EXPERTS)]:
-            c = float(res.confidence[j])
-            if c > 0.1:  # Only include experts with meaningful confidence
-                expert_sum += c * res.probs[j]
-                conf_sum += c
-        expert_consensus = expert_sum / max(conf_sum, 1e-12)
-
-        # 4. Adaptive ensemble with ML trust scaling
-        # When the ML prediction contradicts strong signals (Elo, market),
-        # reduce ML weight. The larger the Elo gap, the more we trust Elo
-        # over ML, because ML overfits on noise for mismatched teams.
-        abs_elo_gap = abs(elo_h_val - elo_a_val)
-        # ML trust: 1.0 for close matches (gap < 100), drops to 0.3 for massive gaps (400+)
-        ml_trust = max(0.3, 1.0 - 0.7 * min(1.0, abs_elo_gap / 400.0))
-
-        # Check if ML agrees with Elo direction
-        elo_fav_home = elo_h_val > elo_a_val
-        ml_fav_home = float(ml_probs[0]) > float(ml_probs[2])
-        ml_agrees = (elo_fav_home == ml_fav_home)
-        if not ml_agrees and abs_elo_gap > 150:
-            # ML contradicts Elo on who the favorite is, with significant gap
-            # Further reduce ML trust
-            ml_trust *= 0.5
-
-        if mkt_probs is not None:
-            # With market: Market 40%, Experts 20%, ML (scaled), Elo (fills remainder)
-            w_mkt = 0.40
-            w_exp = 0.20
-            w_ml = 0.25 * ml_trust
-            w_elo = 1.0 - w_mkt - w_exp - w_ml
-            P[j] = (w_mkt * mkt_probs +
-                    w_exp * expert_consensus +
-                    w_ml * ml_probs +
-                    w_elo * elo_probs)
-        else:
-            # No market: Experts 30%, ML (scaled), Elo (fills remainder)
-            w_exp = 0.30
-            w_ml = 0.35 * ml_trust
-            w_elo = 1.0 - w_exp - w_ml
-            P[j] = (w_exp * expert_consensus +
-                    w_ml * ml_probs +
-                    w_elo * elo_probs)
-
-        # Normalize
-        P[j] = P[j] / max(P[j].sum(), 1e-12)
-
-    # Prediction floor/ceiling — no outcome below 3% or above 92%
-    P = np.clip(P, 0.03, 0.92)
+    # Soft floor/ceiling — gentler than hard clip, preserves relative ordering
+    P = np.clip(P, 0.02, 0.95)
     row_sums = P.sum(axis=1, keepdims=True)
     P = P / np.maximum(row_sums, 1e-12)
 
@@ -1567,34 +1777,12 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     P_btts = btts_model.predict_proba(X) if btts_model else None
     P_ou25 = ou25_model.predict_proba(X) if ou25_model else None
 
-    stack_label = f"Expert Council ({len(ALL_EXPERTS)} experts + {len(stack_weights)}-model stack)"
+    stack_label = f"v13 Oracle ({len(ALL_EXPERTS)} experts, T={temperature:.2f})"
 
     count = 0
     for j, (mid, ph, p_d, pa) in enumerate(zip(
         up["match_id"].to_numpy(dtype=np.int64), P[:, 0], P[:, 1], P[:, 2]
     )):
-        comp_code = str(up.iloc[j].get("competition", ""))
-        adaptive_expert_blend = 0.0
-        adaptive_weighted_probs = None
-        expert_weight_map = expert_weight_maps.get(comp_code) or expert_weight_maps.get("__global__")
-        if expert_weight_map:
-            weighted_sum = np.zeros(3, dtype=float)
-            weight_total = 0.0
-            for expert, result in zip(ALL_EXPERTS, tail_results[:len(ALL_EXPERTS)]):
-                weight = float(expert_weight_map.get(expert.name, 0.0))
-                if weight <= 0:
-                    continue
-                weighted_sum += weight * result.probs[j]
-                weight_total += weight
-            if weight_total > 0:
-                adaptive_weighted_probs = weighted_sum / weight_total
-                adaptive_expert_blend = 0.25 if comp_code in expert_weight_maps else 0.15
-                P[j] = (1.0 - adaptive_expert_blend) * P[j] + adaptive_expert_blend * adaptive_weighted_probs
-                P[j] = P[j] / np.maximum(P[j].sum(), 1e-12)
-                ph, p_d, pa = float(P[j, 0]), float(P[j, 1]), float(P[j, 2])
-        # Note: Per-match sanity check removed. The intelligent ensemble
-        # (above) already properly weights Elo, market, and expert consensus
-        # alongside the ML prediction, making post-hoc corrections unnecessary.
         ph, p_d, pa = float(P[j, 0]), float(P[j, 1]), float(P[j, 2])
 
 

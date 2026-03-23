@@ -33,6 +33,7 @@ from footy.models.math.attention import (
 )
 from footy.models.math.bma import (
     bayesian_model_average,
+    compute_model_likelihoods,
     opponent_adjusted_xg,
 )
 from footy.models.math.distributions import (
@@ -99,6 +100,7 @@ __all__ = [
     "information_gain_from_odds",
     # BMA
     "bayesian_model_average",
+    "compute_model_likelihoods",
     "opponent_adjusted_xg",
     # Ensemble & Calibration
     "expected_points_from_score_matrix",

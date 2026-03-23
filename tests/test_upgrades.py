@@ -147,7 +147,7 @@ class TestSchedulerJobTypes:
 class TestModelVersion:
     def test_model_version_v10(self):
         from footy.models.council import MODEL_VERSION
-        assert MODEL_VERSION == "v10_council"
+        assert MODEL_VERSION == "v13_oracle"
 
 
 class TestTeamMapping:

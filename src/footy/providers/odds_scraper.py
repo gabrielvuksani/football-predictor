@@ -26,21 +26,15 @@ def update_upcoming_match_odds(
     Delegates to the_odds_api provider which handles h2h, totals,
     Asian Handicap, and BTTS markets from 40+ bookmakers.
     """
-    from footy.providers.the_odds_api import fetch_odds, ingest_odds_to_db
+    from footy.providers.the_odds_api import ingest_odds_to_db
 
     try:
-        events = fetch_odds()
+        updated = ingest_odds_to_db(con, competitions=None, verbose=verbose)
     except Exception as e:
         logger.warning("Could not fetch odds from The Odds API: %s", e)
         return {"updated": 0, "error": str(e)}
 
-    if not events:
-        if verbose:
-            logger.info("[odds] no events returned from The Odds API")
-        return {"updated": 0, "attempted": 0}
-
-    updated = ingest_odds_to_db(con, events, verbose=verbose)
-    return {"updated": updated, "attempted": len(events)}
+    return {"updated": updated}
 
 
 def implied_odds_from_probability(

@@ -214,11 +214,11 @@ class TestSelfLearningLoop:
         """)
         con.execute("""
             INSERT INTO predictions VALUES
-            (1, 'v10_council', 0.6, 0.25, 0.15, '{"btts":0.55}')
+            (1, 'v13_oracle', 0.6, 0.25, 0.15, '{"btts":0.55}')
         """)
         con.execute("""
             INSERT INTO prediction_scores VALUES
-            (1, 'v10_council', CURRENT_TIMESTAMP, 0, TRUE, 0.51)
+            (1, 'v13_oracle', CURRENT_TIMESTAMP, 0, TRUE, 0.51)
         """)
         con.execute("""
             INSERT INTO expert_cache VALUES

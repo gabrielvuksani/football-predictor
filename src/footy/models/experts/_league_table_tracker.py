@@ -55,6 +55,10 @@ class LeagueTableTracker:
         self._recent_results: dict[str, dict[str, list[int]]] = {}
         # Track if table has been re-ranked since last update
         self._dirty: dict[str, bool] = {}
+        self._home_dirty: dict[str, bool] = {}
+        self._away_dirty: dict[str, bool] = {}
+        # Deduplication: track processed match keys to prevent triple-update
+        self._processed: set[tuple] = set()
 
     @staticmethod
     def season_key(r) -> str:
@@ -88,6 +92,32 @@ class LeagueTableTracker:
             entry.pos = idx + 1
         self._dirty[sk] = False
 
+    def _rank_home(self, sk: str) -> None:
+        """Re-rank home-only table entries."""
+        table = self._home_tables.get(sk)
+        if not table:
+            return
+        ranked = sorted(
+            table.values(),
+            key=lambda e: (-e.pts, -(e.gf - e.ga), -e.gf),
+        )
+        for idx, entry in enumerate(ranked):
+            entry.pos = idx + 1
+        self._home_dirty[sk] = False
+
+    def _rank_away(self, sk: str) -> None:
+        """Re-rank away-only table entries."""
+        table = self._away_tables.get(sk)
+        if not table:
+            return
+        ranked = sorted(
+            table.values(),
+            key=lambda e: (-e.pts, -(e.gf - e.ga), -e.gf),
+        )
+        for idx, entry in enumerate(ranked):
+            entry.pos = idx + 1
+        self._away_dirty[sk] = False
+
     def get_table(self, sk: str) -> dict[str, _TableEntry]:
         """Get the overall table for a season key, ranked."""
         table = self._ensure_table(sk)
@@ -107,11 +137,15 @@ class LeagueTableTracker:
     def get_home_table(self, sk: str) -> dict[str, _TableEntry]:
         if sk not in self._home_tables:
             self._home_tables[sk] = {}
+        if self._home_dirty.get(sk, False):
+            self._rank_home(sk)
         return self._home_tables[sk]
 
     def get_away_table(self, sk: str) -> dict[str, _TableEntry]:
         if sk not in self._away_tables:
             self._away_tables[sk] = {}
+        if self._away_dirty.get(sk, False):
+            self._rank_away(sk)
         return self._away_tables[sk]
 
     def n_teams(self, sk: str) -> int:
@@ -172,7 +206,16 @@ class LeagueTableTracker:
         home_goals: int,
         away_goals: int,
     ) -> None:
-        """Update all tables after a finished match. Call ONCE per match."""
+        """Update all tables after a finished match.
+
+        Safe to call multiple times from different experts — deduplicates
+        internally so each match is only counted once.
+        """
+        match_key = (sk, home, away, home_goals, away_goals)
+        if match_key in self._processed:
+            return
+        self._processed.add(match_key)
+
         # Overall table
         table = self._ensure_table(sk)
         for team, gf, ga in [(home, home_goals, away_goals), (away, away_goals, home_goals)]:
@@ -186,7 +229,9 @@ class LeagueTableTracker:
         self._dirty[sk] = True
 
         # Home-only table (home team only)
-        ht = self.get_home_table(sk)
+        if sk not in self._home_tables:
+            self._home_tables[sk] = {}
+        ht = self._home_tables[sk]
         if home not in ht:
             ht[home] = _TableEntry()
         he = ht[home]
@@ -194,9 +239,12 @@ class LeagueTableTracker:
         he.ga += away_goals
         he.played += 1
         he.pts += _pts(home_goals, away_goals)
+        self._home_dirty[sk] = True
 
         # Away-only table (away team only)
-        at = self.get_away_table(sk)
+        if sk not in self._away_tables:
+            self._away_tables[sk] = {}
+        at = self._away_tables[sk]
         if away not in at:
             at[away] = _TableEntry()
         ae = at[away]
@@ -204,6 +252,7 @@ class LeagueTableTracker:
         ae.ga += home_goals
         ae.played += 1
         ae.pts += _pts(away_goals, home_goals)
+        self._away_dirty[sk] = True
 
         # Recent results for form table
         if sk not in self._recent_results:

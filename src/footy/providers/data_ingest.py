@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS fbref_team_stats (
 
 _REFEREE_STATS_DDL = """
 CREATE TABLE IF NOT EXISTS referee_stats (
-    referee_name VARCHAR NOT NULL,
+    referee VARCHAR NOT NULL,
     competition VARCHAR,
     total_matches INT DEFAULT 0,
     avg_home_goals DOUBLE,
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS referee_stats (
     home_bias DOUBLE,
     card_strictness DOUBLE,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY(referee_name, competition)
+    PRIMARY KEY(referee, competition)
 );
 """
 
@@ -509,7 +509,7 @@ def compute_referee_stats() -> int:
 
         con.execute(
             """INSERT OR REPLACE INTO referee_stats
-               (referee_name, competition, total_matches,
+               (referee, competition, total_matches,
                 avg_home_goals, avg_away_goals,
                 avg_yellow_home, avg_yellow_away,
                 avg_red_home, avg_red_away,

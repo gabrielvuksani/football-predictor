@@ -19,7 +19,7 @@ log = logging.getLogger("footy.api")
 settings = get_settings()
 
 # Validated sets used across multiple routers
-VALID_MODELS = frozenset({"v12_analyst", "v10_council"})
+VALID_MODELS = frozenset({"v13_oracle", "v10_council"})
 VALID_COMPETITIONS = frozenset({
     "PL", "PD", "SA", "BL1", "FL1", "PT1", "TL1", "DED",
     "ISL", "AUS", "ELC", "PPL", "BEL", "SL", "SWS", "DK1", "SE1", "NO1", "PL1",
@@ -51,7 +51,7 @@ def safe_error(e: Exception, context: str = "request"):
 
 def validate_model(model: str) -> str:
     """Validate and return a safe model version string."""
-    return model if model in VALID_MODELS else "v12_analyst"
+    return model if model in VALID_MODELS else "v13_oracle"
 
 
 def validate_competition(competition: str) -> str | None:

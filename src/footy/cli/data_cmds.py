@@ -157,6 +157,16 @@ def enrich_all():
 
 
 @app.command()
+def soccerdata(verbose: bool = typer.Option(True)):
+    """Fetch advanced stats via soccerdata library (FBref, Understat, ClubElo)."""
+    from footy.db import connect
+    from footy.pipeline import enrich_with_soccerdata
+    con = connect()
+    results = enrich_with_soccerdata(con, verbose=verbose)
+    console.print(f"[green]soccerdata enrichment complete: {results}[/green]")
+
+
+@app.command()
 def reset():
     """Reset all model states."""
     _pipeline().reset_states(verbose=True)

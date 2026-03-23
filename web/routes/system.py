@@ -24,7 +24,7 @@ async def api_training_status():
         version = MODEL_VERSION + "_" + datetime.now(timezone.utc).strftime("%Y%m%d")
         expert_rankings = [{"expert": e.name, "rank": i + 1} for i, e in enumerate(ALL_EXPERTS)]
     except Exception:
-        version = "v12_analyst_" + datetime.now(timezone.utc).strftime("%Y%m%d")
+        version = "v13_oracle_" + datetime.now(timezone.utc).strftime("%Y%m%d")
         expert_rankings = []
     return {
         "status": "ready", "active_version": version,
@@ -42,7 +42,7 @@ async def api_ensemble_weights():
 
     try:
         import joblib
-        model_path = Path(settings.db_path).parent / "models" / "v12_analyst.joblib"
+        model_path = Path(settings.db_path).parent / "models" / "v13_oracle.joblib"
         if model_path.exists():
             model = joblib.load(model_path)
             if hasattr(model, "weights_") and model.weights_ is not None:
@@ -140,11 +140,11 @@ async def api_model_lab():
         version = MODEL_VERSION + "_" + datetime.now(timezone.utc).strftime("%Y%m%d")
         ensemble_weights = [{"model": e.name, "weight": round(1.0 / len(ALL_EXPERTS), 4)} for e in ALL_EXPERTS]
     except Exception:
-        version = "v12_analyst_" + datetime.now(timezone.utc).strftime("%Y%m%d")
+        version = "v13_oracle_" + datetime.now(timezone.utc).strftime("%Y%m%d")
         ensemble_weights = []
     return {
         "status": "active", "active_version": version,
-        "models": ["v12_analyst"],
+        "models": ["v13_oracle"],
         "ensemble_weights": ensemble_weights, "expert_weights": ensemble_weights,
         "message": "Model lab available",
     }
@@ -202,7 +202,7 @@ async def api_expert_performance_v12():
             }
             for r in rows
         ]
-        return {"experts": experts, "total": len(experts), "model_version": "v12_analyst"}
+        return {"experts": experts, "total": len(experts), "model_version": "v13_oracle"}
     except Exception as e:
         return safe_error(e, "expert performance")
 

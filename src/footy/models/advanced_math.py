@@ -21,6 +21,7 @@ from __future__ import annotations
 # Re-export all functions from submodules for backward compatibility
 from footy.models.math import (
     adaptive_ewma,
+    apply_temperature_scaling,
     bivariate_poisson_pmf,
     beta_binomial_shrink,
     bradley_terry_probs,
@@ -62,6 +63,7 @@ from footy.models.math import (
 
 __all__ = [
     "adaptive_ewma",
+    "apply_temperature_scaling",
     "bivariate_poisson_pmf",
     "beta_binomial_shrink",
     "bradley_terry_probs",

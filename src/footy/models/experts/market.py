@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from footy.models.experts._base import Expert, ExpertResult, _f, _raw, _implied
+from footy.models.experts._base import Expert, ExpertResult, _f, _raw, _implied, _power_implied
 from footy.models.advanced_math import logit, logit_space_delta, remove_overround, odds_entropy, odds_dispersion
 
 

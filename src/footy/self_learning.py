@@ -938,6 +938,15 @@ class SelfLearningLoop:
                     expert_probs=expert_probs,
                 )
 
+        # ---- Hedge weight update for each expert ----
+        if expert_predictions:
+            for expert_name, expert_probs in expert_predictions.items():
+                self.hedge_update(expert_name, expert_probs, actual_outcome)
+
+        # ---- Per-league temperature calibration ----
+        if league:
+            self.update_league_temperature(league, predicted_probs, actual_outcome)
+
         # Periodic cache clear to prevent memory bloat
         self._prediction_count_since_cache_clear += 1
         if self._prediction_count_since_cache_clear >= self._cache_clear_interval:
@@ -973,6 +982,8 @@ class SelfLearningLoop:
             "overall_accuracy": round(self.overall_performance.accuracy, 4),
             "overall_ece": round(self.overall_performance.calibration_error, 4),
             "n_predictions": self.overall_performance.n_predictions,
+            "hedge_weights": self.get_hedge_weights(),
+            "league_temperature": self.get_league_temperature(league) if league else 1.0,
         }
 
     def get_optimal_expert_weights(
@@ -1115,6 +1126,203 @@ class SelfLearningLoop:
             for key in keys_to_remove:
                 del self.context_weights[key]
 
+    # ═══════════════════════════════════════════════════════════════
+    # HEDGE ALGORITHM — ONLINE EXPERT WEIGHTING
+    # ═══════════════════════════════════════════════════════════════
+
+    def hedge_update(
+        self,
+        expert_name: str,
+        predicted_probs: list[float],
+        actual_outcome: int,
+        eta: float = 0.1,
+    ) -> None:
+        """Multiplicative weight update (Hedge algorithm).
+
+        After each scored match, update the expert's Hedge weight using the
+        exponential-weights method of Freund & Schapire (1997).  The loss for
+        the expert is the negative log-probability it assigned to the outcome
+        that actually occurred, clamped to avoid numerical blow-up.
+
+        loss = -log(expert.prob[actual_outcome])
+        expert.weight *= exp(-eta * loss)
+
+        All weights are re-normalised after every update so they sum to 1.
+        The learning rate *eta* controls the trade-off between reactivity
+        (large eta — fast adaptation) and stability (small eta — smooth).
+
+        This is provably optimal for the best-expert-in-hindsight benchmark
+        (regret bound O(sqrt(T log N))).
+
+        Args:
+            expert_name: Identifier for the expert being updated.
+            predicted_probs: [p_home, p_draw, p_away] the expert predicted.
+            actual_outcome: 0 = Home, 1 = Draw, 2 = Away.
+            eta: Learning rate (default 0.1).  Smaller values are more
+                 conservative; larger values react faster to recent results.
+        """
+        if not hasattr(self, "_hedge_weights"):
+            self._hedge_weights: dict[str, float] = {}
+        if not hasattr(self, "_hedge_cumulative_loss"):
+            self._hedge_cumulative_loss: dict[str, float] = {}
+
+        # Initialise expert if unseen
+        if expert_name not in self._hedge_weights:
+            self._hedge_weights[expert_name] = 1.0
+            self._hedge_cumulative_loss[expert_name] = 0.0
+
+        # Compute log-loss for this expert on this match
+        prob_actual = max(predicted_probs[actual_outcome], 1e-12)
+        loss = -math.log(prob_actual)
+        # Clamp to avoid extreme weight collapse on a single bad prediction
+        loss = min(loss, 10.0)
+
+        self._hedge_cumulative_loss[expert_name] += loss
+
+        # Multiplicative weight update
+        self._hedge_weights[expert_name] *= math.exp(-eta * loss)
+
+        # Re-normalise all weights so they sum to 1
+        total = sum(self._hedge_weights.values())
+        if total > 0:
+            for name in self._hedge_weights:
+                self._hedge_weights[name] /= total
+
+    def get_hedge_weights(self) -> dict[str, float]:
+        """Return current Hedge-algorithm weights for all tracked experts.
+
+        Returns a dict mapping expert name to its normalised weight.  If the
+        Hedge algorithm has not been run yet (no ``hedge_update`` calls),
+        returns an empty dict.
+        """
+        if not hasattr(self, "_hedge_weights"):
+            return {}
+        return dict(self._hedge_weights)
+
+    # ═══════════════════════════════════════════════════════════════
+    # PER-LEAGUE TEMPERATURE CALIBRATION
+    # ═══════════════════════════════════════════════════════════════
+
+    def get_league_temperature(self, league: str) -> float:
+        """Return a per-league temperature scaling parameter.
+
+        Temperature > 1 softens probabilities (more uncertainty, good for
+        upset-heavy leagues like the Premier League).
+        Temperature < 1 sharpens probabilities (more decisive, good for
+        leagues with strong favourites).
+
+        The temperature is learned online from calibration error: if the
+        current temperature leads to over-confidence (calibration error
+        positive), the temperature is increased; if under-confident, it
+        is decreased.  A simple gradient step is applied each time a new
+        calibration measurement is available.
+
+        Default temperature for an unknown league is 1.0 (no scaling).
+
+        Args:
+            league: Competition code (e.g. "PL", "BL1", "PD").
+
+        Returns:
+            Temperature float, typically in range [0.5, 2.0].
+        """
+        if not hasattr(self, "_league_temperatures"):
+            self._league_temperatures: dict[str, float] = {}
+        if not hasattr(self, "_league_calibration_errors"):
+            self._league_calibration_errors: dict[str, list[float]] = {}
+
+        if league not in self._league_temperatures:
+            self._league_temperatures[league] = 1.0
+            self._league_calibration_errors[league] = []
+
+        return self._league_temperatures[league]
+
+    def update_league_temperature(
+        self,
+        league: str,
+        predicted_probs: list[float],
+        actual_outcome: int,
+        lr: float = 0.02,
+    ) -> float:
+        """Update per-league temperature after observing a scored match.
+
+        Adjusts temperature to minimise calibration error for this league.
+        The calibration signal is derived from the gap between the predicted
+        probability of the actual outcome and the binary indicator (1.0).
+
+        If predicted_probs[actual_outcome] is too high on average (over-
+        confident), temperature is increased to soften future predictions.
+        If too low (under-confident), temperature is decreased to sharpen.
+
+        Args:
+            league: Competition code.
+            predicted_probs: [p_home, p_draw, p_away] council prediction.
+            actual_outcome: 0 = Home, 1 = Draw, 2 = Away.
+            lr: Learning rate for temperature adjustment (default 0.02).
+
+        Returns:
+            Updated temperature for the league.
+        """
+        if not hasattr(self, "_league_temperatures"):
+            self._league_temperatures = {}
+        if not hasattr(self, "_league_calibration_errors"):
+            self._league_calibration_errors = {}
+
+        if league not in self._league_temperatures:
+            self._league_temperatures[league] = 1.0
+            self._league_calibration_errors[league] = []
+
+        # Calibration error for this single prediction:
+        # positive means over-confident (predicted prob > reality)
+        prob_actual = predicted_probs[actual_outcome]
+        # For the actual outcome the ideal prob is 1.0; calibration error
+        # is the mean gap between confidence and accuracy across many
+        # predictions.  As a proxy per-match: max(predicted_probs) - correct.
+        max_prob = max(predicted_probs)
+        correct = 1.0 if int(np.argmax(predicted_probs)) == actual_outcome else 0.0
+        cal_error = max_prob - correct
+
+        self._league_calibration_errors[league].append(cal_error)
+        # Keep a rolling window of 200 observations
+        if len(self._league_calibration_errors[league]) > 200:
+            self._league_calibration_errors[league] = self._league_calibration_errors[league][-200:]
+
+        # Compute running mean calibration error for gradient direction
+        avg_cal_error = float(np.mean(self._league_calibration_errors[league]))
+
+        # Gradient step: if avg_cal_error > 0 (over-confident) raise T;
+        # if < 0 (under-confident) lower T.
+        temperature = self._league_temperatures[league]
+        temperature += lr * avg_cal_error
+        # Clamp to sensible range
+        temperature = max(0.5, min(2.0, temperature))
+
+        self._league_temperatures[league] = temperature
+        return temperature
+
+    def apply_temperature(self, probs: list[float], league: str) -> list[float]:
+        """Apply per-league temperature scaling to a probability triplet.
+
+        Divides the log-probabilities by the league temperature, then
+        re-exponentiates and normalises.  Temperature = 1.0 is a no-op.
+
+        Args:
+            probs: [p_home, p_draw, p_away] raw probabilities.
+            league: Competition code.
+
+        Returns:
+            Temperature-scaled and normalised probability triplet.
+        """
+        T = self.get_league_temperature(league)
+        if abs(T - 1.0) < 1e-6:
+            return list(probs)
+
+        # Log-space scaling
+        log_probs = [math.log(max(p, 1e-12)) / T for p in probs]
+        max_lp = max(log_probs)
+        exp_probs = [math.exp(lp - max_lp) for lp in log_probs]
+        total = sum(exp_probs)
+        return [p / total for p in exp_probs]
+
     def set_retraining_thresholds(
         self,
         accuracy_threshold: float = 0.38,
@@ -1171,6 +1379,10 @@ class SelfLearningLoop:
             "overall_accuracy": self.overall_performance.accuracy,
             "overall_n": self.overall_performance.n_predictions,
             "drift_detected": self.drift_detector.is_drifting,
+            "hedge_weights": self.get_hedge_weights(),
+            "league_temperatures": dict(self._league_temperatures)
+            if hasattr(self, "_league_temperatures")
+            else {},
         }
         for name, tracker in self.expert_trackers.items():
             data["expert_weights"][name] = {

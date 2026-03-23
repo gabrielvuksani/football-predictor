@@ -593,6 +593,58 @@ CREATE INDEX IF NOT EXISTS idx_sofifa_team ON sofifa_team_ratings(team, competit
 CREATE INDEX IF NOT EXISTS idx_venue_stats_team ON venue_stats(team);
 CREATE INDEX IF NOT EXISTS idx_referee_stats_ref ON referee_stats(referee);
 CREATE INDEX IF NOT EXISTS idx_feature_cache_match ON feature_cache(match_id);
+
+-- v13: Manager tracking (derived from performance shifts)
+CREATE TABLE IF NOT EXISTS manager_changes (
+  team VARCHAR NOT NULL,
+  competition VARCHAR,
+  detected_date TIMESTAMP,
+  performance_shift DOUBLE,
+  direction VARCHAR,  -- 'improvement' or 'decline'
+  PRIMARY KEY(team, detected_date)
+);
+
+-- v13: Betting line movement tracking
+CREATE TABLE IF NOT EXISTS betting_movements (
+  match_id BIGINT,
+  bookmaker VARCHAR,
+  market VARCHAR DEFAULT '1x2',
+  open_home DOUBLE, open_draw DOUBLE, open_away DOUBLE,
+  close_home DOUBLE, close_draw DOUBLE, close_away DOUBLE,
+  movement_home DOUBLE, movement_draw DOUBLE, movement_away DOUBLE,
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(match_id, bookmaker, market)
+);
+
+-- v13: News sentiment per team
+CREATE TABLE IF NOT EXISTS news_sentiment (
+  team VARCHAR NOT NULL,
+  date DATE NOT NULL,
+  tone_score DOUBLE,
+  volume INT,
+  top_themes VARCHAR,
+  source VARCHAR DEFAULT 'gdelt',
+  PRIMARY KEY(team, date, source)
+);
+
+-- v13: Backtest results history
+CREATE TABLE IF NOT EXISTS backtest_results (
+  run_id VARCHAR PRIMARY KEY,
+  run_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  model_version VARCHAR,
+  total_matches INT,
+  rps DOUBLE,
+  log_loss DOUBLE,
+  accuracy DOUBLE,
+  brier DOUBLE,
+  ece DOUBLE,
+  upset_recall DOUBLE,
+  vs_market_rps DOUBLE,
+  config_json VARCHAR
+);
+
+CREATE INDEX IF NOT EXISTS idx_betting_movements_match ON betting_movements(match_id);
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_team ON news_sentiment(team, date);
 """
 
 # Columns that may need adding to older match_extras tables
@@ -665,17 +717,45 @@ def _migrate_columns(con):
         log.debug("migrate prediction_scores lookup: %s", e)
 
 
+import threading
+
 _connection: duckdb.DuckDBPyConnection | None = None
 _schema_initialized: bool = False
+_lock = threading.Lock()
+_local = threading.local()
 
 
 def connect() -> duckdb.DuckDBPyConnection:
+    """Get a thread-safe DuckDB connection.
+
+    Uses a single primary connection with thread-local cursors.
+    DuckDB supports concurrent reads but serializes writes,
+    which is fine for our read-heavy workload.
+    """
     global _connection, _schema_initialized
-    s = settings()
-    if _connection is None:
-        _connection = duckdb.connect(s.db_path)
-    if not _schema_initialized:
-        _connection.execute(SCHEMA_SQL)
-        _migrate_columns(_connection)
-        _schema_initialized = True
+    with _lock:
+        s = settings()
+        if _connection is None:
+            _connection = duckdb.connect(s.db_path)
+        if not _schema_initialized:
+            _connection.execute(SCHEMA_SQL)
+            _migrate_columns(_connection)
+            _schema_initialized = True
+    # Return thread-local cursor for concurrent access
+    if not hasattr(_local, 'cursor') or _local.cursor is None:
+        _local.cursor = _connection.cursor()
+    return _local.cursor
+
+
+def connect_primary() -> duckdb.DuckDBPyConnection:
+    """Get the primary connection (for schema operations and single-threaded use)."""
+    global _connection, _schema_initialized
+    with _lock:
+        s = settings()
+        if _connection is None:
+            _connection = duckdb.connect(s.db_path)
+        if not _schema_initialized:
+            _connection.execute(SCHEMA_SQL)
+            _migrate_columns(_connection)
+            _schema_initialized = True
     return _connection

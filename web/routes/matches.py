@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api", tags=["matches"])
 @router.get("/matches")
 async def api_matches(
     days: int = Query(14, ge=1, le=90),
-    model: str = Query("v12_analyst"),
+    model: str = Query("v13_oracle"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
 ):
@@ -84,7 +84,7 @@ async def api_matches(
 
 
 @router.get("/matches/{match_id}")
-async def api_match_detail(match_id: int, model: str = Query("v12_analyst")):
+async def api_match_detail(match_id: int, model: str = Query("v13_oracle")):
     """Get detailed match information with full prediction breakdown."""
     try:
         db = con()

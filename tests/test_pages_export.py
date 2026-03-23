@@ -162,9 +162,9 @@ def _create_export_test_db(path: Path) -> None:
     """)
     db.execute("""
         INSERT INTO predictions VALUES
-        (1001, 'v10_council', 0.57, 0.24, 0.19, 1.7, 1.0,
+        (1001, 'v13_oracle', 0.57, 0.24, 0.19, 1.7, 1.0,
          '{"btts":0.58,"o25":0.62,"predicted_score":[2,1],"lambda_home":1.7,"lambda_away":1.0}', CURRENT_TIMESTAMP),
-        (1002, 'v10_council', 0.54, 0.26, 0.20, 1.6, 0.9,
+        (1002, 'v13_oracle', 0.54, 0.26, 0.20, 1.6, 0.9,
          '{"btts":0.51,"o25":0.56,"predicted_score":[2,1],"lambda_home":1.6,"lambda_away":0.9}', CURRENT_TIMESTAMP)
     """)
     db.execute("""
@@ -176,10 +176,10 @@ def _create_export_test_db(path: Path) -> None:
     """)
     db.execute("""
         INSERT INTO prediction_scores VALUES
-        (1002, 'v10_council', CURRENT_TIMESTAMP, 0, 0.616, 0.31, TRUE, 0.4, 1.6, 0.9, TRUE, TRUE, TRUE, 0.51, 0.56, 2, 1)
+        (1002, 'v13_oracle', CURRENT_TIMESTAMP, 0, 0.616, 0.31, TRUE, 0.4, 1.6, 0.9, TRUE, TRUE, TRUE, 0.51, 0.56, 2, 1)
     """)
     db.execute("""
-        INSERT INTO metrics VALUES ('v10_council', 1, 0.616, 0.31, 1.0)
+        INSERT INTO metrics VALUES ('v13_oracle', 1, 0.616, 0.31, 1.0)
     """)
     db.execute("""
         INSERT INTO expert_cache VALUES
@@ -192,15 +192,15 @@ def _create_export_test_db(path: Path) -> None:
     """)
     db.execute("""
         INSERT INTO model_deployments VALUES
-        ('v10_council', 'v10_council_20260321', CURRENT_TIMESTAMP, NULL, 'test', '{"accuracy":1.0}')
+        ('v13_oracle', 'v13_oracle_20260321', CURRENT_TIMESTAMP, NULL, 'test', '{"accuracy":1.0}')
     """)
     db.execute("""
         INSERT INTO retraining_schedules VALUES
-        ('v10_council', 10, 0.01, TRUE, CURRENT_TIMESTAMP, 1, NULL)
+        ('v13_oracle', 10, 0.01, TRUE, CURRENT_TIMESTAMP, 1, NULL)
     """)
     db.execute("""
         INSERT INTO model_training_records VALUES
-        (1, 'v10_council_20260321', 'v10_council', CURRENT_TIMESTAMP, 3650, 1200, 240,
+        (1, 'v13_oracle_20260321', 'v13_oracle', CURRENT_TIMESTAMP, 3650, 1200, 240,
          '{"accuracy":1.0,"logloss":0.616}', '{"accuracy":1.0,"logloss":0.616}', NULL, 0.025, TRUE, CURRENT_TIMESTAMP, 'test run')
     """)
     db.close()
@@ -296,7 +296,7 @@ def test_pages_export_writes_static_tab_payloads(tmp_path: Path, monkeypatch: py
         assert file_path.exists(), f"Missing exported file: {file_path}"
 
     training = json.loads((out_dir / "api" / "training" / "status.json").read_text())
-    assert training["active_version"] == "v10_council_20260321"
+    assert training["active_version"] == "v13_oracle_20260321"
     assert "expert_rankings" in training
     assert "drift" in training
 
