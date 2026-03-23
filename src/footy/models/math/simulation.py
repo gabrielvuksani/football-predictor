@@ -16,10 +16,8 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from typing import Sequence
 
 import numpy as np
-from scipy.stats import poisson as poisson_dist
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -48,7 +46,6 @@ def monte_carlo_simulate(
         Dict with p_home, p_draw, p_away, p_btts, p_o15, p_o25, p_o35,
         p_cs, mean_total, var_total, most_likely_score
     """
-    from footy.models.math.distributions import bivariate_poisson_pmf
 
     if rng is None:
         rng = np.random.default_rng()  # v12: use random seed in production

@@ -192,9 +192,9 @@ def ingest_history_fdcuk(n_seasons: int = 8, verbose: bool = True) -> int:
                         return None
 
                 # Odds columns: try multiple sources, fallback
-                odds_h = _g('PSH') or _g('B365H') or _g('BbMxH')
-                odds_d = _g('PSD') or _g('B365D') or _g('BbMxD')
-                odds_a = _g('PSA') or _g('B365A') or _g('BbMxA')
+                _g('PSH') or _g('B365H') or _g('BbMxH')
+                _g('PSD') or _g('B365D') or _g('BbMxD')
+                _g('PSA') or _g('B365A') or _g('BbMxA')
                 avg_h = _g('AvgH') or _g('BbAvH')
                 avg_d = _g('AvgD') or _g('BbAvD')
                 avg_a = _g('AvgA') or _g('BbAvA')

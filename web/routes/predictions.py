@@ -5,13 +5,11 @@ import csv
 import io
 import json
 import math
-import time
-from pathlib import Path
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import con, safe_error, validate_model, parse_notes, settings, log
+from . import con, safe_error, validate_model, parse_notes
 
 router = APIRouter(prefix="/api", tags=["predictions"])
 

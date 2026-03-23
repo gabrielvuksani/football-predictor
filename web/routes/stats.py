@@ -94,8 +94,8 @@ async def api_stats():
         """).fetchone()
 
         avg_conf_row = db.execute("""
-            SELECT AVG(confidence), COUNT(*)
-            FROM predictions WHERE model_version = 'v13_oracle' AND confidence IS NOT NULL
+            SELECT AVG(GREATEST(p_home, p_draw, p_away)), COUNT(*)
+            FROM predictions WHERE model_version = 'v13_oracle' AND p_home IS NOT NULL
         """).fetchone()
         avg_confidence = round(float(avg_conf_row[0]), 4) if avg_conf_row and avg_conf_row[0] is not None else 0.0
         n_predictions = int(avg_conf_row[1]) if avg_conf_row and avg_conf_row[1] else 0

@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from datetime import datetime, timezone
 from typing import Optional
 
 import duckdb
 import httpx
 
-from footy.providers.ratelimit import RateLimiter, TRANSIENT_ERRORS
+from footy.providers.ratelimit import RateLimiter
 from footy.team_mapping import get_canonical_name
 
 log = logging.getLogger(__name__)

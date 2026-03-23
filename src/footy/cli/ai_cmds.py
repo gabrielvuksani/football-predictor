@@ -132,11 +132,11 @@ def extract_news(team: str = None, days_back: int = 2):
     console.print(f"  Headlines: {signal['headline_count']}")
     console.print(f"  Summary: {signal.get('summary', 'N/A')}")
     if signal.get('key_notes'):
-        console.print(f"  Key Notes:")
+        console.print("  Key Notes:")
         for note in signal['key_notes']:
             console.print(f"    - {note}")
     if signal.get('likely_absences'):
-        console.print(f"  Likely Absences:")
+        console.print("  Likely Absences:")
         for absence in signal['likely_absences']:
             console.print(f"    - {absence}")
 
@@ -159,11 +159,11 @@ def analyze_form(team: str = None, matches: int = 10):
         console.print(f"  Record: {form['record']}")
     console.print(f"  Momentum: {form['momentum']:+.1f}")
     if form.get('key_trends'):
-        console.print(f"  Key Trends:")
+        console.print("  Key Trends:")
         for trend in form['key_trends']:
             console.print(f"    - {trend}")
     if form.get('concern_areas'):
-        console.print(f"  Concern Areas:")
+        console.print("  Concern Areas:")
         for area in form['concern_areas']:
             console.print(f"    - {area}")
 
@@ -197,11 +197,11 @@ def explain_match(
         f" vs [bold]{away_team} ({away_prob:.1%})[/bold] "
         f"(Draw: {draw_prob:.1%})"
     )
-    console.print(f"\n[cyan]Explanation:[/cyan]")
+    console.print("\n[cyan]Explanation:[/cyan]")
     console.print(f"  {explanation.get('explanation', 'N/A')}")
 
     if explanation.get('key_factors'):
-        console.print(f"\n[cyan]Key Factors:[/cyan]")
+        console.print("\n[cyan]Key Factors:[/cyan]")
         for factor in explanation['key_factors']:
             console.print(f"  - {factor}")
 

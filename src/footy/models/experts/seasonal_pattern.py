@@ -14,7 +14,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from footy.models.experts._base import Expert, ExpertResult, _is_finished, _f
+from footy.models.experts._base import Expert, ExpertResult, _f
 
 
 class SeasonalPatternExpert(Expert):

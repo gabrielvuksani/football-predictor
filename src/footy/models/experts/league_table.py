@@ -55,7 +55,7 @@ class LeagueTableExpert(Expert):
             h, a = r.home_team, r.away_team
             sk = tracker.season_key(r)
 
-            table = tracker.get_table(sk)
+            tracker.get_table(sk)
             n_teams = tracker.n_teams(sk)
 
             h_entry = tracker.get_entry(sk, h)

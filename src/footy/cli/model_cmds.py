@@ -85,7 +85,7 @@ def retrain(force: bool = False):
 
     if action == "none":
         check = result.get("check", {})
-        console.print(f"[yellow]No retraining needed[/yellow]")
+        console.print("[yellow]No retraining needed[/yellow]")
         if check.get("status") == "waiting":
             console.print(f"  New matches: {check.get('new_matches', '?')}/{check.get('threshold', '?')}")
             console.print(f"  Ready in ~{check.get('ready_in', '?')} more finished matches")
@@ -95,7 +95,7 @@ def retrain(force: bool = False):
         console.print(f"  Accuracy: {m.get('accuracy', 0):.1%}  LogLoss: {m.get('logloss', 0):.4f}")
         console.print(f"  Improvement: {result.get('improvement_pct', 0) * 100:+.2f}%")
     elif action == "rolled_back":
-        console.print(f"[red]Rolled back[/red] — new model was worse")
+        console.print("[red]Rolled back[/red] — new model was worse")
         m = result.get("metrics", {})
         console.print(f"  New accuracy: {m.get('accuracy', 0):.1%}  LogLoss: {m.get('logloss', 0):.4f}")
         console.print(f"  Regression: {result.get('improvement_pct', 0) * 100:+.2f}%")
@@ -114,15 +114,15 @@ def drift_check():
     drift = manager.detect_drift("v13_oracle")
 
     if drift.get("reason") == "insufficient_data":
-        console.print(f"[yellow]Not enough data for drift detection[/yellow]")
+        console.print("[yellow]Not enough data for drift detection[/yellow]")
         console.print(f"  Baseline matches: {drift.get('baseline_n', 0)}")
         console.print(f"  Recent matches: {drift.get('recent_n', 0)}")
         return
 
     if drift.get("drifted"):
-        console.print(f"[red bold]DRIFT DETECTED[/red bold]")
+        console.print("[red bold]DRIFT DETECTED[/red bold]")
     else:
-        console.print(f"[green]No drift detected[/green]")
+        console.print("[green]No drift detected[/green]")
 
     console.print(f"  Baseline accuracy (>60d ago): {drift.get('baseline_acc', 0):.1%} ({drift.get('baseline_n', 0)} matches)")
     console.print(f"  Recent accuracy  (<60d):      {drift.get('recent_acc', 0):.1%} ({drift.get('recent_n', 0)} matches)")

@@ -7,7 +7,7 @@ from collections import defaultdict
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-from . import con, safe_error, validate_competition, VALID_COMPETITIONS
+from . import con, safe_error, validate_competition
 
 router = APIRouter(prefix="/api/insights", tags=["insights"])
 
@@ -23,10 +23,10 @@ async def api_value_bets(min_edge: float = Query(0.03, ge=0, le=0.5)):
     try:
         rows = db.execute("""
             SELECT m.match_id, m.home_team, m.away_team, m.competition, m.utc_date,
-                   p.p_home, p.p_draw, p.p_away, p.confidence,
-                   COALESCE(e.psh, e.b365h) AS odds_h,
-                   COALESCE(e.psd, e.b365d) AS odds_d,
-                   COALESCE(e.psa, e.b365a) AS odds_a
+                   p.p_home, p.p_draw, p.p_away, GREATEST(p.p_home, p.p_draw, p.p_away) AS confidence,
+                   e.b365h AS odds_h,
+                   e.b365d AS odds_d,
+                   e.b365a AS odds_a
             FROM matches m
             JOIN predictions p ON m.match_id = p.match_id
             LEFT JOIN match_extras e ON m.match_id = e.match_id

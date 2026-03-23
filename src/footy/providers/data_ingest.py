@@ -8,10 +8,8 @@ so a single source failure never blocks the rest.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from footy.config import settings
@@ -19,7 +17,7 @@ from footy.db import connect
 from footy.normalize import canonical_team_name
 from footy.providers.fbref_scraper import FBrefProvider, FBREF_LEAGUES
 from footy.providers.transfermarkt import TransfermarktProvider, TRANSFERMARKT_LEAGUES
-from footy.providers.fdcuk_history import DIV_MAP, download_division_csv, season_codes_last_n
+from footy.providers.fdcuk_history import DIV_MAP, download_division_csv
 
 log = logging.getLogger(__name__)
 
@@ -757,9 +755,9 @@ def extract_referee_from_fdcuk() -> int:
             # DuckDB's execute doesn't return rowcount directly for UPDATE;
             # count by checking if the update matched
             try:
-                affected = result.fetchone()
+                result.fetchone()
             except Exception:
-                affected = None
+                pass
             total_updated += 1
 
     log.info("extract_referee: attempted update on %d rows across %d CSV files", total_updated, len(combos))

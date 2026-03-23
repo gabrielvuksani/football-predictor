@@ -3,7 +3,7 @@ Phase 3: Ollama-powered match insights and analysis
 
 Combines GDELT news, local LLM, and cached predictions for:
 - Form analysis summaries
-- Team news signals 
+- Team news signals
 - Match explanations
 - Predictive insights
 """
@@ -13,10 +13,8 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import httpx
-import pandas as pd
 
 from footy.cache import get_cache, cache_wrapper
 from footy.db import connect
@@ -54,11 +52,11 @@ def _model_version() -> str:
 def analyze_team_form(team: str, matches_window: int = 10) -> dict:
     """
     Analyze recent form for a team using LLM.
-    
+
     Args:
         team: Canonical team name
         matches_window: How many recent matches to consider
-    
+
     Returns:
         {
             "team": str,
@@ -70,14 +68,14 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
         }
     """
     con = connect()
-    
+
     # Get recent matches for this team
     query = """
-    SELECT 
-        utc_date, 
-        home_team, 
-        away_team, 
-        home_goals, 
+    SELECT
+        utc_date,
+        home_team,
+        away_team,
+        home_goals,
         away_goals,
         status
     FROM matches
@@ -87,7 +85,7 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
     LIMIT ?
     """
     results = con.execute(query, [team, team, matches_window]).df()
-    
+
     if results.empty:
         return {
             "team": team,
@@ -97,14 +95,14 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
             "concern_areas": [],
             "last_updated": datetime.now().isoformat()
         }
-    
+
     # Calculate stats
     wins = 0
     draws = 0
     losses = 0
     goals_for = 0
     goals_against = 0
-    
+
     for _, row in results.iterrows():
         if row['home_team'] == team:
             goals_for += row['home_goals']
@@ -124,19 +122,19 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
                 draws += 1
             else:
                 losses += 1
-    
+
     record = f"{wins}W-{draws}D-{losses}L"
     gd = goals_for - goals_against
-    
+
     # Calculate form metrics from data
     def infer_form_from_record(w, d, l, gf, ga, total):
         """Generate reasonable form assessment from raw stats"""
         if total == 0:
             return "No recent matches", 0.0
-        
+
         points = (w * 3 + d) / (total * 3)  # Proportion of max possible points
         gd_per_match = gd / total if total > 0 else 0
-        
+
         if points >= 0.8 and gd_per_match >= 0.5:
             return "Excellent", 0.8
         elif points >= 0.6 and gd_per_match >= 0.2:
@@ -145,9 +143,9 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
             return "Mixed", 0.0
         else:
             return "Poor", -0.5
-    
+
     form_status, momentum = infer_form_from_record(wins, draws, losses, goals_for, goals_against, matches_window)
-    
+
     # Infer trends and concerns from data
     trends = []
     concerns = []
@@ -161,12 +159,12 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
         trends.append("Struggling")
     else:
         trends.append("Inconsistent")
-    
+
     if gd > 0:
         trends.append(f"Positive goal differential (+{gd})")
     elif gd < 0:
         trends.append(f"Negative goal differential ({gd})")
-    
+
     # Return form analysis
     result = {
         "team": team,
@@ -179,7 +177,7 @@ def analyze_team_form(team: str, matches_window: int = 10) -> dict:
         "goals_against": goals_against,
         "last_updated": datetime.now().isoformat()
     }
-    
+
     # Try to enhance with Ollama if available
     prompt = {
         "role": "user",
@@ -192,7 +190,7 @@ Return ONLY valid JSON:
 {{"recent_form": "Excellent|Good|Mixed|Poor", "key_trends": ["trend1", "trend2"], "momentum": float, "concern_areas": ["area1", "area2"]}}
 """
     }
-    
+
     try:
         response = chat([prompt])
         if response and response.strip():
@@ -206,7 +204,7 @@ Return ONLY valid JSON:
         pass
     except Exception as e:
         log.debug(f"Ollama form analysis optional enhancement failed: {e}")
-    
+
     return result
 
 
@@ -219,11 +217,11 @@ Return ONLY valid JSON:
 def extract_team_news_signal(team: str, days_back: int = 2) -> dict:
     """
     Fetch team news from GDELT and extract signal using Ollama.
-    
+
     Args:
         team: Canonical team name
         days_back: How many days of news to fetch
-    
+
     Returns:
         {
             "team": str,
@@ -237,7 +235,7 @@ def extract_team_news_signal(team: str, days_back: int = 2) -> dict:
     try:
         # Fetch news from GDELT
         news_df = fetch_team_news(team, days_back=days_back, max_records=20)
-        
+
         if news_df.empty:
             log.info(f"No news found for {team}")
             return {
@@ -248,13 +246,13 @@ def extract_team_news_signal(team: str, days_back: int = 2) -> dict:
                 "headline_count": 0,
                 "last_updated": datetime.now().isoformat()
             }
-        
+
         # Convert to list of dicts for LLM
         headlines = news_df[["title", "domain", "seendate"]].to_dict("records")
-        
+
         # Extract signal using Ollama
         signal = extract_news_signal(team, headlines)
-        
+
         return {
             "team": team,
             "availability_score": signal.availability_score,
@@ -283,8 +281,8 @@ def extract_team_news_signal(team: str, days_back: int = 2) -> dict:
 
 @cache_wrapper(ttl_hours=24)
 def explain_match(
-    match_id: int, 
-    home_team: str, 
+    match_id: int,
+    home_team: str,
     away_team: str,
     home_pred: float,
     draw_pred: float,
@@ -293,14 +291,14 @@ def explain_match(
 ) -> dict:
     """
     Generate detailed LLM explanation for why a match has given probabilities.
-    
+
     Args:
         match_id: Database match ID
         home_team: Home team name
         away_team: Away team name
         home_pred, draw_pred, away_pred: Model probabilities
         model_version: Which model is predicting
-    
+
     Returns:
         {
             "match_id": int,
@@ -311,7 +309,7 @@ def explain_match(
         }
     """
     con = connect()
-    
+
     # Get match details
     try:
         match = con.execute("""
@@ -319,7 +317,7 @@ def explain_match(
             FROM matches m
             WHERE m.match_id = ?
         """, [match_id]).df()
-        
+
         if match.empty:
             return {
                 "match_id": match_id,
@@ -328,21 +326,20 @@ def explain_match(
                 "confidence_level": "Low",
                 "last_updated": datetime.now().isoformat()
             }
-        
-        match_row = match.iloc[0]
-        
+
+        match.iloc[0]
+
     except Exception as e:
         log.warning(f"Match lookup failed: {e}")
-        match_row = {}
-    
+
     # Get form analyses for both teams
     home_form = analyze_team_form(home_team)
     away_form = analyze_team_form(away_team)
-    
+
     # Get news signals
     home_news = extract_team_news_signal(home_team)
     away_news = extract_team_news_signal(away_team)
-    
+
     # Get H2H if available
     h2h_text = ""
     try:
@@ -354,9 +351,9 @@ def explain_match(
         if not h2h.empty:
             row = h2h.iloc[0]
             h2h_text = f"H2H: {row['team_a_wins']}W-{row['draws']}D-{row['team_b_wins']}W ({row['total_matches']} games)"
-    except:
+    except Exception:
         pass
-    
+
     # Build context for LLM
     context = f"""
 Match: {home_team} vs {away_team}
@@ -386,7 +383,7 @@ Return JSON:
     "confidence_level": "Very High|High|Medium|Low"
 }}
 """
-    
+
     try:
         response = chat([{"role": "user", "content": context}])
         data = json.loads(response)
@@ -425,14 +422,14 @@ def get_insights_status() -> dict:
     try:
         cache = get_cache()
         cache_stats = cache.get_stats()
-        
+
         # Try an LLM health check
         try:
             response = chat([{"role": "user", "content": "Respond with 'OK'"}])
             llm_health = "OK" if response.strip() == "OK" else "Degraded"
         except Exception as e:
             llm_health = f"Error: {str(e)[:30]}"
-        
+
         return {
             "status": "Ready",
             "llm_health": llm_health,

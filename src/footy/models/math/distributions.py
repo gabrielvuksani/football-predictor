@@ -19,7 +19,6 @@ References:
 from __future__ import annotations
 
 import math
-from typing import Sequence
 
 import numpy as np
 from scipy.stats import poisson as poisson_dist
@@ -238,8 +237,7 @@ def _com_poisson_normalizing(
 
     log_z_terms = []
     log_lam = math.log(max(lam, 1e-15))
-    prev_contribution = float("inf")
-    converged = False
+    float("inf")
 
     for k in range(adaptive_k + 1):
         log_term = k * log_lam - nu * gammaln(k + 1)
@@ -250,7 +248,6 @@ def _com_poisson_normalizing(
             current_max = max(log_z_terms)
             relative = log_term - current_max
             if relative < -30.0:  # exp(-30) ~ 1e-13, negligible
-                converged = True
                 break
 
     max_log = max(log_z_terms)

@@ -24,10 +24,13 @@ def _db_has_matches():
     except Exception:
         return False
 
-pytestmark = pytest.mark.skipif(
-    not _db_has_matches(),
-    reason="Live database not present or empty — skipping smoke tests",
-)
+pytestmark = [
+    pytest.mark.smoke,
+    pytest.mark.skipif(
+        not _db_has_matches(),
+        reason="Live database not present or empty — skipping smoke tests",
+    ),
+]
 
 
 @pytest.fixture(scope="module")

@@ -1,12 +1,11 @@
 """Health, status, and data freshness endpoints."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
 
-from . import con, safe_error, log
+from . import con, safe_error
 
 router = APIRouter(prefix="/api", tags=["health"])
 

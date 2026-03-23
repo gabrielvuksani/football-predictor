@@ -185,7 +185,7 @@ def ingest_upcoming_odds(verbose: bool = True) -> int:
             continue
 
         # Try UPDATE first (preserve existing extras data), INSERT only if no row
-        updated = con.execute(
+        con.execute(
             """UPDATE match_extras
                SET b365h = COALESCE(?, b365h),
                    b365d = COALESCE(?, b365d),

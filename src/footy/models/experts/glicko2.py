@@ -6,11 +6,9 @@ import pandas as pd
 
 from footy.models.experts._base import Expert, ExpertResult, _is_finished, _norm3
 from footy.models.glicko2 import (
-    Glicko2State,
     DEFAULT_RATING,
     DEFAULT_RD,
     DEFAULT_VOLATILITY,
-    _g,
     _e,
     _compute_v,
     _compute_delta,
@@ -110,7 +108,7 @@ class Glicko2Expert(Expert):
             # Estimate team-specific home advantage
             h_home_rec = home_rec.get(h, [])
             h_away_rec = away_rec.get(h, [])
-            a_away_rec = away_rec.get(a, [])
+            away_rec.get(a, [])
 
             if len(h_home_rec) >= 3 and len(h_away_rec) >= 3:
                 h_home_gd = np.mean([gf - ga for gf, ga in h_home_rec[-self.TRACK_N:]])

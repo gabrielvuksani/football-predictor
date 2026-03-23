@@ -41,7 +41,7 @@ class JobStatus(str, Enum):
 
 class ScheduledJob:
     """Represents a scheduled job with metadata and execution tracking"""
-    
+
     def __init__(
         self,
         job_id: str,
@@ -67,7 +67,7 @@ class ScheduledJob:
 class TrainingScheduler:
     """
     Manages automated training pipeline using APScheduler.
-    
+
     Example usage:
         scheduler = TrainingScheduler()
         scheduler.add_job(
@@ -79,13 +79,13 @@ class TrainingScheduler:
         scheduler.start()
         scheduler.list_jobs()
     """
-    
+
     def __init__(self):
         self.scheduler = BackgroundScheduler()
         self.con = connect()
         self._ensure_schema()
         self._load_jobs_from_db()
-    
+
     def _ensure_schema(self):
         """Create scheduled_jobs and job_runs tables if they don't exist"""
         self.con.execute("""
@@ -99,7 +99,7 @@ class TrainingScheduler:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
         self.con.execute("""
             CREATE TABLE IF NOT EXISTS job_runs (
                 run_id INTEGER PRIMARY KEY,
@@ -113,15 +113,15 @@ class TrainingScheduler:
                 FOREIGN KEY (job_id) REFERENCES scheduled_jobs(job_id)
             )
         """)
-        
+
         self.con.execute("""
             CREATE SEQUENCE IF NOT EXISTS job_runs_seq START 1
         """)
-        
+
         self.con.execute("""
             CREATE INDEX IF NOT EXISTS job_runs_job_id_idx ON job_runs(job_id, started_at DESC)
         """)
-    
+
     def _load_jobs_from_db(self):
         """Load scheduled jobs from database and add to scheduler"""
         rows = self.con.execute("""
@@ -130,11 +130,11 @@ class TrainingScheduler:
             WHERE enabled = TRUE
             ORDER BY created_at
         """).fetchall()
-        
+
         for job_id, job_type, cron_schedule, enabled, params_json in rows:
             params = json.loads(params_json) if params_json else {}
             self._schedule_job_internal(job_id, job_type, cron_schedule, params)
-    
+
     def add_job(
         self,
         job_id: str,
@@ -144,33 +144,33 @@ class TrainingScheduler:
     ) -> dict:
         """
         Add a new scheduled job.
-        
+
         Args:
             job_id: Unique identifier (e.g., "daily_ingest")
             job_type: Job type (ingest, train_base, train_council, predict, score)
             cron_schedule: Cron expression (e.g., "0 2 * * *" for 2 AM daily)
             params: Optional parameters for the job
-        
+
         Returns:
             Job configuration dict
         """
         valid_types = ["ingest", "pre_match_refresh", "train_base", "train_council", "predict", "score", "retrain", "full_refresh"]
         if job_type not in valid_types:
             raise ValueError(f"Invalid job_type: {job_type}")
-        
+
         params = params or {}
         params_json = json.dumps(params)
-        
+
         # Store in database
         self.con.execute("""
             INSERT OR REPLACE INTO scheduled_jobs
             (job_id, job_type, cron_schedule, enabled, params, updated_at)
             VALUES (?, ?, ?, TRUE, ?, CURRENT_TIMESTAMP)
         """, [job_id, job_type, cron_schedule, params_json])
-        
+
         # Schedule in APScheduler
         self._schedule_job_internal(job_id, job_type, cron_schedule, params)
-        
+
         return {
             "job_id": job_id,
             "job_type": job_type,
@@ -178,16 +178,16 @@ class TrainingScheduler:
             "enabled": True,
             "params": params,
         }
-    
+
     def _schedule_job_internal(self, job_id: str, job_type: str, cron_schedule: str, params: dict):
         """Internal method to schedule a job in APScheduler"""
         # Remove existing job if present
         if self.scheduler.get_job(job_id):
             self.scheduler.remove_job(job_id)
-        
+
         # Get the job handler function
         job_func = self._get_job_func(job_type)
-        
+
         # Add job to scheduler
         self.scheduler.add_job(
             self._run_job_wrapper,
@@ -197,7 +197,7 @@ class TrainingScheduler:
             replace_existing=True,
             misfire_grace_time=600,  # Allow 10 mins grace before missing a fire
         )
-    
+
     def _get_job_func(self, job_type: str):
         """Get the function to run for a job type"""
         job_funcs = {
@@ -211,14 +211,14 @@ class TrainingScheduler:
             "full_refresh": self._job_full_refresh,
         }
         return job_funcs.get(job_type, self._job_ingest)
-    
+
     def _run_job_wrapper(self, job_id: str, job_func, params: dict):
         """Wrapper that executes a job and logs the result"""
         started_at = datetime.now(timezone.utc)
         status = JobStatus.RUNNING
         error_message = None
         result = None
-        
+
         try:
             result = job_func(**params)
             status = JobStatus.SUCCESS
@@ -229,7 +229,7 @@ class TrainingScheduler:
         finally:
             completed_at = datetime.now(timezone.utc)
             duration = (completed_at - started_at).total_seconds()
-            
+
             # Log to database
             result_json = json.dumps(result) if result else None
             run_id = self.con.execute("SELECT nextval('job_runs_seq')").fetchone()[0]
@@ -238,11 +238,11 @@ class TrainingScheduler:
                 (run_id, job_id, status, started_at, completed_at, duration_seconds, error_message, result_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, [run_id, job_id, status.value, started_at, completed_at, duration, error_message, result_json])
-    
+
     # Job handler methods
     def _job_ingest(self, days_back: int = 30, days_forward: int = 7) -> dict:
         """Ingest fixture data"""
-        con = connect()
+        connect()
         n = pipeline.ingest(days_back=days_back, days_forward=days_forward, verbose=False)
         return {"rows_ingested": n}
 
@@ -258,14 +258,14 @@ class TrainingScheduler:
         con = connect()
         results["predictions"] = council_predict_upcoming(con, lookahead_days=lookahead_days, verbose=False)
         return results
-    
+
     def _job_train_base(self) -> dict:
         """Train base Elo + Poisson models"""
-        con = connect()
+        connect()
         n_elo = pipeline.update_elo_from_finished(verbose=False)
         state = pipeline.refit_poisson(verbose=False)
         return {"elo_updates": n_elo, "poisson_teams": len(state.get("teams", []))}
-    
+
     def _job_train_council(self, eval_days: int = 365) -> dict:
         """Train council model (v10)."""
         con = connect()
@@ -277,7 +277,7 @@ class TrainingScheduler:
         con = connect()
         n = council_predict_upcoming(con, lookahead_days=lookahead_days, verbose=False)
         return {"council_predictions": n}
-    
+
     def _job_score(self) -> dict:
         """Score finished predictions and update ensemble weights."""
         try:
@@ -355,46 +355,46 @@ class TrainingScheduler:
         # Remove from APScheduler
         if self.scheduler.get_job(job_id):
             self.scheduler.remove_job(job_id)
-        
+
         # Remove from database
         self.con.execute("DELETE FROM scheduled_jobs WHERE job_id = ?", [job_id])
-        
+
         return {"removed": job_id}
-    
+
     def disable_job(self, job_id: str) -> dict:
         """Disable a scheduled job (keeps config, stops execution)"""
         self.con.execute(
             "UPDATE scheduled_jobs SET enabled = FALSE, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?",
             [job_id]
         )
-        
+
         if self.scheduler.get_job(job_id):
             self.scheduler.remove_job(job_id)
-        
+
         return {"disabled": job_id}
-    
+
     def enable_job(self, job_id: str) -> dict:
         """Re-enable a disabled scheduled job"""
         row = self.con.execute(
             "SELECT job_type, cron_schedule, params FROM scheduled_jobs WHERE job_id = ?",
             [job_id]
         ).fetchone()
-        
+
         if not row:
             raise ValueError(f"Job {job_id} not found")
-        
+
         job_type, cron_schedule, params_json = row
         params = json.loads(params_json) if params_json else {}
-        
+
         self.con.execute(
             "UPDATE scheduled_jobs SET enabled = TRUE, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?",
             [job_id]
         )
-        
+
         self._schedule_job_internal(job_id, job_type, cron_schedule, params)
-        
+
         return {"enabled": job_id}
-    
+
     def list_jobs(self) -> list:
         """List all scheduled jobs with their status"""
         rows = self.con.execute("""
@@ -402,7 +402,7 @@ class TrainingScheduler:
             FROM scheduled_jobs
             ORDER BY created_at DESC
         """).fetchall()
-        
+
         jobs = []
         for job_id, job_type, cron_schedule, enabled, created_at in rows:
             # Get last run
@@ -413,16 +413,16 @@ class TrainingScheduler:
                 ORDER BY started_at DESC
                 LIMIT 1
             """, [job_id]).fetchone()
-            
+
             last_status = last_run[0] if last_run else None
             last_run_at = last_run[1] if last_run else None
             last_duration = last_run[2] if last_run else None
             last_error = last_run[3] if last_run else None
-            
+
             # Get APScheduler next run time
             ap_job = self.scheduler.get_job(job_id)
             next_run_at = ap_job.next_run_time if ap_job and hasattr(ap_job, 'next_run_time') else None
-            
+
             jobs.append({
                 "job_id": job_id,
                 "job_type": job_type,
@@ -435,9 +435,9 @@ class TrainingScheduler:
                 "last_error": last_error,
                 "next_run_at": next_run_at,
             })
-        
+
         return jobs
-    
+
     def get_job_history(self, job_id: str, limit: int = 10) -> list:
         """Get execution history for a job"""
         rows = self.con.execute("""
@@ -447,7 +447,7 @@ class TrainingScheduler:
             ORDER BY started_at DESC
             LIMIT ?
         """, [job_id, limit]).fetchall()
-        
+
         history = []
         for started_at, status, duration, error, result_json in rows:
             result = json.loads(result_json) if result_json else None
@@ -458,23 +458,23 @@ class TrainingScheduler:
                 "error": error,
                 "result": result,
             })
-        
+
         return history
-    
+
     def start(self):
         """Start the scheduler in background"""
         if not self.scheduler.running:
             self.scheduler.start()
-    
+
     def stop(self):
         """Stop the scheduler"""
         if self.scheduler.running:
             self.scheduler.shutdown()
-    
+
     def get_stats(self) -> dict:
         """Get scheduler statistics"""
         rows = self.con.execute("""
-            SELECT sj.job_type, COUNT(*) as total_runs, 
+            SELECT sj.job_type, COUNT(*) as total_runs,
                    SUM(CASE WHEN jr.status = 'success' THEN 1 ELSE 0 END) as successful,
                    SUM(CASE WHEN jr.status = 'failed' THEN 1 ELSE 0 END) as failed,
                    AVG(CASE WHEN jr.duration_seconds IS NOT NULL THEN jr.duration_seconds ELSE 0 END) as avg_duration_seconds
@@ -483,7 +483,7 @@ class TrainingScheduler:
             GROUP BY sj.job_type
             ORDER BY total_runs DESC
         """).fetchall()
-        
+
         stats = {}
         for job_type, total, successful, failed, avg_duration in rows:
             stats[job_type] = {
@@ -492,7 +492,7 @@ class TrainingScheduler:
                 "failed": failed or 0,
                 "avg_duration_seconds": avg_duration or 0,
             }
-        
+
         return {
             "total_jobs": len(self.list_jobs()),
             "active_jobs": len(self.scheduler.get_jobs()) if self.scheduler.running else 0,

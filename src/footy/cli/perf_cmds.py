@@ -109,9 +109,9 @@ def trend(model_version: str, window_days: int = 30):
     console.print(f"  Trend Slope: {tr['trend_slope']:.4f}")
 
     if tr["degrading"]:
-        console.print(f"  [red]⚠️  Performance degrading[/red]")
+        console.print("  [red]⚠️  Performance degrading[/red]")
     else:
-        console.print(f"  [green]✓ Performance stable[/green]")
+        console.print("  [green]✓ Performance stable[/green]")
 
     console.print(f"  R-squared: {tr['r_squared']:.3f}")
     console.print(f"  Data Points: {tr['n_data_points']}")
@@ -167,7 +167,7 @@ def health(model_version: str, days: int = 30):
         console.print(f"  Predictions: {metrics.get('n_predictions', 0)}")
 
         if h.get("alerts"):
-            console.print(f"\n  [red]Alerts:[/red]")
+            console.print("\n  [red]Alerts:[/red]")
             for alert in h["alerts"]:
                 console.print(f"    - {alert}")
 
@@ -315,12 +315,12 @@ def alerts_summary():
     console.print("\n[cyan]Alert Summary[/cyan]")
     console.print(f"  Total Alerts: {sm['total_alerts']}")
 
-    console.print(f"\n  By Status:")
+    console.print("\n  By Status:")
     for status, count in sm["by_status"].items():
         console.print(f"    {status:15s}: {count}")
 
     if sm["active_by_model"]:
-        console.print(f"\n  Active Alerts by Model:")
+        console.print("\n  Active Alerts by Model:")
         for model, count in sm["active_by_model"].items():
             console.print(f"    {model:30s}: {count}")
 

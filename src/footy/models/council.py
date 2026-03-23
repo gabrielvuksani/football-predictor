@@ -15,21 +15,16 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from footy.models.advanced_math import (
-    kl_divergence, log_transform, tanh_transform,
-    jensen_shannon_divergence, multi_expert_jsd,
-)
 from footy.config import settings
 from footy.normalize import canonical_team_name
 from footy.models.dixon_coles import DCModel, fit_dc, predict_1x2
@@ -517,9 +512,9 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
 
     # GoalPattern quality signals — performance vs top teams
     if "goal_pattern" in _expert_map:
-        cs_vs_top_h = gp_r.features.get("gp_cs_vs_top_h", np.zeros(n))
+        gp_r.features.get("gp_cs_vs_top_h", np.zeros(n))
         cs_vs_top_a = gp_r.features.get("gp_cs_vs_top_a", np.zeros(n))
-        cb_vs_top_h = gp_r.features.get("gp_cb_vs_top_h", np.zeros(n))
+        gp_r.features.get("gp_cb_vs_top_h", np.zeros(n))
         cb_vs_top_a = gp_r.features.get("gp_cb_vs_top_a", np.zeros(n))
         blocks.append((cs_vs_top_a * (1.0 - mkt_ph))[:, None])  # underdog defensive resilience
         blocks.append((cb_vs_top_a * (1.0 - mkt_ph))[:, None])  # underdog comeback ability
@@ -645,20 +640,20 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     # 6h. v12: Injury, weather, referee features (re-enabled experts)
     inj_r = _r("injury")
     inj_diff = inj_r.features.get("inj_diff", np.zeros(n))
-    inj_unavail_h = inj_r.features.get("inj_unavailable_h", np.zeros(n))
-    inj_unavail_a = inj_r.features.get("inj_unavailable_a", np.zeros(n))
+    inj_r.features.get("inj_unavailable_h", np.zeros(n))
+    inj_r.features.get("inj_unavailable_a", np.zeros(n))
     blocks.append(inj_diff[:, None])
     blocks.append((inj_diff * mkt_ph)[:, None])  # injury × favourite = upset signal
 
     wx_r = _r("weather")
     wx_bad = wx_r.features.get("wx_bad_weather", np.zeros(n))
-    wx_pitch_heavy = wx_r.features.get("wx_pitch_heavy", np.zeros(n))
+    wx_r.features.get("wx_pitch_heavy", np.zeros(n))
     blocks.append(wx_bad[:, None])
     blocks.append((wx_bad * mkt_ph)[:, None])  # bad weather × favourite = equalizer
 
     ref_r = _r("referee")
     ref_bias = ref_r.features.get("ref_home_bias", np.zeros(n))
-    ref_strict = ref_r.features.get("ref_strict", np.zeros(n))
+    ref_r.features.get("ref_strict", np.zeros(n))
     blocks.append(ref_bias[:, None])
     blocks.append((ref_bias * mkt_ph)[:, None])  # ref bias × favourite
 
@@ -670,7 +665,7 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
     # Squad rotation features
     rot_r = _r("squad_rotation")
     rot_congestion_diff = rot_r.features.get("rot_congestion_diff", np.zeros(n))
-    rot_rest_adv = rot_r.features.get("rot_rest_advantage", np.zeros(n))
+    rot_r.features.get("rot_rest_advantage", np.zeros(n))
     blocks.append(rot_congestion_diff[:, None])
     blocks.append((rot_congestion_diff * mkt_ph)[:, None])  # congestion × favourite
 
@@ -1504,7 +1499,7 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
                 print(f"[council] WF GATE FAILED: WF accuracy {wf_result.mean_accuracy:.4f} < {WF_ACCURACY_GATE}", flush=True)
         else:
             if verbose:
-                print(f"[council] WF GATE PASSED ✓", flush=True)
+                print("[council] WF GATE PASSED ✓", flush=True)
 
     except Exception as e:
         if verbose:
@@ -1858,15 +1853,6 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
 
         notes_dict = {
             "model": stack_label,
-            "adaptive_expert_blend": round(adaptive_expert_blend, 3),
-            "adaptive_expert_probs": {
-                "home": round(float(adaptive_weighted_probs[0]), 3),
-                "draw": round(float(adaptive_weighted_probs[1]), 3),
-                "away": round(float(adaptive_weighted_probs[2]), 3),
-            } if adaptive_weighted_probs is not None else None,
-            "adaptive_expert_weights": {
-                k: round(float(v), 4) for k, v in sorted((expert_weight_map or {}).items(), key=lambda item: item[1], reverse=True)[:8]
-            } if expert_weight_map else None,
             "btts": round(btts_val, 3),
             "o25": round(o25_val, 3),
             "btts_poisson": round(btts_pois, 3),
@@ -1901,8 +1887,8 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             "bt_away": round(bt_pa_val, 3),
             # v11: Skellam expected goal difference
             "sk_expected_gd": round(sk_mean_gd_val, 2),
-            # Self-learning ensemble weights
-            "ensemble_weights": learned_ensemble_weights,
+            # v13: stack weights
+            "stack_weights": list(stack_weights),
             # Expert breakdown summary
             "experts": expert_probs_for_match,
         }

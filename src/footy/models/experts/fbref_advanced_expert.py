@@ -105,10 +105,8 @@ class FBrefAdvancedExpert(Expert):
             # --- FBref advanced stats path (when fbref_team_stats joined) ---
             fb_npxg_h_list = team_fb_npxg.get(h, [])
             fb_npxg_a_list = team_fb_npxg.get(a, [])
-            fb_used_fbref = False
 
             if has_fbref and len(fb_npxg_h_list) >= 3 and len(fb_npxg_a_list) >= 3:
-                fb_used_fbref = True
                 fb_has_fbref[i] = 1.0
                 fb_has_data[i] = 1.0
                 w = self.WINDOW
@@ -281,8 +279,8 @@ class FBrefAdvancedExpert(Expert):
             if has_fbref:
                 fb_xg_h = _f(getattr(r, "fb_xg", None))
                 fb_npxg_h_val = _f(getattr(r, "fb_npxg", None))
-                fb_shots_h = _f(getattr(r, "fb_shots", None))
-                fb_sot_h_val = _f(getattr(r, "fb_sot", None))
+                _f(getattr(r, "fb_shots", None))
+                _f(getattr(r, "fb_sot", None))
                 fb_pc_h = _f(getattr(r, "fb_passes_completed", None))
                 fb_pa_h = _f(getattr(r, "fb_passes_attempted", None))
                 fb_tk_h = _f(getattr(r, "fb_tackles_won", None))

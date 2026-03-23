@@ -305,7 +305,7 @@ class TrueSkillEngine:
         outcome_std = math.sqrt(outcome_variance)
 
         # Kalman gain (weight for update)
-        kalman_gain = 1.0 / (outcome_std + 1e-9)
+        1.0 / (outcome_std + 1e-9)
 
         # Innovation (prediction error)
         innovation = outcome - predicted_diff

@@ -40,21 +40,21 @@ _NAN_STRATEGY = {
 
 def _safe_value(val, kind="feature"):
     """Replace NaN/Inf with appropriate default.
-    
+
     Args:
         val: Value to check
         kind: Type of value ("probability", "feature", "rating")
-    
+
     Returns:
         Original value if valid, otherwise default for this kind
     """
     if val is None:
         return _NAN_STRATEGY.get(kind, 0.0)
-    
+
     if isinstance(val, (int, float)):
         if math.isnan(val) or math.isinf(val):
             return _NAN_STRATEGY.get(kind, 0.0)
-    
+
     return val
 
 
@@ -674,14 +674,14 @@ def aggregate_predictions(
     # Compute agreement across methods using Jensen-Shannon divergence
     # (more principled than std of home probabilities alone)
     agreement = model_agreement_from_divergences(prob_sets)
-    
+
     # Quality indicator: confidence based on number and agreement of sources
-    quality_factors = {
+    {
         'n_models': n_models,
         'model_agreement': agreement,
         'weight_concentration': max(weights) if weights else 0.0,  # How peaked is weight distribution
     }
-    quality_confidence = min(1.0, 0.3 + 0.7 * agreement) if agreement > 0 else 0.3
+    min(1.0, 0.3 + 0.7 * agreement) if agreement > 0 else 0.3
     home_probs = [ps[0] for ps in prob_sets]
     prediction_spread = float(np.std(home_probs)) if len(home_probs) > 1 else 0.0
 

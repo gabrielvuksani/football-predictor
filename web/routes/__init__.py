@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime as datetime, timezone as timezone  # noqa: F401
 
 import duckdb
 
 from footy.config import settings as get_settings
-from footy.normalize import canonical_team_name
+from footy.normalize import canonical_team_name as canonical_team_name  # noqa: F401
 
 log = logging.getLogger("footy.api")
 settings = get_settings()

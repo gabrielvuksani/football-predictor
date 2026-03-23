@@ -14,7 +14,6 @@ Usage:
 """
 from __future__ import annotations
 
-import numpy as np
 
 from footy.models.experts._base import _pts
 

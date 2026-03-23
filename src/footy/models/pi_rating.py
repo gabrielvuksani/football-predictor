@@ -21,11 +21,9 @@ DuckDB storage tracks state per team.
 from __future__ import annotations
 
 import math
-from typing import Optional
 from dataclasses import dataclass
 
 import duckdb
-import numpy as np
 
 
 # Initial ratings
@@ -299,7 +297,6 @@ def get_expected_goals(
 
     # Rough heuristic: assume 2.5 goals per team on average, scale by rating offset
     base_goals = 1.25
-    rating_scale = 100.0
 
     expected_gd = _expected_goal_diff(state_h.home_rating, state_a.away_rating)
     eg_home = base_goals + (expected_gd / 2.0)
