@@ -957,6 +957,18 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     features["upset_fatigue_sched"] = features.get("sc_fatigue_diff", np.zeros(n)) * mkt_ph  # fatigued favourite
     features["upset_resilience_mkt"] = features["md_resilience_diff"] * (1.0 - mkt_ph)  # resilient underdog
 
+    # ── OPPONENT-ADJUSTED FEATURES (research: top 3 feature category) ──
+    oa_r = _r("opponent_adjusted")
+    features["oa_strength_diff"] = oa_r.features.get("oa_strength_diff", np.zeros(n))
+    features["oa_ppg_h"] = oa_r.features.get("oa_ppg_h", np.zeros(n))
+    features["oa_ppg_a"] = oa_r.features.get("oa_ppg_a", np.zeros(n))
+    features["ppda_diff"] = oa_r.features.get("ppda_h", np.zeros(n)) - oa_r.features.get("ppda_a", np.zeros(n))
+    features["style_sp_diff"] = oa_r.features.get("style_set_piece_h", np.zeros(n)) - oa_r.features.get("style_set_piece_a", np.zeros(n))
+    features["pts_safety_h"] = oa_r.features.get("pts_to_safety_h", np.zeros(n))
+    features["pts_safety_a"] = oa_r.features.get("pts_to_safety_a", np.zeros(n))
+    features["pts_title_h"] = oa_r.features.get("pts_to_title_h", np.zeros(n))
+    features["post_intl_diff"] = oa_r.features.get("post_intl_record_h", np.zeros(n)) - oa_r.features.get("post_intl_record_a", np.zeros(n))
+
     # ── ADVANCED DERIVED FEATURES — Data manipulation for maximum signal ──
     # These combine multiple expert signals in ways proven by research to be predictive
 
@@ -1059,6 +1071,9 @@ V13_FEATURE_NAMES = [
     "elo_form_agree", "mkt_confidence", "model_disagreement",
     "def_quality_mismatch", "xg_surplus_h",
     "upset_composite", "upset_max_signal", "upset_n_active",
+    # Opponent-adjusted features
+    "oa_strength_diff", "oa_ppg_h", "oa_ppg_a", "ppda_diff", "style_sp_diff",
+    "pts_safety_h", "pts_safety_a", "pts_title_h", "post_intl_diff",
 ]
 
 

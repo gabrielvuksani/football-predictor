@@ -63,6 +63,7 @@ from footy.models.experts.manager_expert import ManagerExpert
 from footy.models.experts.lineup_expert import LineupExpert
 from footy.models.experts.match_dynamics_expert import MatchDynamicsExpert
 from footy.models.experts.schedule_context_expert import ScheduleContextExpert
+from footy.models.experts.opponent_adjusted_expert import OpponentAdjustedExpert
 
 try:
     from footy.models.experts.trueskill import TrueSkillExpert
@@ -134,6 +135,7 @@ ALL_EXPERTS: list[Expert] = [
     LineupExpert(),            # Lineup strength and rotation detection
     MatchDynamicsExpert(),     # HT/FT patterns, comebacks, streaks, set pieces, cards
     ScheduleContextExpert(),   # Midweek fatigue, intl breaks, promotion honeymoon, congestion
+    OpponentAdjustedExpert(),  # Opponent-quality-adjusted metrics, PPDA, set piece style, pts to safety
 ]
 
 # Add TrueSkill expert if available
@@ -158,5 +160,5 @@ __all__ = [
     "PythagoreanExpert", "GASExpert", "AdaptiveBayesianExpert",
     "HMMExpert", "TransferExpert",
     "NewsSentimentExpert", "BettingMovementExpert", "ManagerExpert", "LineupExpert",
-    "MatchDynamicsExpert", "ScheduleContextExpert",
+    "MatchDynamicsExpert", "ScheduleContextExpert", "OpponentAdjustedExpert",
 ]
