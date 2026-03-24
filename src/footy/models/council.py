@@ -2,7 +2,7 @@
 Expert Council Model — Multi-expert ensemble for football match prediction.
 
 Architecture:
-    Layer 1 — 34 specialist experts (see footy.models.experts package)
+    Layer 1 — 50 specialist experts (see footy.models.experts package)
     Layer 2 — Conflict, consensus, KL divergence & interaction signals across experts
     Layer 3 — Multi-model stack (HistGBM + RF + LR) with LEARNED weights + isotonic cal
     Layer 4 — Walk-forward cross-validation for honest performance estimation

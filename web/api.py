@@ -1,5 +1,5 @@
 """
-Footy Predictor v12 — The Analyst
+Footy Predictor v14 — Apex
 FastAPI application factory with modular route registration.
 
 Serves:
@@ -27,9 +27,9 @@ WEB_DIR = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
 app = FastAPI(
-    title="Footy Predictor v12 — The Analyst",
-    description="AI-powered football match predictions with 34-expert ensemble",
-    version="12.0.0",
+    title="Footy Predictor v14 — Apex",
+    description="AI-powered football match predictions with 50-expert ensemble",
+    version="14.0.0",
 )
 
 # ── Middleware ──

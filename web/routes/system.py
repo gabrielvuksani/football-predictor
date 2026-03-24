@@ -183,8 +183,8 @@ async def api_self_learning_expert_weights(league: str = Query("PL")):
 
 
 @router.get("/expert-performance")
-async def api_expert_performance_v12():
-    """Per-expert accuracy dashboard for v12 analyst."""
+async def api_expert_performance():
+    """Per-expert accuracy dashboard."""
     try:
         db = con()
         rows = db.execute("""

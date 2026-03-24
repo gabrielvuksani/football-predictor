@@ -1,4 +1,4 @@
-# Football Predictor v12 — "The Analyst"
+# Football Predictor v14 — "Apex"
 # Multi-stage build for minimal image size
 FROM python:3.13-slim AS builder
 

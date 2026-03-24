@@ -295,9 +295,9 @@ class TrainingScheduler:
 
                 # Check and trigger retraining if ready
                 retrain_check = mgr.check_and_retrain("v13_oracle")
-                v12_status = retrain_check.get("v13_oracle", {})
-                if v12_status.get("status") in ("ready_to_retrain", "drift_detected"):
-                    log.info("Retraining ready: %s", v12_status.get("status"))
+                retrain_status = retrain_check.get("v13_oracle", {})
+                if retrain_status.get("status") in ("ready_to_retrain", "drift_detected"):
+                    log.info("Retraining ready: %s", retrain_status.get("status"))
                     retrain_result = mgr.auto_retrain(verbose=True)
                     result["retrain_result"] = retrain_result.get("action")
                     if retrain_result.get("action") in ("deployed", "rolled_back"):
