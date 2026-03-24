@@ -118,34 +118,21 @@ jobs:
           print(f'Scoring result: {result}')
           "
 
-      # STEP 4: Check if retrain is needed (drift detection + threshold)
-      - name: Check retrain & predict
+      # STEP 4: Use existing predictions from DB (training/prediction done locally)
+      # Full training + prediction takes 30-60 min and must be run locally:
+      #   footy model train-meta && footy model predict
+      #   gh release upload db-latest data/footy.duckdb data/models/v13_oracle.joblib --clobber
+      - name: Check predictions exist
         run: |
           python -c "
           from footy.db import connect
-          from footy.models.council import train_and_save, predict_upcoming, load
-          import os
           con = connect()
-
-          force = os.environ.get('FORCE_RETRAIN', 'false') == 'true'
-          model = load()
-
-          # Only retrain when explicitly forced (training is too heavy for CI runners)
-          # The pre-trained model persists via GitHub Release assets
-          if model is None or force:
-            print('Training v13 Oracle model...')
-            result = train_and_save(con, days=730, eval_days=90, verbose=True)
-            print(f'Training result: {result}')
-          else:
-            print(f'Using existing model ({model.get(\"version\", \"unknown\")})')
-
-          # Always generate predictions
-          print('Generating predictions...')
-          count = predict_upcoming(con, lookahead_days=7, verbose=True)
-          print(f'Predicted {count} matches')
+          preds = con.execute('SELECT COUNT(*) FROM predictions').fetchone()[0]
+          matches = con.execute('SELECT COUNT(*) FROM matches').fetchone()[0]
+          print(f'Database: {matches} matches, {preds} predictions')
+          if preds == 0:
+            print('WARNING: No predictions in DB. Run locally: footy model train-meta && footy model predict')
           "
-        env:
-          FORCE_RETRAIN: ${{ inputs.force_retrain || 'false' }}
 
       # STEP 5: Fetch Opta predictions
       - name: Fetch Opta predictions
