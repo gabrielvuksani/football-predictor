@@ -1,6 +1,7 @@
 /*
- * Footy Predictor v12 — Design System
- * Light/dark mode · Glassmorphism · Mobile-first responsive · Accessibility
+ * Footy Predictor v13 Oracle — Design System
+ * Modern dark theme · Bold typography · Clean cards · Mobile-first
+ * Inspired by: Bet365, FiveThirtyEight, Linear, Vercel
  */
 
 /* ── Reset ── */
@@ -237,14 +238,19 @@ code {
 }
 
 .nav-brand {
-  font-size: 1.25rem;
-  font-weight: 700;
+  font-size: 1.15rem;
+  font-weight: 800;
   color: var(--text);
   white-space: nowrap;
   transition: color var(--dur) var(--ease);
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--accent), var(--cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
-.nav-brand:hover { color: var(--accent); }
+.nav-brand:hover { opacity: 0.85; }
 
 .nav-right {
   display: flex;
@@ -266,16 +272,17 @@ code {
 }
 
 .nav-tab {
-  padding: 0.5rem 1rem;
+  padding: 0.45rem 0.9rem;
   background: transparent;
   border: none;
-  color: var(--text-2);
+  color: var(--text-3);
   font-weight: 500;
-  font-size: 0.95rem;
+  font-size: 0.875rem;
   cursor: pointer;
-  border-radius: var(--r-sm);
-  transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+  border-radius: var(--r-xs);
+  transition: color 0.15s, background-color 0.15s;
   position: relative;
+  letter-spacing: -0.01em;
 }
 
 .nav-tab:hover {
@@ -888,23 +895,32 @@ code {
 /* ══════════ MATCH CARDS ══════════ */
 .match-card {
   display: block;
-  padding: 1.5rem;
-  margin-bottom: 1rem;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 0.75rem;
   cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s;
+}
+.match-card:hover {
+  border-left-color: var(--accent);
+  transform: translateX(2px);
+  box-shadow: 0 4px 20px rgba(99,102,241,0.08);
 }
 
 .match-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
 }
 
 .match-teams-text {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
 }
 
 .match-home, .match-away {
@@ -913,9 +929,12 @@ code {
 }
 
 .match-vs {
-  color: var(--text-2);
-  font-size: 0.85rem;
-  margin: 0 0.25rem;
+  color: var(--text-3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0.35rem;
 }
 
 .match-meta {
@@ -925,8 +944,9 @@ code {
 }
 
 .match-time {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: var(--text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .badge {
@@ -965,66 +985,73 @@ code {
 
 .prob-bar {
   display: flex;
-  height: 8px;
+  height: 6px;
   border-radius: var(--r-full);
   overflow: hidden;
   background: var(--surface-2);
   margin-bottom: 0.75rem;
+  gap: 2px;
 }
 
 .prob-bar > div {
-  transition: width var(--dur-lg) var(--ease);
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: var(--r-full);
 }
 
-.prob-bar .home { background: linear-gradient(to right, #3b82f6, #1d4ed8); }
-.prob-bar .draw { background: linear-gradient(to right, #f59e0b, #d97706); }
-.prob-bar .away { background: linear-gradient(to right, #ef4444, #dc2626); }
+.prob-bar .home { background: #3b82f6; }
+.prob-bar .draw { background: #fbbf24; }
+.prob-bar .away { background: #f43f5e; }
 
 .prob-labels {
   display: flex;
-  gap: 1rem;
-  font-size: 0.85rem;
+  gap: 1.25rem;
+  font-size: 0.8rem;
 }
 
 .prob-label {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   color: var(--text-2);
 }
 
 .prob-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
 }
 
 .prob-dot.home { background: #3b82f6; }
-.prob-dot.draw { background: #f59e0b; }
-.prob-dot.away { background: #ef4444; }
+.prob-dot.draw { background: #fbbf24; }
+.prob-dot.away { background: #f43f5e; }
 
 .prob-pct {
-  font-weight: 600;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
 }
 
 .card-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 1rem;
-  gap: 1rem;
+  margin-top: 0.75rem;
+  gap: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
 }
 
 .verdict {
-  font-size: 0.85rem;
-  font-weight: 500;
-  padding: 0.4rem 0.75rem;
-  border-radius: var(--r-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--r-xs);
+  letter-spacing: -0.01em;
 }
 
-.verdict-home { background: rgba(59, 130, 246, 0.1); color: #3b82f6; }
-.verdict-draw { background: rgba(245, 158, 11, 0.1); color: var(--amber); }
-.verdict-away { background: rgba(239, 68, 68, 0.1); color: var(--red); }
+.verdict-home { background: rgba(59, 130, 246, 0.12); color: #60a5fa; }
+.verdict-draw { background: rgba(251, 191, 36, 0.12); color: #fbbf24; }
+.verdict-away { background: rgba(244, 63, 94, 0.12); color: #fb7185; }
 
 .card-mini-tag {
   padding: 0.25rem 0.5rem;
