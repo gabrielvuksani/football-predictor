@@ -130,18 +130,14 @@ jobs:
           force = os.environ.get('FORCE_RETRAIN', 'false') == 'true'
           model = load()
 
-          # Retrain if: no model, forced, or Monday (weekly retrain)
-          import datetime
-          is_monday = datetime.datetime.utcnow().weekday() == 0
-          needs_train = model is None or force or is_monday
-
-          if needs_train:
+          # Only retrain when explicitly forced (training is too heavy for CI runners)
+          # The pre-trained model persists via GitHub Release assets
+          if model is None or force:
             print('Training v13 Oracle model...')
-            # Use 2 years of data (730 days) for CI speed — full 7 years for local training
             result = train_and_save(con, days=730, eval_days=90, verbose=True)
             print(f'Training result: {result}')
           else:
-            print('Model exists, skipping retrain')
+            print(f'Using existing model ({model.get(\"version\", \"unknown\")})')
 
           # Always generate predictions
           print('Generating predictions...')
