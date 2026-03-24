@@ -1,0 +1,189 @@
+name: Autopilot — Ingest, Predict, Score, Learn, Deploy
+
+on:
+  schedule:
+    # Run every 6 hours: 6am, 12pm, 6pm, midnight UTC
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+    inputs:
+      force_retrain:
+        description: 'Force model retraining'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "autopilot"
+  cancel-in-progress: false
+
+jobs:
+  autopilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DB_PATH: data/footy.duckdb
+      FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install catboost xgboost soccerdata 2>/dev/null || true
+
+      # Restore DB from latest release asset (persists indefinitely, free)
+      - name: Restore database from release
+        run: |
+          mkdir -p data data/models
+          # Try to download from latest release
+          gh release download db-latest -p "footy.duckdb" -D data/ 2>/dev/null || echo "No existing DB found — starting fresh"
+          gh release download db-latest -p "v13_oracle.joblib" -D data/models/ 2>/dev/null || echo "No existing model found"
+          ls -la data/ data/models/ 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # STEP 1: Ingest latest match data
+      - name: Ingest data
+        run: |
+          python -c "
+          from footy.db import connect
+          from footy.pipeline import Pipeline
+          con = connect()
+          p = Pipeline()
+          # Ingest recent results and upcoming fixtures
+          p.ingest(con, verbose=True)
+          # Ingest historical if DB is fresh
+          count = con.execute('SELECT COUNT(*) FROM matches').fetchone()[0]
+          if count < 1000:
+            print('Fresh DB — ingesting history...')
+            p.ingest_history_fdcuk(con, verbose=True)
+          print(f'Total matches: {con.execute(\"SELECT COUNT(*) FROM matches\").fetchone()[0]}')
+          "
+
+      # STEP 2: Enrich with xG data from Understat
+      - name: Enrich xG data
+        run: |
+          python -c "
+          import soccerdata as sd
+          from footy.db import connect
+          from footy.normalize import canonical_team_name
+          import numpy as np
+          con = connect()
+          total = 0
+          for league, comp in [('ENG-Premier League','PL'),('ESP-La Liga','PD'),('GER-Bundesliga','BL1'),('ITA-Serie A','SA'),('FRA-Ligue 1','FL1')]:
+            for season in ['2024-2025','2023-2024']:
+              try:
+                us = sd.Understat(leagues=league, seasons=season)
+                schedule = us.read_schedule()
+                for _, row in schedule.iterrows():
+                  h_xg = row.get('home_xg')
+                  a_xg = row.get('away_xg')
+                  if h_xg is None or (isinstance(h_xg, float) and np.isnan(h_xg)): continue
+                  home = canonical_team_name(str(row.get('home_team','')))
+                  away = canonical_team_name(str(row.get('away_team','')))
+                  if not home or not away: continue
+                  con.execute('UPDATE match_extras SET understat_xg_home=?,understat_xg_away=? WHERE match_id IN (SELECT m.match_id FROM matches m WHERE m.home_team=? AND m.away_team=? AND m.competition=?) AND (understat_xg_home IS NULL OR understat_xg_home=0)',
+                    [float(h_xg),float(a_xg),home,away,comp])
+                  total += 1
+              except Exception as e:
+                print(f'{comp} {season}: {e}')
+          print(f'xG enrichment: {total} updates')
+          " 2>/dev/null || echo "xG enrichment skipped"
+
+      # STEP 3: Score finished predictions (self-learning feedback)
+      - name: Score predictions & self-learn
+        run: |
+          python -c "
+          from footy.db import connect
+          from footy.pipeline import Pipeline
+          p = Pipeline()
+          con = connect()
+          p.score_finished_predictions(con, verbose=True)
+          "
+
+      # STEP 4: Check if retrain is needed (drift detection + threshold)
+      - name: Check retrain & predict
+        run: |
+          python -c "
+          from footy.db import connect
+          from footy.models.council import train_and_save, predict_upcoming, load
+          import os
+          con = connect()
+
+          force = os.environ.get('FORCE_RETRAIN', 'false') == 'true'
+          model = load()
+
+          # Retrain if: no model, forced, or Monday (weekly retrain)
+          import datetime
+          is_monday = datetime.datetime.utcnow().weekday() == 0
+          needs_train = model is None or force or is_monday
+
+          if needs_train:
+            print('Training v13 Oracle model...')
+            result = train_and_save(con, days=2555, eval_days=180, verbose=True)
+            print(f'Training result: {result}')
+          else:
+            print('Model exists, skipping retrain')
+
+          # Always generate predictions
+          print('Generating predictions...')
+          count = predict_upcoming(con, lookahead_days=14, verbose=True)
+          print(f'Predicted {count} matches')
+          "
+        env:
+          FORCE_RETRAIN: ${{ inputs.force_retrain || 'false' }}
+
+      # STEP 5: Fetch Opta predictions
+      - name: Fetch Opta predictions
+        run: |
+          python -c "
+          from footy.db import connect
+          from footy.providers.opta_predictions import ingest_opta_to_db
+          con = connect()
+          matched = ingest_opta_to_db(con, 'PL')
+          print(f'Opta: {matched} predictions ingested')
+          " 2>/dev/null || echo "Opta fetch skipped"
+
+      # STEP 6: Export static site
+      - name: Export to docs/
+        run: |
+          python -m footy.cli pages export --out docs 2>/dev/null || echo "Pages export done with warnings"
+
+      # STEP 7: Persist database as release asset (free, indefinite)
+      - name: Save database to release
+        run: |
+          # Create or update the db-latest release
+          gh release delete db-latest --yes 2>/dev/null || true
+          gh release create db-latest \
+            --title "Database Snapshot" \
+            --notes "Auto-updated by autopilot workflow — $(date -u)" \
+            data/footy.duckdb \
+            data/models/v13_oracle.joblib 2>/dev/null || echo "Release upload failed — DB may be too large"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # STEP 8: Commit and push updated docs/
+      - name: Deploy updated predictions
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          git diff --staged --quiet || git commit -m "autopilot: fresh predictions $(date -u +%Y-%m-%d)"
+          git push || echo "Push failed — no changes or conflict"
