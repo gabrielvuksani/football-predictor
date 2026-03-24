@@ -970,6 +970,20 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     # 1. Elo × Form agreement — when rating AND form agree, prediction is stronger
     features["elo_form_agree"] = features["elo_diff"] * (features["form_pts_h"] - features["form_pts_a"])
 
+    # ── CROWD/STADIUM FEATURES ──
+    crowd_r = _r("crowd_momentum")
+    features["cm_home_fortress"] = crowd_r.features.get("cm_home_fortress_h", np.zeros(n))
+    features["cm_away_fortress"] = crowd_r.features.get("cm_away_fortress_a", np.zeros(n))
+    features["cm_dominance"] = crowd_r.features.get("cm_home_dominance", np.zeros(n))
+    features["cm_capacity"] = crowd_r.features.get("cm_capacity", np.zeros(n))
+
+    # ── MORALE/PSYCHOLOGY FEATURES ──
+    morale_r = _r("morale")
+    features["ml_confidence_diff"] = morale_r.features.get("ml_confidence_h", np.zeros(n)) - morale_r.features.get("ml_confidence_a", np.zeros(n))
+    features["ml_fragility_diff"] = morale_r.features.get("ml_fragility_h", np.zeros(n)) - morale_r.features.get("ml_fragility_a", np.zeros(n))
+    features["ml_recovery_diff"] = morale_r.features.get("ml_recovery_h", np.zeros(n)) - morale_r.features.get("ml_recovery_a", np.zeros(n))
+    features["ml_consistency_diff"] = morale_r.features.get("ml_consistency_h", np.zeros(n)) - morale_r.features.get("ml_consistency_a", np.zeros(n))
+
     # ── OPTA PREDICTIONS ──
     opta_r = _r("opta")
     features["opta_ph"] = opta_r.features.get("opta_ph", np.zeros(n))

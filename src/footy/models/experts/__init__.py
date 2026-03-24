@@ -65,6 +65,8 @@ from footy.models.experts.match_dynamics_expert import MatchDynamicsExpert
 from footy.models.experts.schedule_context_expert import ScheduleContextExpert
 from footy.models.experts.opponent_adjusted_expert import OpponentAdjustedExpert
 from footy.models.experts.opta_expert import OptaExpert
+from footy.models.experts.crowd_momentum_expert import CrowdMomentumExpert
+from footy.models.experts.morale_expert import MoraleExpert
 
 try:
     from footy.models.experts.trueskill import TrueSkillExpert
@@ -138,6 +140,8 @@ ALL_EXPERTS: list[Expert] = [
     ScheduleContextExpert(),   # Midweek fatigue, intl breaks, promotion honeymoon, congestion
     OpponentAdjustedExpert(),  # Opponent-quality-adjusted metrics, PPDA, set piece style, pts to safety
     OptaExpert(),              # Opta/TheAnalyst win probability predictions
+    CrowdMomentumExpert(),     # Stadium atmosphere, home fortress, altitude, capacity
+    MoraleExpert(),            # Team confidence, fragility, recovery, consistency
 ]
 
 # Add TrueSkill expert if available
@@ -163,5 +167,5 @@ __all__ = [
     "HMMExpert", "TransferExpert",
     "NewsSentimentExpert", "BettingMovementExpert", "ManagerExpert", "LineupExpert",
     "MatchDynamicsExpert", "ScheduleContextExpert", "OpponentAdjustedExpert",
-    "OptaExpert",
+    "OptaExpert", "CrowdMomentumExpert", "MoraleExpert",
 ]
