@@ -64,16 +64,18 @@ jobs:
         run: |
           python -c "
           from footy.db import connect
-          from footy.pipeline import Pipeline
+          from footy import pipeline
           con = connect()
-          p = Pipeline()
           # Ingest recent results and upcoming fixtures
-          p.ingest(con, verbose=True)
+          inserted = pipeline.ingest(verbose=True)
+          print(f'Ingested {inserted} matches')
           # Ingest historical if DB is fresh
           count = con.execute('SELECT COUNT(*) FROM matches').fetchone()[0]
           if count < 1000:
             print('Fresh DB — ingesting history...')
-            p.ingest_history_fdcuk(con, verbose=True)
+            pipeline.ingest_history_fdcuk(verbose=True)
+          # Update Elo ratings
+          pipeline.update_elo_from_finished(verbose=True)
           print(f'Total matches: {con.execute(\"SELECT COUNT(*) FROM matches\").fetchone()[0]}')
           "
 
@@ -111,11 +113,9 @@ jobs:
       - name: Score predictions & self-learn
         run: |
           python -c "
-          from footy.db import connect
-          from footy.pipeline import Pipeline
-          p = Pipeline()
-          con = connect()
-          p.score_finished_predictions(con, verbose=True)
+          from footy import pipeline
+          result = pipeline.score_finished_predictions(verbose=True)
+          print(f'Scoring result: {result}')
           "
 
       # STEP 4: Check if retrain is needed (drift detection + threshold)
@@ -164,7 +164,7 @@ jobs:
       # STEP 6: Export static site
       - name: Export to docs/
         run: |
-          python -m footy.cli pages export --out docs 2>/dev/null || echo "Pages export done with warnings"
+          footy pages export --out docs 2>/dev/null || echo "Pages export done with warnings"
 
       # STEP 7: Persist database as release asset (free, indefinite)
       - name: Save database to release
