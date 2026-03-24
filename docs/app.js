@@ -10,6 +10,51 @@ const RETRY_BACKOFF_MS = 1000;
 const ITEMS_PER_PAGE = 50;
 const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Static site mode: resolve /api/X to ./api/X.json for GitHub Pages
+const IS_STATIC = !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1');
+
+// Map of API endpoints to their static JSON file paths
+const STATIC_API_MAP = {
+  'matches': 'matches',
+  'stats': 'stats',
+  'last-updated': 'last-updated',
+  'performance': 'performance',
+  'insights/value-bets': 'value-bets',
+  'insights/btts-ou': 'btts-ou',
+  'insights/accumulators': 'accumulators',
+  'insights/form-table': 'form-table',
+  'training/status': 'training-status',
+  'model-lab': 'model-lab',
+  'self-learning/status': 'self-learning',
+  'sources': 'sources',
+  'streaks': 'streaks',
+  'upset-alerts': 'upset-alerts',
+  'ensemble-weights': 'ensemble-weights',
+  'expert-rankings': 'expert-rankings',
+};
+
+function resolveUrl(url) {
+  if (!IS_STATIC) return url;
+  // Strip leading /api/ and query params
+  const stripped = url.replace(/^\/api\//, '').split('?')[0];
+  // Check direct mapping first
+  for (const [pattern, file] of Object.entries(STATIC_API_MAP)) {
+    if (stripped === pattern || stripped.startsWith(pattern + '/')) {
+      return './api/' + file + '.json';
+    }
+  }
+  // League table special case: /api/league-table/PL → ./api/league-table/PL.json
+  const ltMatch = stripped.match(/^league-table\/(\w+)/);
+  if (ltMatch) return './api/league-table/' + ltMatch[1] + '.json';
+  // Season simulation: /api/season-simulation/PL → ./api/season-simulation-PL.json
+  const simMatch = stripped.match(/^season-simulation\/(\w+)/);
+  if (simMatch) return './api/season-simulation-' + simMatch[1] + '.json';
+  // Match detail: /api/matches/123 → ./api/matches.json (filter client-side)
+  if (stripped.match(/^matches\/\d+/)) return './api/matches.json';
+  // Default: try as-is with .json
+  return './api/' + stripped.replace(/\//g, '-') + '.json';
+}
+
 document.addEventListener('alpine:init', () => {
 
   Alpine.data('app', () => ({
@@ -157,10 +202,15 @@ document.addEventListener('alpine:init', () => {
         const requestSignal = new AbortController();
         const finalSignal = signal.aborted ? requestSignal.signal : signal;
 
-        const r = await fetch(url, { ...opts, signal: finalSignal });
+        const resolvedUrl = resolveUrl(url);
+        const r = await fetch(resolvedUrl, { ...opts, signal: finalSignal });
         clearTimeout(timeoutId);
 
         if (!r.ok) {
+          if (IS_STATIC && r.status === 404) {
+            // Static site: missing endpoint — return empty data silently
+            return {};
+          }
           const body = await r.json().catch(() => ({}));
           const msg = body.error || `Request failed (${r.status})`;
           this._showError(msg);

@@ -10,6 +10,19 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <!-- GitHub Pages SPA: restore path from 404 redirect -->
+  <script>
+    (function(){
+      var redirect = sessionStorage.getItem('ghpages_redirect');
+      if (redirect) {
+        sessionStorage.removeItem('ghpages_redirect');
+        // Push the original path so the SPA router can handle it
+        if (redirect !== location.pathname) {
+          history.replaceState(null, '', redirect);
+        }
+      }
+    })();
+  </script>
   <!-- Alpine.js and app.js loaded at bottom of body -->
 </head>
 <body x-data="app" @click="showInsightsDropdown = false; showAnalysisDropdown = false; showSystemDropdown = false">
