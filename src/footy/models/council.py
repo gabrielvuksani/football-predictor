@@ -1008,12 +1008,15 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     features["upset_max_signal"] = np.max(upset_signals, axis=1)
     features["upset_n_active"] = np.sum(upset_signals > 0.05, axis=1).astype(float)
 
-    # Competition encoding (target-encoded as a single feature for CatBoost)
+    # Competition encoding — one-hot for top leagues (works with all sklearn models)
     if competitions is not None:
-        features["competition"] = np.array([str(c) for c in competitions])
+        _COMP_LIST = ["PL", "PD", "SA", "BL1", "FL1", "DED", "ELC", "PPL", "TR1", "BEL", "GR1"]
+        comp_arr = np.array([str(c) for c in competitions])
+        for comp_code in _COMP_LIST:
+            features[f"comp_{comp_code}"] = (comp_arr == comp_code).astype(float)
 
-    # Build numpy array from features (exclude string features handled separately)
-    numeric_keys = [k for k, v in features.items() if v.dtype != object]
+    # Build numpy array from all numeric features
+    numeric_keys = [k for k, v in features.items() if np.issubdtype(v.dtype, np.number)]
     blocks = [features[k][:, None] if features[k].ndim == 1 else features[k] for k in numeric_keys]
 
     X = np.hstack(blocks) if blocks else np.zeros((n, 0))
