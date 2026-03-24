@@ -33,32 +33,43 @@ const STATIC_API_MAP = {
   'expert-rankings': 'expert-rankings',
 };
 
+// Compute base path once — works on GitHub Pages project sites and custom domains
+const BASE_PATH = (() => {
+  const path = window.location.pathname;
+  // If on a /match/123 SPA route, go up to the project root
+  const matchRoute = path.match(/^(\/[^/]+\/)match\//);
+  if (matchRoute) return matchRoute[1];
+  // Otherwise use the current directory
+  return path.endsWith('/') ? path : path.substring(0, path.lastIndexOf('/') + 1);
+})();
+
 function resolveUrl(url) {
   if (!IS_STATIC) return url;
   // Strip leading /api/ and query params
   const stripped = url.replace(/^\/api\//, '').split('?')[0];
+  const base = BASE_PATH + 'api/';
   // Check direct mapping first
   for (const [pattern, file] of Object.entries(STATIC_API_MAP)) {
     if (stripped === pattern || stripped.startsWith(pattern + '/')) {
-      return './api/' + file + '.json';
+      return base + file + '.json';
     }
   }
-  // League table special case: /api/league-table/PL → ./api/league-table/PL.json
+  // League table special case: /api/league-table/PL → api/league-table/PL.json
   const ltMatch = stripped.match(/^league-table\/(\w+)/);
-  if (ltMatch) return './api/league-table/' + ltMatch[1] + '.json';
-  // Season simulation: /api/season-simulation/PL → ./api/season-simulation-PL.json
+  if (ltMatch) return base + 'league-table/' + ltMatch[1] + '.json';
+  // Season simulation: /api/season-simulation/PL → api/season-simulation-PL.json
   const simMatch = stripped.match(/^season-simulation\/(\w+)/);
-  if (simMatch) return './api/season-simulation-' + simMatch[1] + '.json';
-  // Match detail sub-resources: /api/matches/123/experts → ./api/matches/123/experts.json
+  if (simMatch) return base + 'season-simulation-' + simMatch[1] + '.json';
+  // Match detail sub-resources: /api/matches/123/experts → api/matches/123/experts.json
   const matchSubMatch = stripped.match(/^matches\/(\d+)\/(experts|h2h|form|xg|patterns|models|ai)$/);
-  if (matchSubMatch) return './api/matches/' + matchSubMatch[1] + '/' + matchSubMatch[2] + '.json';
-  // Match detail: /api/matches/123 → ./api/matches/123.json
+  if (matchSubMatch) return base + 'matches/' + matchSubMatch[1] + '/' + matchSubMatch[2] + '.json';
+  // Match detail: /api/matches/123 → api/matches/123.json
   const matchDetailMatch = stripped.match(/^matches\/(\d+)$/);
-  if (matchDetailMatch) return './api/matches/' + matchDetailMatch[1] + '.json';
-  // Match list: /api/matches → ./api/matches.json
-  if (stripped === 'matches') return './api/matches.json';
+  if (matchDetailMatch) return base + 'matches/' + matchDetailMatch[1] + '.json';
+  // Match list: /api/matches → api/matches.json
+  if (stripped === 'matches') return base + 'matches.json';
   // Default: try as-is with .json
-  return './api/' + stripped.replace(/\//g, '-') + '.json';
+  return base + stripped.replace(/\//g, '-') + '.json';
 }
 
 document.addEventListener('alpine:init', () => {
@@ -769,7 +780,16 @@ document.addEventListener('alpine:init', () => {
       this.loadingTable = true;
       try {
         const d = await this._fetchWithRetry(`/api/league-table/${this.tableComp}`);
-        this.leagueTable = d.standings || [];
+        this.leagueTable = (d.standings || []).map(r => ({
+          position: r.position ?? r.pos,
+          team_name: r.team_name ?? r.team,
+          played: r.played ?? r.p,
+          won: r.won ?? r.w,
+          drawn: r.drawn ?? r.d,
+          lost: r.lost ?? r.l,
+          goal_difference: r.goal_difference ?? r.gd,
+          points: r.points ?? r.pts,
+        }));
       } catch(e) { console.error(e); this.leagueTable = []; }
       this.loadingTable = false;
     },

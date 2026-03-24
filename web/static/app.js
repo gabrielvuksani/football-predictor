@@ -682,7 +682,16 @@ document.addEventListener('alpine:init', () => {
       this.loadingTable = true;
       try {
         const d = await this._fetchWithRetry(`/api/league-table/${this.tableComp}`);
-        this.leagueTable = d.standings || [];
+        this.leagueTable = (d.standings || []).map(r => ({
+          position: r.position ?? r.pos,
+          team_name: r.team_name ?? r.team,
+          played: r.played ?? r.p,
+          won: r.won ?? r.w,
+          drawn: r.drawn ?? r.d,
+          lost: r.lost ?? r.l,
+          goal_difference: r.goal_difference ?? r.gd,
+          points: r.points ?? r.pts,
+        }));
       } catch(e) { console.error(e); this.leagueTable = []; }
       this.loadingTable = false;
     },
