@@ -24,7 +24,7 @@ concurrency:
 jobs:
   autopilot:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       DB_PATH: data/footy.duckdb
       FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
@@ -141,7 +141,7 @@ jobs:
 
           # Always generate predictions
           print('Generating predictions...')
-          count = predict_upcoming(con, lookahead_days=14, verbose=True)
+          count = predict_upcoming(con, lookahead_days=7, verbose=True)
           print(f'Predicted {count} matches')
           "
         env:
