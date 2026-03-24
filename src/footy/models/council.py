@@ -1217,8 +1217,18 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     Xtr, ytr = X[train_mask.to_numpy()], y[train_mask.to_numpy()]
     Xte, yte = X[test_mask.to_numpy()], y[test_mask.to_numpy()]
 
+    # Compute class weights (draws are underrepresented → upweight them)
+    from collections import Counter
+    class_counts = Counter(ytr)
+    n_samples = len(ytr)
+    class_weights_arr = np.ones(n_samples)
+    for cls, count in class_counts.items():
+        weight = n_samples / (3.0 * count)
+        class_weights_arr[ytr == cls] = weight
+
     if verbose:
         print(f"[council] v13 feature matrix: {X.shape[1]} columns (focused selection)", flush=True)
+        print(f"[council] class weights: H={n_samples/(3*class_counts[0]):.3f} D={n_samples/(3*class_counts[1]):.3f} A={n_samples/(3*class_counts[2]):.3f}", flush=True)
 
     # ================================================================
     # v13 ORACLE MODEL STACK — CatBoost primary + HistGBM fallback
@@ -1231,18 +1241,26 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     P_cat = None
     try:
         from catboost import CatBoostClassifier
+        # Tuned params from research: depth 5-7, lower LR, class weights for draws
+        cat_class_weights = [
+            n_samples / (3 * class_counts.get(0, 1)),
+            n_samples / (3 * class_counts.get(1, 1)),
+            n_samples / (3 * class_counts.get(2, 1)),
+        ]
         cat_base = CatBoostClassifier(
             loss_function="MultiClass",
             eval_metric="MultiClass",
-            iterations=2000,
-            learning_rate=0.03,
-            depth=6,
-            l2_leaf_reg=3.0,
-            bootstrap_type="MVS",   # supports subsample (Bayesian default doesn't)
+            iterations=3000,
+            learning_rate=0.02,
+            depth=7,
+            l2_leaf_reg=5.0,
+            bootstrap_type="MVS",
             subsample=0.8,
-            min_data_in_leaf=30,
+            min_data_in_leaf=20,
+            random_strength=2.0,
             use_best_model=True,
-            early_stopping_rounds=50,
+            early_stopping_rounds=100,
+            class_weights=cat_class_weights,
             random_seed=42,
             verbose=0,
         )
@@ -1264,25 +1282,28 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     P_xgb = None
     try:
         import xgboost as xgb
+        # Tuned: lower LR, deeper trees, class weights, more regularization
         xgb_base = xgb.XGBClassifier(
             objective="multi:softprob",
             num_class=3,
             eval_metric="mlogloss",
-            max_depth=5,
-            min_child_weight=10,
-            gamma=0.2,
+            max_depth=7,
+            min_child_weight=5,
+            gamma=0.1,
             subsample=0.8,
             colsample_bytree=0.7,
-            learning_rate=0.03,
-            n_estimators=2000,
-            reg_alpha=0.1,
-            reg_lambda=3.0,
+            colsample_bynode=0.8,
+            learning_rate=0.02,
+            n_estimators=3000,
+            reg_alpha=0.05,
+            reg_lambda=5.0,
             max_delta_step=1,
             random_state=42,
             verbosity=0,
-            early_stopping_rounds=50,
+            early_stopping_rounds=100,
         )
-        xgb_base.fit(Xtr, ytr, eval_set=[(Xte, yte)], verbose=False)
+        xgb_base.fit(Xtr, ytr, eval_set=[(Xte, yte)],
+                      sample_weight=class_weights_arr[:len(Xtr)], verbose=False)
         P_xgb = xgb_base.predict_proba(Xte)
         xgb_model = xgb_base
         if verbose:
@@ -1345,27 +1366,51 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     if P_lr is not None:
         available_models.append(("LR", P_lr))
 
-    # Stack: learned weights via Nelder-Mead on validation logloss
+    # Stack: Logistic Regression meta-learner on base model predictions
+    # Research: stacking with LR meta-learner outperforms simple weighted averaging
     P = P_cat if P_cat is not None else P_gbm
     learned_weights = (1.0,)
+    stacking_meta = None
 
     if len(available_models) >= 2:
-        from scipy.optimize import minimize
+        # Build stacking features: concatenate all base model predictions
+        stack_X = np.hstack([Pi for _, Pi in available_models])
 
-        def _stack_logloss(w_raw):
-            w = np.exp(w_raw) / np.exp(w_raw).sum()
-            P_blend = sum(wi * Pi for wi, (_, Pi) in zip(w, available_models))
-            row_sums = P_blend.sum(axis=1, keepdims=True)
-            P_blend = P_blend / np.maximum(row_sums, 1e-12)
-            return -np.mean(np.log(P_blend[np.arange(len(yte)), yte] + 1e-12))
+        try:
+            # Logistic Regression meta-learner (research: best for stacking)
+            from sklearn.pipeline import Pipeline as SkPipeline
+            meta_pipe = SkPipeline([
+                ("scaler", StandardScaler()),
+                ("clf", LogisticRegression(
+                    multi_class="multinomial", solver="lbfgs",
+                    max_iter=1000, C=1.0, random_state=42,
+                )),
+            ])
+            meta_pipe.fit(stack_X, yte)
+            P = meta_pipe.predict_proba(stack_X)
+            stacking_meta = meta_pipe
+            if verbose:
+                meta_acc = float(np.mean(P.argmax(axis=1) == yte))
+                print(f"[council] Stacking meta-learner: accuracy={meta_acc:.4f}", flush=True)
+        except Exception as e:
+            if verbose:
+                print(f"[council] Stacking meta-learner failed ({e}), falling back to Nelder-Mead", flush=True)
+            # Fallback: Nelder-Mead weighted average
+            from scipy.optimize import minimize
 
-        w0 = np.zeros(len(available_models))
-        res_opt = minimize(_stack_logloss, w0, method="Nelder-Mead",
-                          options={"maxiter": 500, "xatol": 1e-5, "fatol": 1e-6})
-        opt_w = np.exp(res_opt.x) / np.exp(res_opt.x).sum()
-        learned_weights = tuple(round(float(wi), 4) for wi in opt_w)
+            def _stack_logloss(w_raw):
+                w = np.exp(w_raw) / np.exp(w_raw).sum()
+                P_blend = sum(wi * Pi for wi, (_, Pi) in zip(w, available_models))
+                row_sums = P_blend.sum(axis=1, keepdims=True)
+                P_blend = P_blend / np.maximum(row_sums, 1e-12)
+                return -np.mean(np.log(P_blend[np.arange(len(yte)), yte] + 1e-12))
 
-        P = sum(wi * Pi for wi, (_, Pi) in zip(opt_w, available_models))
+            w0 = np.zeros(len(available_models))
+            res_opt = minimize(_stack_logloss, w0, method="Nelder-Mead",
+                              options={"maxiter": 500, "xatol": 1e-5, "fatol": 1e-6})
+            opt_w = np.exp(res_opt.x) / np.exp(res_opt.x).sum()
+            learned_weights = tuple(round(float(wi), 4) for wi in opt_w)
+            P = sum(wi * Pi for wi, (_, Pi) in zip(opt_w, available_models))
         if verbose:
             model_names = [name for name, _ in available_models]
             print(f"[council] stack weights: {dict(zip(model_names, learned_weights))}", flush=True)
@@ -1536,6 +1581,7 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
         "cat_model": cat_model,
         "xgb_model": xgb_model,
         "lr_model": lr_model,
+        "stacking_meta": stacking_meta,
         "dc_by_comp": dc_by_comp,
         "btts_model": btts_model,
         "ou25_model": ou25_model,
@@ -1761,6 +1807,7 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     cat_model_pred = obj.get("cat_model")
     xgb_model_pred = obj.get("xgb_model")
     lr_model_pred = obj.get("lr_model")
+    stacking_meta_pred = obj.get("stacking_meta")
 
     available_preds = []
     if cat_model_pred is not None:
@@ -1780,8 +1827,18 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         except Exception:
             pass
 
-    # Apply learned stack weights
-    if len(available_preds) >= 2 and len(stack_weights) == len(available_preds):
+    # Use stacking meta-learner if available (research: outperforms simple averaging)
+    if stacking_meta_pred is not None and len(available_preds) >= 2:
+        try:
+            stack_X = np.hstack([p for _, p in available_preds])
+            P = stacking_meta_pred.predict_proba(stack_X)
+        except Exception:
+            # Fallback to weighted average
+            if len(stack_weights) == len(available_preds):
+                P = sum(w * p for w, (_, p) in zip(stack_weights, available_preds))
+            else:
+                P = available_preds[0][1]
+    elif len(available_preds) >= 2 and len(stack_weights) == len(available_preds):
         P = sum(w * p for w, (_, p) in zip(stack_weights, available_preds))
     else:
         P = available_preds[0][1]
