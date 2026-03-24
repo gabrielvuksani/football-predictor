@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
@@ -51,7 +50,6 @@ def fetch_opta_predictions(competition: str = "PL") -> list[dict]:
         return []
 
     soup = BeautifulSoup(r.text, "html.parser")
-    full_text = soup.get_text()
 
     predictions = []
 
