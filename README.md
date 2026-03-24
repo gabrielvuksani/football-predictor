@@ -1,6 +1,6 @@
 # Footy Predictor v13 "The Oracle"
 
-AI-powered football match prediction system with **50 expert models**, **138 focused features**, and a self-learning CatBoost + XGBoost ensemble achieving **55%+ accuracy** on three-way match outcomes.
+AI-powered football match prediction system with **50 expert models**, **138 focused features**, and a self-learning CatBoost + XGBoost stacking ensemble achieving **56.2% accuracy** on three-way match outcomes (Home/Draw/Away).
 
 **[Live Predictions](https://gabrielvuksani.github.io/football-predictor/)** | **[Autopilot Workflow](../../actions/workflows/autopilot.yml)**
 
@@ -42,13 +42,13 @@ Home advantage, form and momentum, head-to-head history, fixture congestion, Eur
 
 | Metric | Value | Context |
 |--------|-------|---------|
-| **Three-way accuracy** | **55.3%** | Random = 33%, bookmakers = 53-55% |
-| **Walk-forward CV** | **56.8%** | Honest temporal evaluation |
-| **Brier score** | **0.187** | FiveThirtyEight achieved ~0.196 |
-| **Log-loss** | 0.943 | |
-| **Calibration (ECE)** | 0.018 | Near-perfect calibration |
-| **BTTS accuracy** | 54.7% | |
-| **Over 2.5 accuracy** | 56.7% | |
+| **Three-way accuracy** | **56.2%** | Random = 33%, bookmakers = 53-55% |
+| **Walk-forward CV** | **57.0%** | Honest temporal evaluation |
+| **Brier score** | **0.184** | FiveThirtyEight achieved ~0.196 |
+| **Log-loss** | 0.932 | |
+| **Calibration (ECE)** | 0.014 | Near-perfect calibration |
+| **BTTS accuracy** | 55.1% | |
+| **Over 2.5 accuracy** | 57.0% | |
 
 ---
 
