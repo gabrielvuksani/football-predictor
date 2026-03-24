@@ -780,7 +780,8 @@ document.addEventListener('alpine:init', () => {
       this.loadingTable = true;
       try {
         const d = await this._fetchWithRetry(`/api/league-table/${this.tableComp}`);
-        this.leagueTable = (d.standings || []).map(r => ({
+        this.leagueTable = (d.standings || []).map((r, i) => ({
+          team_id: r.team_id ?? r.team ?? i,
           position: r.position ?? r.pos,
           team_name: r.team_name ?? r.team,
           played: r.played ?? r.p,
