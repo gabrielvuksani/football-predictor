@@ -167,6 +167,23 @@ def soccerdata(verbose: bool = typer.Option(True)):
 
 
 @app.command()
+def opta(competition: str = typer.Option("PL", "--league", "-l")):
+    """Fetch Opta/TheAnalyst win probabilities and store for upcoming matches."""
+    from footy.db import connect
+    from footy.providers.opta_predictions import fetch_opta_predictions, ingest_opta_to_db
+    con = connect()
+    preds = fetch_opta_predictions(competition)
+    if preds:
+        matched = ingest_opta_to_db(con, competition)
+        console.print(f"[green]Opta: {len(preds)} predictions fetched, {matched} matched to upcoming[/green]")
+        for p in preds:
+            console.print(f"  {p['home']:25s} vs {p['away']:25s}  "
+                         f"H={p['opta_home']:.1%}  D={p['opta_draw']:.1%}  A={p['opta_away']:.1%}")
+    else:
+        console.print("[yellow]No Opta predictions found for this week[/yellow]")
+
+
+@app.command()
 def reset():
     """Reset all model states."""
     _pipeline().reset_states(verbose=True)
