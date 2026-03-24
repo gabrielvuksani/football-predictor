@@ -1,11 +1,11 @@
 {
   "name": "Footy Predictor",
   "short_name": "FootyPred",
-  "description": "AI-powered football match predictions with 34-expert ensemble",
+  "description": "AI-powered football match predictions with 50-expert ensemble",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#050507",
-  "theme_color": "#050507",
+  "background_color": "#070b14",
+  "theme_color": "#070b14",
   "orientation": "portrait-primary",
   "icons": [
     {

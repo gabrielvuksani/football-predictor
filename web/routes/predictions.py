@@ -201,7 +201,7 @@ async def api_upset_alerts(min_risk: float = Query(0.3, ge=0, le=1)):
 async def api_export_predictions(
     model: str = Query("v13_oracle"),
     days: int = Query(14, ge=1, le=90),
-    status: str = Query("ALL", regex="^(UPCOMING|FINISHED|ALL)$"),
+    status: str = Query("ALL", pattern="^(UPCOMING|FINISHED|ALL)$"),
 ):
     """Export predictions as CSV with optional filtering."""
     try:

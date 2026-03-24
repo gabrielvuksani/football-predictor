@@ -1,10 +1,10 @@
-const CACHE_NAME = 'footy-predictor-v12';
+const CACHE_NAME = 'footy-predictor-v14';
 const STATIC_ASSETS = [
   '/',
   '/static/style.css',
   '/static/app.js',
-  'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap',
-  'https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js',
+  'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Sora:wght@400;500;600;700;800&display=swap',
+  'https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js',
 ];
 
 self.addEventListener('install', event => {

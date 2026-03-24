@@ -881,7 +881,7 @@ document.addEventListener('alpine:init', () => {
     groupedMatches() {
       const groups = {};
       for (const m of this.filteredMatches) {
-        const d = m.utc_date.slice(0, 10);
+        const d = m.utc_date ? m.utc_date.slice(0, 10) : 'Unknown';
         if (!groups[d]) groups[d] = [];
         groups[d].push(m);
       }

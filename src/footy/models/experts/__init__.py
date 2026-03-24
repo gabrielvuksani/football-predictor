@@ -1,6 +1,6 @@
-"""Expert modules for the v12 analyst prediction system.
+"""Expert modules for the v14 Apex prediction system.
 
-Provides 30+ specialised experts that each produce probability distributions
+Provides 50 specialised experts that each produce probability distributions
 + domain-specific features. Import ``ALL_EXPERTS`` for the default ordered
 list, or import individual expert classes as needed.
 
