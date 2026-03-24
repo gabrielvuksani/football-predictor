@@ -49,8 +49,14 @@ function resolveUrl(url) {
   // Season simulation: /api/season-simulation/PL → ./api/season-simulation-PL.json
   const simMatch = stripped.match(/^season-simulation\/(\w+)/);
   if (simMatch) return './api/season-simulation-' + simMatch[1] + '.json';
-  // Match detail: /api/matches/123 → ./api/matches.json (filter client-side)
-  if (stripped.match(/^matches\/\d+/)) return './api/matches.json';
+  // Match detail sub-resources: /api/matches/123/experts → ./api/matches/123/experts.json
+  const matchSubMatch = stripped.match(/^matches\/(\d+)\/(experts|h2h|form|xg|patterns|models|ai)$/);
+  if (matchSubMatch) return './api/matches/' + matchSubMatch[1] + '/' + matchSubMatch[2] + '.json';
+  // Match detail: /api/matches/123 → ./api/matches/123.json
+  const matchDetailMatch = stripped.match(/^matches\/(\d+)$/);
+  if (matchDetailMatch) return './api/matches/' + matchDetailMatch[1] + '.json';
+  // Match list: /api/matches → ./api/matches.json
+  if (stripped === 'matches') return './api/matches.json';
   // Default: try as-is with .json
   return './api/' + stripped.replace(/\//g, '-') + '.json';
 }
