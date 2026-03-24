@@ -86,17 +86,29 @@ class LineupExpert(Expert):
             if has_avail:
                 raw_h = getattr(r, "fpl_available_h", None)
                 raw_a = getattr(r, "fpl_available_a", None)
-                if raw_h is not None and not (isinstance(raw_h, float) and np.isnan(raw_h)):
-                    lu_availability_h[i] = float(raw_h) / 25.0  # normalize
-                if raw_a is not None and not (isinstance(raw_a, float) and np.isnan(raw_a)):
-                    lu_availability_a[i] = float(raw_a) / 25.0
+                try:
+                    if raw_h is not None and not pd.isna(raw_h):
+                        lu_availability_h[i] = float(raw_h) / 25.0
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    if raw_a is not None and not pd.isna(raw_a):
+                        lu_availability_a[i] = float(raw_a) / 25.0
+                except (TypeError, ValueError):
+                    pass
 
             # Injured count (higher = more rotation risk)
             if has_injured:
                 inj_h = getattr(r, "fpl_injured_h", None)
                 inj_a = getattr(r, "fpl_injured_a", None)
-                inj_h_val = float(inj_h) if inj_h is not None and not (isinstance(inj_h, float) and np.isnan(inj_h)) else 0.0
-                inj_a_val = float(inj_a) if inj_a is not None and not (isinstance(inj_a, float) and np.isnan(inj_a)) else 0.0
+                try:
+                    inj_h_val = float(inj_h) if inj_h is not None and not pd.isna(inj_h) else 0.0
+                except (TypeError, ValueError):
+                    inj_h_val = 0.0
+                try:
+                    inj_a_val = float(inj_a) if inj_a is not None and not pd.isna(inj_a) else 0.0
+                except (TypeError, ValueError):
+                    inj_a_val = 0.0
                 lu_rotation_risk_h[i] = min(1.0, inj_h_val / 5.0 + lu_formation_change_h[i] * 0.3)
                 lu_rotation_risk_a[i] = min(1.0, inj_a_val / 5.0 + lu_formation_change_a[i] * 0.3)
 
