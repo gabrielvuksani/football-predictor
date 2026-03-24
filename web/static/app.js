@@ -1,6 +1,6 @@
 /**
- * Footy Predictor v12 — Alpine.js SPA
- * 34-expert ensemble · Timeout handling · Network recovery · Pagination
+ * Footy Predictor v13 Oracle — Alpine.js SPA
+ * 50-expert ensemble · 56.2% accuracy · Self-learning · Timeout handling
  * Theme toggle · Keyboard shortcuts · Loading states · Auto-refresh
  */
 

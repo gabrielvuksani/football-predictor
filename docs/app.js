@@ -1,6 +1,6 @@
 /**
- * Footy Predictor v12 — Alpine.js SPA
- * 34-expert ensemble · Timeout handling · Network recovery · Pagination
+ * Footy Predictor v13 Oracle — Alpine.js SPA
+ * 50-expert ensemble · 56.2% accuracy · Timeout handling · Network recovery · Pagination
  * Theme toggle · Keyboard shortcuts · Loading states · Auto-refresh
  */
 
@@ -75,7 +75,7 @@ document.addEventListener('alpine:init', () => {
     loadingPerf: false,
     lastUpdated: null,
     days: 14,
-    model: 'v12_analyst',
+    model: 'v13_oracle',
     sortMode: 'kickoff',
     searchQuery: '',
 
@@ -558,14 +558,41 @@ document.addEventListener('alpine:init', () => {
       }
       this._matchesAbortController = new AbortController();
       const signal = this._matchesAbortController.signal;
-      
+
       this.loading = true;
       try {
         const d = await this._fetchWithRetry(`/api/matches?days=${this.days}&model=${this.model}`, { signal });
-        this.matches = d.matches || [];
+        let allMatches = d.matches || [];
+
+        // Static site: filter by date client-side (show today + future only)
+        if (IS_STATIC && allMatches.length > 0) {
+          const now = new Date();
+          now.setHours(0, 0, 0, 0);
+          const horizon = new Date(now);
+          horizon.setDate(horizon.getDate() + this.days);
+
+          allMatches = allMatches.filter(m => {
+            if (!m.utc_date) return false;
+            const matchDate = new Date(m.utc_date);
+            // Show matches from today onwards, within the horizon
+            return matchDate >= now && matchDate <= horizon;
+          });
+
+          // Also prioritize matches with predictions
+          allMatches.sort((a, b) => {
+            // Matches with predictions first
+            const aHasPred = (a.p_home && a.p_home > 0) ? 0 : 1;
+            const bHasPred = (b.p_home && b.p_home > 0) ? 0 : 1;
+            if (aHasPred !== bHasPred) return aHasPred - bHasPred;
+            // Then by date
+            return new Date(a.utc_date) - new Date(b.utc_date);
+          });
+        }
+
+        this.matches = allMatches;
         this.matchesPage = 1;
-      } catch(e) { 
-        if (e.name !== 'AbortError') console.error(e); 
+      } catch(e) {
+        if (e.name !== 'AbortError') console.error(e);
       }
       this.loading = false;
     },
