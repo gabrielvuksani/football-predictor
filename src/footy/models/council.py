@@ -970,6 +970,13 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     # 1. Elo × Form agreement — when rating AND form agree, prediction is stronger
     features["elo_form_agree"] = features["elo_diff"] * (features["form_pts_h"] - features["form_pts_a"])
 
+    # ── OPTA PREDICTIONS ──
+    opta_r = _r("opta")
+    features["opta_ph"] = opta_r.features.get("opta_ph", np.zeros(n))
+    features["opta_pd"] = opta_r.features.get("opta_pd", np.zeros(n))
+    features["opta_pa"] = opta_r.features.get("opta_pa", np.zeros(n))
+    features["opta_has"] = opta_r.features.get("opta_has", np.zeros(n))
+
     # 2. Market confidence — how extreme is the market favourite?
     features["mkt_confidence"] = np.abs(features["mkt_ph"] - features["mkt_pa"])
 
@@ -1217,8 +1224,8 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
             learning_rate=0.03,
             depth=6,
             l2_leaf_reg=3.0,
+            bootstrap_type="MVS",   # supports subsample (Bayesian default doesn't)
             subsample=0.8,
-            colsample_bylevel=0.7,
             min_data_in_leaf=30,
             use_best_model=True,
             early_stopping_rounds=50,
