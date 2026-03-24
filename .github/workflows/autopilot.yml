@@ -137,7 +137,8 @@ jobs:
 
           if needs_train:
             print('Training v13 Oracle model...')
-            result = train_and_save(con, days=2555, eval_days=180, verbose=True)
+            # Use 2 years of data (730 days) for CI speed — full 7 years for local training
+            result = train_and_save(con, days=730, eval_days=90, verbose=True)
             print(f'Training result: {result}')
           else:
             print('Model exists, skipping retrain')
