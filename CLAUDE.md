@@ -34,16 +34,16 @@ python -m footy.cli pages export
 ### Prediction Pipeline (5 layers)
 
 ```
-Layer 1: 50 Expert Models → ExpertResult(probs, confidence, features)
+Layer 1: 45 Expert Models → ExpertResult(probs, confidence, features)
 Layer 2: Conflict/consensus signals, KL divergence, interaction features
-Layer 3: CatBoost + XGBoost + HistGBM + LR stacking ensemble (84 features)
-Layer 4: Temperature scaling calibration
+Layer 3: CatBoost + XGBoost + HistGBM + LR → OOF stacking with Calibrated RF meta-learner (93 features)
+Layer 4: Temperature scaling calibration + odds noise regularization
 Layer 5: Optional LLM narrative (Ollama/Groq)
 ```
 
 The pipeline lives in `src/footy/models/council.py` (~2100 lines). It orchestrates experts, builds the feature matrix via `_build_v13_features()`, and runs the stacking ensemble.
 
-**Important:** `council.py` has two feature builders — `_build_v13_features()` (~84 features, used for prediction) and `_build_meta_X()` (~400+ features, legacy). The trained model expects `_build_v13_features` output. Do not mix them.
+**Important:** `_build_v13_features()` returns `(X, feature_names)` tuple. All callers must destructure. It accepts an optional `df` parameter for SQL column access (PPDA, injuries). Feature names are dynamic — no static constant. The legacy `_build_meta_X()` still exists but is unused.
 
 ### Expert System
 
@@ -80,22 +80,28 @@ Shared services exist to avoid duplicate computation:
 - `web/routes/system.py` — training, weights, rankings, model lab, self-learning, refresh
 - `web/routes/predictions.py` — Bayesian predict, unified prediction, export
 - `web/routes/advanced.py` — season simulation, team profile, streaks, prediction history
+- `web/routes/betting.py` — bet of the day, per-match best bets, same-game parlays, Kelly criterion
 
 Shared utilities in `web/routes/__init__.py`: `con()` for short-lived read-only DuckDB connections, `safe_error()`, `validate_model()`, `validate_competition()`.
 
 ### Frontend
 
-Single Alpine.js SPA at `web/templates/index.html` + `web/static/app.js`. One monolithic `Alpine.data('app', ...)` component with 16 tabs. The CSS design system is in `web/static/style.css` using CSS custom properties.
+Single Alpine.js SPA at `web/templates/index.html` + `web/static/app.js`. One monolithic `Alpine.data('app', ...)` component with 17 tabs (including Betting). The CSS design system is in `web/static/style.css` using CSS custom properties.
 
 **Fonts:** Sora (display/headings), Plus Jakarta Sans (body), JetBrains Mono (data/numbers) — all loaded from Google Fonts CDN and cached by the service worker.
 
 A static variant for GitHub Pages lives in `docs/` with a URL resolver that maps `/api/X` to `./api/X.json` pre-generated JSON files. **The docs/ frontend diverges from web/ and must be manually synced.** Specifically: docs/index.html is missing the simulation, streaks, and prediction history tabs, and its match detail view uses inline styles instead of CSS classes.
 
+### Enrichment Pipeline
+
+`refresh_all_enrichment()` in `src/footy/providers/data_ingest.py` runs: FBref stats, Transfermarkt values, Transfermarkt injuries, referee extraction, referee stats, venue stats, Understat xG backfill, Understat PPDA/xPTS. Called by both `go` and `refresh` CLI commands.
+
 ### Data
 
-- DuckDB database at `data/footy.duckdb` (47+ tables, 93K+ matches)
-- 25+ data providers in `src/footy/providers/` — all core data is free, no API keys required
+- DuckDB database at `data/footy.duckdb` (50+ tables, 93K+ matches)
+- 27 data providers in `src/footy/providers/` (~14 active, rest dormant) — all core data is free
 - Primary chain: football-data.co.uk → SofaScore → OpenFootball → TheSportsDB
+- Enrichment: FBref, Transfermarkt, Understat (PPDA/xPTS), Kaggle injuries (1,544 teams)
 
 ### iOS
 
@@ -125,4 +131,11 @@ Native SwiftUI app at `ios/FootyPredictor/`. MVVM-ish: Models/, Views/, Services
 - `POST /api/refresh` triggers a subprocess with no authentication — CORS is `allow_origins=["*"]`
 - `requirements.txt` is missing `xgboost`, `statsbombpy`, and `gdeltdoc` that `pyproject.toml` declares — Docker builds fall back to HistGBM only
 - The `docs/app.js` has diverged from `web/static/app.js` — features like success toasts use different implementations
-- `council.py` has 5 feature extractions that store results in variables but never add them to the feature matrix (dead code in `_build_v13_features`)
+- DuckDB `CREATE TABLE IF NOT EXISTS` does NOT update existing schemas — must `DROP` first if columns changed
+- DuckDB is single-writer — training locks the DB for 10+ minutes; don't run enrichment concurrently
+- `predict_upcoming` runs all 44 experts per match — can take 30+ minutes; run in background
+- soccerdata DataFrames have MultiIndex (league/season/game) — call `reset_index()` before iterating
+- soccerdata FBref/SoFIFA scrapers get 403 Forbidden — use our own `fbref_scraper.py` instead
+- soccerdata Understat uses league names like `'ENG-Premier League'` not `'EPL'`
+- soccerdata SoFIFA takes `versions` parameter, not `seasons`
+- The `docs/` frontend diverges from `web/` — also missing the Betting tab and match detail Best Bets
