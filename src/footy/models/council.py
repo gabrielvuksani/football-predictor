@@ -1957,6 +1957,22 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         except Exception:
             pass
 
+    # v15: Apply per-league temperature from self-learning (online calibration)
+    try:
+        league_temps = con.execute(
+            "SELECT competition, temperature FROM league_temperatures"
+        ).fetchall()
+        if league_temps and up_competitions is not None:
+            temp_map = {r[0]: r[1] for r in league_temps}
+            from scipy.special import softmax as scipy_softmax
+            for i, comp in enumerate(up_competitions):
+                lt = temp_map.get(str(comp), 1.0)
+                if lt != 1.0 and lt > 0:
+                    logits_i = np.log(np.clip(P[i], 1e-12, 1.0))
+                    P[i] = scipy_softmax(logits_i / lt)
+    except Exception:
+        pass  # league_temperatures table may not exist yet
+
     # Soft floor/ceiling — v15: raised ceiling to 99% to allow high-confidence predictions
     P = np.clip(P, 0.01, 0.99)
     row_sums = P.sum(axis=1, keepdims=True)

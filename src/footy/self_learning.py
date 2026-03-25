@@ -556,12 +556,12 @@ class ADWINDetector:
 
         mean0 = s0 / c0
         mean1 = s1 / c1
-        max(0, sq0 / c0 - mean0**2)
-        max(0, sq1 / c1 - mean1**2)
+        # v15 fix: actually use variance in the Hoeffding bound (was discarded)
+        var0 = max(0, sq0 / c0 - mean0**2)
+        var1 = max(0, sq1 / c1 - mean1**2)
 
-        # Hoeffding bound for change detection
-        m = 1 / (c0 + c1)
-        eps = math.sqrt(m * math.log(2 / self.delta))
+        # Variance-aware Hoeffding bound (tighter than simple bound)
+        eps = math.sqrt(2.0 * (var0 / c0 + var1 / c1) * math.log(2.0 / self.delta))
 
         return abs(mean0 - mean1) > eps
 
@@ -1394,6 +1394,55 @@ class SelfLearningLoop:
             }
         return data
 
+    def persist_to_db(self, con: Any) -> None:
+        """Persist Hedge weights and league temperatures to DuckDB.
+
+        Called after each scoring round so that the self-learning state
+        survives restarts. The council loads these at prediction time.
+        """
+        try:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS expert_hedge_weights (
+                    expert_name TEXT PRIMARY KEY,
+                    weight DOUBLE NOT NULL DEFAULT 1.0,
+                    cumulative_loss DOUBLE NOT NULL DEFAULT 0.0,
+                    n_predictions INTEGER NOT NULL DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS league_temperatures (
+                    competition TEXT PRIMARY KEY,
+                    temperature DOUBLE NOT NULL DEFAULT 1.0,
+                    n_observations INTEGER NOT NULL DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Persist Hedge weights
+            hedge_weights = self.get_hedge_weights()
+            for name, weight in hedge_weights.items():
+                cum_loss = self._hedge_cumulative_loss.get(name, 0.0)
+                tracker = self.expert_trackers.get(name)
+                n = tracker.total_predictions if tracker else 0
+                con.execute(
+                    "INSERT OR REPLACE INTO expert_hedge_weights VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    [name, weight, cum_loss, n],
+                )
+
+            # Persist league temperatures
+            for league, temp in self._league_temperatures.items():
+                n_obs = len(self._league_calibration_errors.get(league, []))
+                con.execute(
+                    "INSERT OR REPLACE INTO league_temperatures VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                    [league, temp, n_obs],
+                )
+
+            log.info("Persisted %d Hedge weights, %d league temperatures",
+                     len(hedge_weights), len(self._league_temperatures))
+        except Exception as e:
+            log.warning("Failed to persist self-learning state: %s", e)
+
     @classmethod
     def from_db(cls, con: Any) -> "SelfLearningLoop":
         """Reconstruct learning state from the database.
@@ -1401,6 +1450,28 @@ class SelfLearningLoop:
         Reads scored predictions and rebuilds the performance windows.
         """
         loop = cls()
+        # v15: Also load persisted Hedge weights if available
+        try:
+            hedge_rows = con.execute(
+                "SELECT expert_name, weight, cumulative_loss FROM expert_hedge_weights"
+            ).fetchall()
+            if hedge_rows:
+                loop._hedge_weights = {r[0]: float(r[1]) for r in hedge_rows}
+                loop._hedge_cumulative_loss = {r[0]: float(r[2]) for r in hedge_rows}
+                log.info("Loaded %d Hedge weights from DB", len(hedge_rows))
+        except Exception:
+            pass  # table may not exist yet
+
+        # v15: Load persisted league temperatures
+        try:
+            temp_rows = con.execute(
+                "SELECT competition, temperature FROM league_temperatures"
+            ).fetchall()
+            if temp_rows:
+                loop._league_temperatures = {r[0]: float(r[1]) for r in temp_rows}
+                log.info("Loaded %d league temperatures from DB", len(temp_rows))
+        except Exception:
+            pass
         try:
             rows = cast(list[tuple[Any, ...]], con.execute("""
                 SELECT ps.match_id, p.p_home, p.p_draw, p.p_away,
