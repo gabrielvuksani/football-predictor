@@ -291,6 +291,11 @@
                                 <span x-text="confLabel(m)"></span>
                               </span>
                             </template>
+                            <template x-if="m.upset_risk && m.upset_risk > 0.3">
+                              <span class="upset-badge" :class="m.upset_risk > 0.6 ? 'high' : 'medium'" :title="'Upset risk: ' + Math.round(m.upset_risk * 100) + '%'">
+                                <span x-text="m.upset_risk > 0.6 ? 'UPSET ALERT' : 'Upset Risk'"></span>
+                              </span>
+                            </template>
                           </div>
                         </div>
                       </div>
@@ -902,6 +907,26 @@
                   <div class="outcome-probs-value away" x-text="pct(md.prediction.p_away)"></div>
                   <div class="outcome-probs-team" x-text="md.away_team"></div>
                 </div>
+              </div>
+
+              <!-- v16: Upset Risk & AI Insight -->
+              <template x-if="md.prediction?.upset_risk">
+                <div style="display:flex;gap:1rem;align-items:center;margin-bottom:1.5rem;padding:1rem;background:var(--surface-1);border-radius:var(--r-md);border-left:3px solid var(--amber);">
+                  <div>
+                    <div style="font-size:0.75rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Upset Risk</div>
+                    <div style="font-size:1.5rem;font-weight:800;font-family:var(--font-display);" :style="'color:' + (md.prediction.upset_risk > 0.6 ? 'var(--red)' : md.prediction.upset_risk > 0.3 ? 'var(--amber)' : 'var(--green)')" x-text="Math.round(md.prediction.upset_risk * 100) + '%'"></div>
+                  </div>
+                  <template x-if="md.prediction?.conformal_set_size">
+                    <div>
+                      <div style="font-size:0.75rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Certainty</div>
+                      <div style="font-size:1.5rem;font-weight:800;font-family:var(--font-display);" :style="'color:' + (md.prediction.conformal_set_size === 1 ? 'var(--green)' : md.prediction.conformal_set_size === 2 ? 'var(--amber)' : 'var(--red)')" x-text="md.prediction.conformal_set_size === 1 ? 'High' : md.prediction.conformal_set_size === 2 ? 'Medium' : 'Low'"></div>
+                    </div>
+                  </template>
+                  <template x-if="md.prediction?.llm_rebalance?.reasoning">
+                    <div style="flex:1;font-size:0.85rem;color:var(--text-2);line-height:1.5;" x-text="md.prediction.llm_rebalance.reasoning"></div>
+                  </template>
+                </div>
+              </template>
               </div>
             </div>
           </template>

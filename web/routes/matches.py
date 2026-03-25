@@ -69,6 +69,9 @@ async def api_matches(
                     "o25": float(notes["o25"]) if notes.get("o25") is not None else None,
                     "eg_home": float(r[8]) if r[8] is not None else None,
                     "eg_away": float(r[9]) if r[9] is not None else None,
+                    # v16: conformal prediction + upset risk
+                    "upset_risk": float(notes["upset_risk"]) if notes.get("upset_risk") is not None else None,
+                    "conformal_set_size": notes.get("conformal_set_size"),
                 })
             matches.append(match)
 
