@@ -2555,3 +2555,249 @@ button, [role="button"], .filter-pill, .nav-tab, select, input {
 
 .app-footer a { color: var(--text-2); }
 .app-footer a:hover { color: var(--accent); }
+
+/* ═══ BETTING TAB ═══ */
+.bot-hero {
+  padding: 1.5rem;
+  text-align: center;
+  border: 1px solid var(--accent-dim);
+}
+.bot-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.bot-label {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  padding: 4px 14px;
+  border-radius: var(--r-full);
+}
+.bot-match {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 1rem;
+}
+.bot-pick-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+.bot-pick-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.bot-market {
+  font-size: 0.7rem;
+  color: var(--text-3);
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+.bot-selection {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--green);
+  font-family: var(--font-display);
+}
+.bot-pick-stats {
+  display: flex;
+  gap: 1.25rem;
+}
+.bot-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.bot-stat-label {
+  font-size: 0.6rem;
+  color: var(--text-3);
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+.bot-stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+/* Bet match cards grid */
+.bet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0.75rem;
+}
+.bet-match-card {
+  display: block;
+  padding: 1rem;
+  text-decoration: none;
+  color: inherit;
+  border-left: 3px solid var(--green-dim);
+  transition: border-color var(--dur) var(--ease);
+}
+.bet-match-card:hover {
+  border-left-color: var(--green);
+}
+.bet-match-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.bet-match-teams {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.bet-match-best {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.bet-type-tag {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 2px 6px;
+  background: var(--surface-2);
+  border-radius: var(--r-xs);
+}
+.bet-selection-tag {
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+.bet-odds-tag {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+.bet-edge-pill {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--green);
+  background: var(--green-dim);
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+}
+.bet-parlay-hint {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--border);
+}
+
+/* Match detail best bets */
+.match-bets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.5rem;
+}
+.match-bet-card {
+  padding: 0.75rem;
+  border-left: 3px solid var(--surface-3);
+  transition: border-color var(--dur) var(--ease);
+}
+.match-bet-card.is-value {
+  border-left-color: var(--green);
+}
+.match-bet-top {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.match-bet-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+}
+.match-bet-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.mbs-label {
+  font-size: 0.6rem;
+  color: var(--text-3);
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+.mbs-value {
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+.value-tag {
+  margin-top: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--green);
+  text-align: center;
+}
+
+/* Same game parlay card */
+.sgp-card {
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--accent);
+}
+.sgp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.sgp-odds {
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--accent);
+}
+.sgp-legs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.sgp-leg {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--text-2);
+  padding: 2px 8px;
+  background: var(--surface-2);
+  border-radius: var(--r-xs);
+}
+
+/* Best bet badge on match cards */
+.best-bet-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  font-size: 0.58rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: var(--mono);
+  background: var(--green-dim);
+  color: var(--green);
+}

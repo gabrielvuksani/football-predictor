@@ -1024,6 +1024,56 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
         fb_r.features.get("fb_pass_pct_a", np.zeros(n))
     )
 
+    # ── v17: ROLLING MATCH STATS from FormExpert (HIGH IMPACT) ──
+    # These are computed by FormExpert but were never added to the stacking model.
+    # SoT ratio and conversion rate are among the strongest process quality signals.
+    features["form_sotr_diff"] = (
+        form_r.features.get("form_sotr_h", np.zeros(n)) -
+        form_r.features.get("form_sotr_a", np.zeros(n))
+    )
+    features["form_conversion_diff"] = (
+        form_r.features.get("form_conversion_h", np.zeros(n)) -
+        form_r.features.get("form_conversion_a", np.zeros(n))
+    )
+    features["form_cs_diff"] = (
+        form_r.features.get("form_cs_h", np.zeros(n)) -
+        form_r.features.get("form_cs_a", np.zeros(n))
+    )
+    features["form_btts_rate"] = (
+        form_r.features.get("form_btts_h", np.zeros(n)) +
+        form_r.features.get("form_btts_a", np.zeros(n))
+    ) / 2.0  # average BTTS tendency
+    features["form_gsup_diff"] = (
+        form_r.features.get("form_gsup_h", np.zeros(n)) -
+        form_r.features.get("form_gsup_a", np.zeros(n))
+    )
+
+    # ── v17: Venue-split form (home team's HOME form vs away team's AWAY form) ──
+    features["venue_form_gf"] = (
+        form_r.features.get("form_hf_gf_h", np.zeros(n)) -
+        form_r.features.get("form_af_gf_a", form_r.features.get("form_gf_a", np.zeros(n)))
+    )
+    features["venue_form_cs"] = (
+        form_r.features.get("form_hf_cs_h", np.zeros(n)) -
+        form_r.features.get("form_af_cs_a", form_r.features.get("form_cs_a", np.zeros(n)))
+    )
+
+    # ── v17: MatchDynamics resilience features ──
+    md_r = _r("match_dynamics")
+    features["md_resilience_diff"] = (
+        md_r.features.get("md_resilience_h", np.zeros(n)) -
+        md_r.features.get("md_resilience_a", np.zeros(n))
+    )
+    features["md_comeback_diff"] = (
+        md_r.features.get("md_comeback_h", np.zeros(n)) -
+        md_r.features.get("md_comeback_a", np.zeros(n))
+    )
+
+    # ── v17: Venue stats (pre-computed home advantage from DB) ──
+    # venue_ha_strength is already queried in SQL but no expert feeds it to features
+    venue_r = _r("venue")
+    features["venue_ha_z"] = venue_r.features.get("venue_capacity_norm", np.zeros(n))
+
     # ── v15: FPL Fixture Difficulty Rating (free, high-quality data) ──
     ctx_fdr_h = ctx_r.features.get("ctx_fdr_h", np.zeros(n))
     ctx_fdr_a = ctx_r.features.get("ctx_fdr_a", np.zeros(n))

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.cors import CORSMiddleware
 
-from web.routes import health, matches, insights, stats, system, predictions, advanced
+from web.routes import health, matches, insights, stats, system, predictions, advanced, betting
 
 log = logging.getLogger("footy.api")
 
@@ -80,6 +80,7 @@ app.include_router(stats.router)
 app.include_router(system.router)
 app.include_router(predictions.router)
 app.include_router(advanced.router)
+app.include_router(betting.router)
 
 
 # ── Frontend routes ──

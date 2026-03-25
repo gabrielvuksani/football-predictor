@@ -305,34 +305,52 @@ class FBrefAdvancedExpert(Expert):
                 team_fb_tackles.setdefault(a, [])
                 team_fb_interceptions.setdefault(a, [])
 
+        # v17: Emit aliased keys expected by _build_v13_features in council.py
+        # Map our computed features to the keys the stacking model looks for
+        feat = {
+            "fb_att_quality_h": fb_att_quality_h,
+            "fb_att_quality_a": fb_att_quality_a,
+            "fb_def_quality_h": fb_def_quality_h,
+            "fb_def_quality_a": fb_def_quality_a,
+            "fb_shot_quality_h": fb_shot_quality_h,
+            "fb_shot_quality_a": fb_shot_quality_a,
+            "fb_shot_accuracy_h": fb_shot_accuracy_h,
+            "fb_shot_accuracy_a": fb_shot_accuracy_a,
+            "fb_shot_volume_h": fb_shot_volume_h,
+            "fb_shot_volume_a": fb_shot_volume_a,
+            "fb_corner_dom_h": fb_corner_dom_h,
+            "fb_corner_dom_a": fb_corner_dom_a,
+            "fb_discipline_h": fb_discipline_h,
+            "fb_discipline_a": fb_discipline_a,
+            "fb_quality_mismatch": fb_quality_mismatch,
+            "fb_has_data": fb_has_data,
+            # FBref advanced features (populated when fbref_team_stats joined)
+            "fb_npxg_diff": fb_npxg_diff,
+            "fb_pass_accuracy_h": fb_pass_accuracy_h,
+            "fb_pass_accuracy_a": fb_pass_accuracy_a,
+            "fb_pressing_h": fb_pressing_h,
+            "fb_pressing_a": fb_pressing_a,
+            "fb_progressive_h": fb_progressive_h,
+            "fb_progressive_a": fb_progressive_a,
+            "fb_has_fbref": fb_has_fbref,
+        }
+
+        # Aliases: council.py's _build_v13_features looks for these keys
+        # fb_possession_h/a → use pass_accuracy as closest proxy (no raw possession column)
+        feat["fb_possession_h"] = fb_pass_accuracy_h
+        feat["fb_possession_a"] = fb_pass_accuracy_a
+        # fb_xg_h/a → use att_quality (weighted blend of npxG and xG)
+        feat["fb_xg_h"] = fb_att_quality_h
+        feat["fb_xg_a"] = fb_att_quality_a
+        # fb_shots_h/a → use shot_volume (rolling avg total shots)
+        feat["fb_shots_h"] = fb_shot_volume_h
+        feat["fb_shots_a"] = fb_shot_volume_a
+        # fb_pass_pct_h/a → use pass_accuracy (completed / attempted)
+        feat["fb_pass_pct_h"] = fb_pass_accuracy_h
+        feat["fb_pass_pct_a"] = fb_pass_accuracy_a
+
         return ExpertResult(
             probs=probs,
             confidence=conf,
-            features={
-                "fb_att_quality_h": fb_att_quality_h,
-                "fb_att_quality_a": fb_att_quality_a,
-                "fb_def_quality_h": fb_def_quality_h,
-                "fb_def_quality_a": fb_def_quality_a,
-                "fb_shot_quality_h": fb_shot_quality_h,
-                "fb_shot_quality_a": fb_shot_quality_a,
-                "fb_shot_accuracy_h": fb_shot_accuracy_h,
-                "fb_shot_accuracy_a": fb_shot_accuracy_a,
-                "fb_shot_volume_h": fb_shot_volume_h,
-                "fb_shot_volume_a": fb_shot_volume_a,
-                "fb_corner_dom_h": fb_corner_dom_h,
-                "fb_corner_dom_a": fb_corner_dom_a,
-                "fb_discipline_h": fb_discipline_h,
-                "fb_discipline_a": fb_discipline_a,
-                "fb_quality_mismatch": fb_quality_mismatch,
-                "fb_has_data": fb_has_data,
-                # FBref advanced features (populated when fbref_team_stats joined)
-                "fb_npxg_diff": fb_npxg_diff,
-                "fb_pass_accuracy_h": fb_pass_accuracy_h,
-                "fb_pass_accuracy_a": fb_pass_accuracy_a,
-                "fb_pressing_h": fb_pressing_h,
-                "fb_pressing_a": fb_pressing_a,
-                "fb_progressive_h": fb_progressive_h,
-                "fb_progressive_a": fb_progressive_a,
-                "fb_has_fbref": fb_has_fbref,
-            },
+            features=feat,
         )

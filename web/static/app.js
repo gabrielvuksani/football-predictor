@@ -52,6 +52,12 @@ document.addEventListener('alpine:init', () => {
     accumulators: [],
     loadingAccas: false,
 
+    // ── Betting state ──
+    bettingData: null,
+    loadingBetting: false,
+    matchBets: null,
+    loadingMatchBets: false,
+
     // ── League Form Table state ──
     formTableComp: 'PL',
     formTable: [],
@@ -138,7 +144,7 @@ document.addEventListener('alpine:init', () => {
     _matchRequestId: 0,
     _matchesAbortController: null,
     _matchAbortController: null,
-    _mainTabs: ['matches', 'insights', 'btts', 'accas', 'form', 'table', 'accuracy', 'review', 'simulation', 'streaks', 'history', 'stats', 'training', 'lab', 'brain', 'sources'],
+    _mainTabs: ['matches', 'betting', 'insights', 'btts', 'accas', 'form', 'table', 'accuracy', 'review', 'simulation', 'streaks', 'history', 'stats', 'training', 'lab', 'brain', 'sources'],
     _errorToast: null,
     _errorTimeout: null,
     _successToast: null,
@@ -433,6 +439,7 @@ document.addEventListener('alpine:init', () => {
       this._loadMatchForm(matchId, requestId);
       this._loadMatchXG(matchId, requestId);
       this._loadMatchPatterns(matchId, requestId);
+      this.fetchMatchBets(matchId);
     },
 
     async _loadMatchExperts(matchId, requestId) {
@@ -539,6 +546,22 @@ document.addEventListener('alpine:init', () => {
         const d = await this._fetchWithRetry('/api/last-updated');
         this.lastUpdated = d.last_updated;
       } catch(e) { /* ignore */ }
+    },
+
+    async fetchBetting() {
+      this.loadingBetting = true;
+      try {
+        this.bettingData = await this._fetchWithRetry('/api/betting/picks');
+      } catch (e) { console.error('betting fetch error', e); }
+      this.loadingBetting = false;
+    },
+    async fetchMatchBets(matchId) {
+      this.loadingMatchBets = true;
+      this.matchBets = null;
+      try {
+        this.matchBets = await this._fetchWithRetry(`/api/betting/match/${matchId}`);
+      } catch (e) { console.error('match bets fetch error', e); }
+      this.loadingMatchBets = false;
     },
 
     async fetchValueBets() {
@@ -703,6 +726,7 @@ document.addEventListener('alpine:init', () => {
         return;
       }
       if (this.tab === 'matches') return this.fetchMatches();
+      if (this.tab === 'betting') return this.fetchBetting();
       if (this.tab === 'insights') return this.fetchValueBets();
       if (this.tab === 'btts') return this.fetchBttsOu();
       if (this.tab === 'accas') return this.fetchAccumulators();
@@ -737,6 +761,7 @@ document.addEventListener('alpine:init', () => {
       this.showAnalysisDropdown = false;
       this.showSystemDropdown = false;
       this._saveUiPrefs();
+      if (t === 'betting' && !this.bettingData) this.fetchBetting();
       if (t === 'insights' && !this.valueBets.length) this.fetchValueBets();
       if (t === 'btts' && !this.bttsOu) this.fetchBttsOu();
       if (t === 'accas' && !this.accumulators.length) this.fetchAccumulators();
@@ -976,6 +1001,13 @@ document.addEventListener('alpine:init', () => {
         return { text: 'Tight match, away lean', cls: 'verdict-away' };
       }
       return { text: 'Draw is the highest probability', cls: 'verdict-draw' };
+    },
+
+    hasBestBet(m) {
+      if (!m.p_home) return false;
+      // Check if this match has odds data and a strong prediction
+      const mx = Math.max(m.p_home || 0, m.p_draw || 0, m.p_away || 0);
+      return mx >= 0.55 && m.odds && m.odds.home;
     },
 
     isHighest(outcome) {
