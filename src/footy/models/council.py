@@ -829,6 +829,12 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     features["xgr_overperf_h"] = xgr_r.features.get("xgr_overperf_h", np.zeros(n))
     features["xgr_overperf_a"] = xgr_r.features.get("xgr_overperf_a", np.zeros(n))
 
+    # v17: Understat xG direct signal (when available from backfill)
+    # The xGRegressionExpert uses synthetic xG from shots data; this adds
+    # actual Understat xG as a parallel signal for the 6 covered leagues.
+    features["xgr_luck_h"] = xgr_r.features.get("xgr_pyth_luck_h", np.zeros(n))
+    features["xgr_luck_a"] = xgr_r.features.get("xgr_pyth_luck_a", np.zeros(n))
+
     # H2H signals
     features["h2h_bogey"] = h2h_r.features.get("h2h_bogey", np.zeros(n))
     features["h2h_venue_wr"] = h2h_r.features.get("h2h_venue_wr_h", np.zeros(n))
@@ -1239,6 +1245,17 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
     Xtr, ytr = X[train_mask.to_numpy()], y[train_mask.to_numpy()]
     Xcal, ycal = X[cal_mask.to_numpy()], y[cal_mask.to_numpy()]
     Xte, yte = X[test_mask.to_numpy()], y[test_mask.to_numpy()]
+
+    # v17: Gaussian noise on market odds features during training (ProphitBet research)
+    # Prevents model from overfitting to market lines, improves generalization.
+    # Only applied to training set — cal/test remain clean for honest evaluation.
+    odds_feature_prefixes = ("mkt_ph", "mkt_pd", "mkt_pa", "mkt_move", "mkt_btts", "mkt_ou25", "mkt_ah")
+    if hasattr(feature_names, '__len__') and len(feature_names) == Xtr.shape[1]:
+        rng = np.random.RandomState(42)
+        for j, fname in enumerate(feature_names):
+            if any(fname.startswith(pfx) for pfx in odds_feature_prefixes):
+                noise = rng.normal(0, 0.02, size=Xtr.shape[0])
+                Xtr[:, j] = Xtr[:, j] + noise
 
     # Compute class weights (draws are underrepresented → upweight them)
     from collections import Counter

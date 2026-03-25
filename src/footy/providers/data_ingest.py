@@ -762,6 +762,48 @@ def extract_referee_from_fdcuk() -> int:
     return total_updated
 
 
+def _backfill_understat_xg() -> int:
+    """Backfill Understat xG for recent finished matches missing it.
+
+    Uses the DataOrchestrator's Understat provider to fetch match-level xG
+    for the 6 Understat-covered leagues (PL, PD, BL1, SA, FL1, RU1).
+    Only processes matches from the last 60 days that don't already have Understat xG.
+    """
+    con = connect()
+
+    # Find recent finished matches without Understat xG in covered leagues
+    understat_leagues = ('PL', 'PD', 'BL1', 'SA', 'FL1')
+    placeholders = ','.join(['?'] * len(understat_leagues))
+    rows = con.execute(f"""
+        SELECT m.match_id
+        FROM matches m
+        LEFT JOIN match_extras e ON e.match_id = m.match_id
+        WHERE m.status = 'FINISHED'
+          AND m.competition IN ({placeholders})
+          AND m.utc_date >= CURRENT_TIMESTAMP - INTERVAL 60 DAY
+          AND (e.understat_xg_home IS NULL OR e.understat_xg_home = 0)
+        ORDER BY m.utc_date DESC
+        LIMIT 200
+    """, list(understat_leagues)).fetchall()
+
+    if not rows:
+        log.info("understat: no matches need xG backfill")
+        return 0
+
+    match_ids = [r[0] for r in rows]
+    log.info("understat: backfilling xG for %d matches", len(match_ids))
+
+    from footy.data_orchestrator import DataOrchestrator
+    orchestrator = DataOrchestrator()
+    try:
+        updated = orchestrator.backfill_understat_xg(match_ids)
+    finally:
+        orchestrator.close()
+
+    log.info("understat: updated xG for %d matches", updated)
+    return updated
+
+
 # ---------------------------------------------------------------------------
 # 7. Master refresh
 # ---------------------------------------------------------------------------
@@ -834,6 +876,15 @@ def refresh_all_enrichment(verbose: bool = True) -> dict[str, Any]:
     except Exception as exc:
         log.error("enrichment: venue_stats failed: %s", exc)
         summary["venue_stats"] = {"error": str(exc)}
+
+    # Understat xG backfill (6 leagues: PL, PD, BL1, SA, FL1)
+    try:
+        if verbose:
+            log.info("=== Enrichment: Understat xG ===")
+        summary["understat_xg"] = _backfill_understat_xg()
+    except Exception as exc:
+        log.error("enrichment: understat_xg failed: %s", exc)
+        summary["understat_xg"] = {"error": str(exc)}
 
     elapsed = time.monotonic() - start
 
