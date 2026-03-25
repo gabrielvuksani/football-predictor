@@ -1149,13 +1149,19 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     if df.empty or len(df) < 800:
         return {"error": f"Not enough data ({len(df)}). Ingest more history."}
 
-    cutoff = df["utc_date"].max() - pd.Timedelta(days=int(eval_days))
-    train_mask = df["utc_date"] < cutoff
-    test_mask = ~train_mask
-    n_tr, n_te = int(train_mask.sum()), int(test_mask.sum())
+    # 3-way temporal split: train / calibration / test
+    # - Train: base models + OOF stacking
+    # - Calibration: temperature scaling (NO leakage into test)
+    # - Test: final evaluation only (never seen by any component)
+    cutoff_test = df["utc_date"].max() - pd.Timedelta(days=int(eval_days))
+    cutoff_cal = cutoff_test - pd.Timedelta(days=max(30, int(eval_days) // 3))
+    train_mask = df["utc_date"] < cutoff_cal
+    cal_mask = (df["utc_date"] >= cutoff_cal) & (df["utc_date"] < cutoff_test)
+    test_mask = df["utc_date"] >= cutoff_test
+    n_tr, n_cal, n_te = int(train_mask.sum()), int(cal_mask.sum()), int(test_mask.sum())
 
     if verbose:
-        print(f"[council] total={len(df)} train={n_tr} test={n_te} cutoff={cutoff}", flush=True)
+        print(f"[council] total={len(df)} train={n_tr} cal={n_cal} test={n_te}", flush=True)
     if n_tr < 500:
         return {"error": f"Train split too small ({n_tr})."}
 
@@ -1215,6 +1221,7 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
                   for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
 
     Xtr, ytr = X[train_mask.to_numpy()], y[train_mask.to_numpy()]
+    Xcal, ycal = X[cal_mask.to_numpy()], y[cal_mask.to_numpy()]
     Xte, yte = X[test_mask.to_numpy()], y[test_mask.to_numpy()]
 
     # Compute class weights (draws are underrepresented → upweight them)
@@ -1366,19 +1373,71 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     if P_lr is not None:
         available_models.append(("LR", P_lr))
 
-    # Stack: Logistic Regression meta-learner on base model predictions
-    # Research: stacking with LR meta-learner outperforms simple weighted averaging
+    # ── Proper OOF Stacking (v15: no test set leakage) ──
+    # Train meta-learner on out-of-fold predictions from training data only.
+    # Test set predictions come from base models trained on ALL training data.
     P = P_cat if P_cat is not None else P_gbm
     learned_weights = (1.0,)
     stacking_meta = None
 
     if len(available_models) >= 2:
-        # Build stacking features: concatenate all base model predictions
-        stack_X = np.hstack([Pi for _, Pi in available_models])
-
         try:
-            # Logistic Regression meta-learner (research: best for stacking)
+            from sklearn.model_selection import StratifiedKFold
             from sklearn.pipeline import Pipeline as SkPipeline
+
+            n_stack_folds = 5
+            skf = StratifiedKFold(n_splits=n_stack_folds, shuffle=True, random_state=42)
+            n_models = len(available_models)
+            oof_preds = np.zeros((len(ytr), n_models * 3))
+
+            # Collect out-of-fold predictions for meta-learner training
+            for fold_idx, (tr_idx, val_idx) in enumerate(skf.split(Xtr, ytr)):
+                X_fold_tr, X_fold_val = Xtr[tr_idx], Xtr[val_idx]
+                y_fold_tr = ytr[tr_idx]
+
+                col = 0
+                for model_name, _ in available_models:
+                    try:
+                        if model_name == "CAT":
+                            from catboost import CatBoostClassifier
+                            fold_m = CatBoostClassifier(
+                                loss_function="MultiClass", iterations=1500,
+                                learning_rate=0.037, depth=8, l2_leaf_reg=9.55,
+                                random_seed=42, verbose=0,
+                            )
+                            fold_m.fit(X_fold_tr, y_fold_tr)
+                        elif model_name == "XGB":
+                            import xgboost as xgb
+                            fold_m = xgb.XGBClassifier(
+                                objective="multi:softprob", num_class=3,
+                                max_depth=5, learning_rate=0.025, n_estimators=1500,
+                                random_state=42, verbosity=0,
+                            )
+                            fold_m.fit(X_fold_tr, y_fold_tr, verbose=False)
+                        elif model_name == "GBM":
+                            fold_m = HistGradientBoostingClassifier(
+                                learning_rate=0.03, max_depth=5, max_iter=1000,
+                                l2_regularization=3.0, min_samples_leaf=30, random_state=42,
+                            )
+                            fold_m.fit(X_fold_tr, y_fold_tr)
+                        elif model_name == "LR":
+                            fold_m = SkPipeline([
+                                ("scaler", StandardScaler()),
+                                ("clf", LogisticRegression(
+                                    multi_class="multinomial", max_iter=800,
+                                    C=0.5, random_state=42,
+                                )),
+                            ])
+                            fold_m.fit(X_fold_tr, y_fold_tr)
+                        else:
+                            col += 3
+                            continue
+                        oof_preds[val_idx, col:col+3] = fold_m.predict_proba(X_fold_val)
+                    except Exception:
+                        oof_preds[val_idx, col:col+3] = 1.0 / 3
+                    col += 3
+
+            # Train meta-learner on OOF predictions (NEVER sees test data)
             meta_pipe = SkPipeline([
                 ("scaler", StandardScaler()),
                 ("clf", LogisticRegression(
@@ -1386,16 +1445,19 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
                     max_iter=1000, C=1.0, random_state=42,
                 )),
             ])
-            meta_pipe.fit(stack_X, yte)
-            P = meta_pipe.predict_proba(stack_X)
+            meta_pipe.fit(oof_preds, ytr)
             stacking_meta = meta_pipe
+
+            # Test predictions from FULL base models (trained on all Xtr)
+            stack_test = np.hstack([Pi for _, Pi in available_models])
+            P = meta_pipe.predict_proba(stack_test)
+
             if verbose:
                 meta_acc = float(np.mean(P.argmax(axis=1) == yte))
-                print(f"[council] Stacking meta-learner: accuracy={meta_acc:.4f}", flush=True)
+                print(f"[council] OOF Stacking meta-learner: accuracy={meta_acc:.4f}", flush=True)
         except Exception as e:
             if verbose:
-                print(f"[council] Stacking meta-learner failed ({e}), falling back to Nelder-Mead", flush=True)
-            # Fallback: Nelder-Mead weighted average
+                print(f"[council] OOF stacking failed ({e}), falling back to Nelder-Mead", flush=True)
             from scipy.optimize import minimize
 
             def _stack_logloss(w_raw):
@@ -1419,28 +1481,47 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     row_sums = P.sum(axis=1, keepdims=True)
     P = P / np.maximum(row_sums, 1e-12)
 
-    # ── Temperature scaling — replaces isotonic calibration ──
-    # Single parameter T that preserves discrimination while fixing calibration.
-    # Naturally handles multiclass, probabilities always sum to 1.
+    # ── Temperature scaling on CALIBRATION split (v15: no test leakage) ──
+    # Optimized on cal split, applied to test predictions. Test set never seen.
     temperature = 1.0
     try:
         from scipy.special import softmax as scipy_softmax
-        logits = np.log(P + 1e-12)
+
+        # Get calibration predictions from full base models
+        if stacking_meta is not None and len(available_models) >= 2:
+            stack_cal = np.hstack([
+                m.predict_proba(Xcal) if hasattr(m, 'predict_proba')
+                else np.full((len(Xcal), 3), 1/3)
+                for name, _ in available_models
+                for m in [cat_model if name == "CAT" else
+                          xgb_model if name == "XGB" else
+                          gbm_model if name == "GBM" else
+                          lr_model]
+                if m is not None
+            ][:, :len(available_models)*3])
+            P_cal = stacking_meta.predict_proba(stack_cal) if len(stack_cal) else P[:len(ycal)]
+        else:
+            primary = cat_model or gbm_model
+            P_cal = primary.predict_proba(Xcal)
+
+        # Optimize temperature on calibration set ONLY
+        cal_logits = np.log(P_cal + 1e-12)
 
         def _temp_nll(T):
             T_val = float(T[0]) if hasattr(T, '__len__') else float(T)
-            scaled = logits / max(T_val, 0.01)
+            scaled = cal_logits / max(T_val, 0.01)
             probs = scipy_softmax(scaled, axis=1)
-            return -np.mean(np.log(probs[np.arange(len(yte)), yte] + 1e-12))
+            return -np.mean(np.log(probs[np.arange(len(ycal)), ycal] + 1e-12))
 
         from scipy.optimize import minimize as opt_minimize
         res_temp = opt_minimize(_temp_nll, x0=[1.5], bounds=[(0.1, 10.0)], method="L-BFGS-B")
         temperature = float(res_temp.x[0])
         if verbose:
-            print(f"[council] temperature scaling: T={temperature:.4f}", flush=True)
+            print(f"[council] temperature scaling (on cal split): T={temperature:.4f}", flush=True)
 
-        # Apply temperature scaling to final predictions
-        P = scipy_softmax(logits / temperature, axis=1)
+        # Apply learned temperature to TEST predictions
+        test_logits = np.log(P + 1e-12)
+        P = scipy_softmax(test_logits / temperature, axis=1)
     except Exception as e:
         if verbose:
             print(f"[council] temperature scaling failed: {e}, using raw probabilities", flush=True)
@@ -1857,8 +1938,8 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
         except Exception:
             pass
 
-    # Soft floor/ceiling — gentler than hard clip, preserves relative ordering
-    P = np.clip(P, 0.02, 0.95)
+    # Soft floor/ceiling — v15: raised ceiling to 99% to allow high-confidence predictions
+    P = np.clip(P, 0.01, 0.99)
     row_sums = P.sum(axis=1, keepdims=True)
     P = P / np.maximum(row_sums, 1e-12)
 
