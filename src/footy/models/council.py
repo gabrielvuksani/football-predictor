@@ -817,6 +817,30 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     # Glicko-2 rating diff
     features["glicko_diff"] = glicko_r.features.get("glicko2_rating_diff", np.zeros(n))
 
+    # ── v16: MULTI-WINDOW TEMPORAL FEATURES ──
+    # Research: multi-window features capture short-term momentum (3 games),
+    # medium-term form (5 games via FormExpert), and longer baseline (10 games).
+    # MomentumExpert tracks fast(3)/slow(8) EMA crossovers.
+    # FormExpert OAF uses 10-game window.
+    # We extract the multi-scale signals that already exist across experts.
+
+    # Short-term momentum (3-game via MomentumExpert fast EMA)
+    features["momentum_fast_h"] = mom_r.features.get("mom_fast_h", np.zeros(n))
+    features["momentum_fast_a"] = mom_r.features.get("mom_fast_a", np.zeros(n))
+    # Medium-term form (5-game via FormExpert rolling)
+    # Already have form_pts_h/a above
+    # Long-term baseline (10-game OAF via FormExpert)
+    features["form_oaf_h"] = form_r.features.get("form_oaf_h", np.zeros(n))
+    features["form_oaf_a"] = form_r.features.get("form_oaf_a", np.zeros(n))
+    # Form trajectory: short-term vs long-term = improving/declining signal
+    features["form_trajectory_h"] = features["form_pts_h"] - form_r.features.get("form_oaf_h", np.zeros(n))
+    features["form_trajectory_a"] = features["form_pts_a"] - form_r.features.get("form_oaf_a", np.zeros(n))
+    # Goals trajectory: recent scoring vs baseline
+    features["goals_trajectory_h"] = (
+        form_r.features.get("form_gf_h", np.zeros(n)) -
+        form_r.features.get("form_gf_overall_h", form_r.features.get("form_gf_h", np.zeros(n)))
+    )
+
     # ── TIER 2: Strong signal (~15 features) ──
     # Poisson-derived markets
     features["pois_btts"] = pois_r.features.get("pois_btts", np.zeros(n))
