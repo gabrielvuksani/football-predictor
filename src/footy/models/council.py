@@ -1094,7 +1094,7 @@ V13_FEATURE_NAMES = [
 ]
 
 
-def _prepare_df(con, finished_only: bool = True, days: int = 2555) -> pd.DataFrame:
+def _prepare_df(con, finished_only: bool = True, days: int = 1460) -> pd.DataFrame:  # v16: 4 years (was 7) — research optimal
     """Load matches + extras into a clean DataFrame for expert consumption."""
     status_filter = "m.status='FINISHED'" if finished_only else "m.status IN ('FINISHED','SCHEDULED','TIMED')"
     date_filter = f"AND m.utc_date >= (CURRENT_TIMESTAMP - INTERVAL {int(days)} DAY)" if finished_only else ""
@@ -1109,7 +1109,7 @@ def _prepare_df(con, finished_only: bool = True, days: int = 2555) -> pd.DataFra
     return df
 
 
-def prepare_training_data(con, days: int = 2555) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def prepare_training_data(con, days: int = 1460) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Prepare council training matrices for backtests and diagnostics.
 
     This intentionally uses the expert-stack feature matrix without refitting the
@@ -1132,7 +1132,7 @@ def prepare_training_data(con, days: int = 2555) -> tuple[np.ndarray, np.ndarray
 
 
 # ---------- TRAINING ----------
-def train_and_save(con, days: int = 2555, eval_days: int = 365,
+def train_and_save(con, days: int = 1460, eval_days: int = 365,
                    verbose: bool = True) -> dict:
     """Train the Expert Council model — v13 Oracle architecture.
 
@@ -1173,7 +1173,7 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
     dc_by_comp: dict[str, DCModel] = {}
     for comp, g in df_train.groupby("competition"):
         m = fit_dc(g[["utc_date", "home_team", "away_team", "home_goals", "away_goals"]],
-                   half_life_days=365.0, max_goals=10)
+                   half_life_days=180.0, max_goals=10)  # v16: 180 days (was 365) — research: faster decay is better
         if m is not None:
             dc_by_comp[str(comp)] = m
             log.debug(f"Fitted Dixon-Coles model for {comp}: rho={m.rho:.4f}, home_adv={m.home_adv:.4f}")
@@ -1437,12 +1437,14 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
                         oof_preds[val_idx, col:col+3] = 1.0 / 3
                     col += 3
 
-            # Train meta-learner on OOF predictions (NEVER sees test data)
+            # v16: Random Forest meta-learner (research: captures non-linear dependencies
+            # between base predictions, outperforms linear stacking)
+            from sklearn.ensemble import RandomForestClassifier
             meta_pipe = SkPipeline([
                 ("scaler", StandardScaler()),
-                ("clf", LogisticRegression(
-                    multi_class="multinomial", solver="lbfgs",
-                    max_iter=1000, C=1.0, random_state=42,
+                ("clf", RandomForestClassifier(
+                    n_estimators=200, max_depth=5, min_samples_leaf=10,
+                    random_state=42, n_jobs=-1,
                 )),
             ])
             meta_pipe.fit(oof_preds, ytr)
