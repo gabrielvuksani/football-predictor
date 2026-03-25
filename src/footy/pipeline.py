@@ -617,7 +617,6 @@ def score_finished_predictions(verbose: bool = True) -> dict:
 
         # v15: Persist Hedge weights and league temperatures to DB
         try:
-            from footy.db import connect
             write_con = connect()
             loop.persist_to_db(write_con)
         except Exception as persist_err:
