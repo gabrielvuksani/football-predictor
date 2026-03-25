@@ -1508,17 +1508,16 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
 
         # Get calibration predictions from full base models
         if stacking_meta is not None and len(available_models) >= 2:
-            stack_cal = np.hstack([
-                m.predict_proba(Xcal) if hasattr(m, 'predict_proba')
-                else np.full((len(Xcal), 3), 1/3)
-                for name, _ in available_models
-                for m in [cat_model if name == "CAT" else
-                          xgb_model if name == "XGB" else
-                          gbm_model if name == "GBM" else
-                          lr_model]
-                if m is not None
-            ][:, :len(available_models)*3])
-            P_cal = stacking_meta.predict_proba(stack_cal) if len(stack_cal) else P[:len(ycal)]
+            model_lookup = {"CAT": cat_model, "XGB": xgb_model, "GBM": gbm_model, "LR": lr_model}
+            cal_parts = []
+            for name, _ in available_models:
+                m = model_lookup.get(name)
+                if m is not None and hasattr(m, 'predict_proba'):
+                    cal_parts.append(m.predict_proba(Xcal))
+                else:
+                    cal_parts.append(np.full((len(Xcal), 3), 1/3))
+            stack_cal = np.hstack(cal_parts)
+            P_cal = stacking_meta.predict_proba(stack_cal)
         else:
             primary = cat_model or gbm_model
             P_cal = primary.predict_proba(Xcal)
