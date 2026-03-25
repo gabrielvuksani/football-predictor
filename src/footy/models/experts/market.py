@@ -72,15 +72,16 @@ class MarketExpert(Expert):
                 open_ph[i], open_pd[i], open_pa[i] = imp_open[0], imp_open[1], imp_open[2]
                 has_open[i] = 1.0
 
-            # best available odds (closing > Pinnacle > avg > max > primary)
-            # The model learns via `using_closing` feature whether closing odds
-            # were used, so it can discount the extra info at serve time.
+            # v16: Use OPENING odds as primary to eliminate train/serve skew.
+            # Closing odds (B365CH) are only available for finished matches,
+            # not upcoming predictions. Using them as primary inflated training
+            # accuracy by ~1% because the model learned from post-kickoff info.
+            # Now: opening odds primary, closing odds only for movement features.
             for trio, sq, is_closing in [
-                ((b365ch, b365cd, b365ca), 4.0, True),
-                ((psh_v, psd_v, psa_v), 3.0, False),
-                ((avgh_v, avgd_v, avga_v), 2.0, False),
-                ((maxh_v, maxd_v, maxa_v), 1.0, False),
-                ((b365h, b365d, b365a), 0.0, False),
+                ((psh_v, psd_v, psa_v), 3.0, False),    # Pinnacle (sharpest)
+                ((avgh_v, avgd_v, avga_v), 2.0, False),  # Market average
+                ((maxh_v, maxd_v, maxa_v), 1.0, False),  # Max market
+                ((b365h, b365d, b365a), 0.0, False),      # B365 opening
             ]:
                 imp = _implied(trio[0], trio[1], trio[2])
                 if imp[0] > 0:
