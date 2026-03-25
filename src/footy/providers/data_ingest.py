@@ -805,7 +805,122 @@ def _backfill_understat_xg() -> int:
 
 
 # ---------------------------------------------------------------------------
-# 7. Master refresh
+# 8. Understat team match stats (PPDA, xPTS, deep completions)
+# ---------------------------------------------------------------------------
+
+_UNDERSTAT_MATCH_STATS_DDL = """
+CREATE TABLE IF NOT EXISTS understat_match_stats (
+    match_id BIGINT NOT NULL PRIMARY KEY,
+    home_team VARCHAR,
+    away_team VARCHAR,
+    home_xg DOUBLE,
+    away_xg DOUBLE,
+    home_npxg DOUBLE,
+    away_npxg DOUBLE,
+    home_ppda DOUBLE,
+    away_ppda DOUBLE,
+    home_deep DOUBLE,
+    away_deep DOUBLE,
+    home_xpts DOUBLE,
+    away_xpts DOUBLE,
+    season VARCHAR,
+    competition VARCHAR,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+# Reverse map: soccerdata league names -> our competition codes
+_SD_LEAGUE_TO_COMP = {
+    "ENG-Premier League": "PL",
+    "ESP-La Liga": "PD",
+    "GER-Bundesliga": "BL1",
+    "ITA-Serie A": "SA",
+    "FRA-Ligue 1": "FL1",
+}
+
+
+def ingest_understat_match_stats(seasons: list[str] | None = None) -> int:
+    """Fetch Understat team match stats (PPDA, xPTS, deep completions) via soccerdata.
+
+    Covers 5 leagues: PL, PD, BL1, SA, FL1.
+    PPDA = Passes Per Defensive Action (pressing intensity).
+    xPTS = Expected points based on xG.
+    Deep completions = passes completed within 20m of goal.
+
+    Returns number of rows upserted.
+    """
+    try:
+        import soccerdata as sd
+    except ImportError:
+        log.warning("soccerdata not installed, skipping Understat match stats")
+        return 0
+
+    con = connect()
+    con.execute(_UNDERSTAT_MATCH_STATS_DDL)
+
+    seasons = seasons or ["2024-2025", "2023-2024"]
+    leagues = list(_SD_LEAGUE_TO_COMP.keys())
+
+    total = 0
+    try:
+        us = sd.Understat(leagues=leagues, seasons=seasons)
+        df = us.read_team_match_stats()
+    except Exception as exc:
+        log.warning("understat match stats fetch failed: %s", exc)
+        return 0
+
+    if df.empty:
+        return 0
+
+    # Reset MultiIndex (league/season/game) to flat columns
+    df = df.reset_index()
+
+    for _, row in df.iterrows():
+        try:
+            # 'league' column comes from the reset MultiIndex
+            league = str(row.get("league", ""))
+            comp = _SD_LEAGUE_TO_COMP.get(league, "")
+            game_id = row.get("game_id")
+            if not game_id:
+                continue
+
+            home_team = canonical_team_name(str(row.get("home_team", "")))
+            away_team = canonical_team_name(str(row.get("away_team", "")))
+
+            con.execute(
+                """INSERT OR REPLACE INTO understat_match_stats
+                   (match_id, home_team, away_team,
+                    home_xg, away_xg, home_npxg, away_npxg,
+                    home_ppda, away_ppda,
+                    home_deep, away_deep,
+                    home_xpts, away_xpts,
+                    season, competition, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                [
+                    int(game_id), home_team, away_team,
+                    float(row.get("home_xg", 0) or 0),
+                    float(row.get("away_xg", 0) or 0),
+                    float(row.get("home_np_xg", 0) or 0),
+                    float(row.get("away_np_xg", 0) or 0),
+                    float(row.get("home_ppda", 0) or 0),
+                    float(row.get("away_ppda", 0) or 0),
+                    float(row.get("home_deep_completions", 0) or 0),
+                    float(row.get("away_deep_completions", 0) or 0),
+                    float(row.get("home_expected_points", 0) or 0),
+                    float(row.get("away_expected_points", 0) or 0),
+                    str(row.get("season_id", "")), comp,
+                ],
+            )
+            total += 1
+        except Exception as exc:
+            log.debug("understat match stats insert failed: %s", exc)
+
+    log.info("understat_match_stats: upserted %d rows across %d leagues", total, len(leagues))
+    return total
+
+
+# ---------------------------------------------------------------------------
+# 9. Master refresh
 # ---------------------------------------------------------------------------
 
 def refresh_all_enrichment(verbose: bool = True) -> dict[str, Any]:
@@ -885,6 +1000,15 @@ def refresh_all_enrichment(verbose: bool = True) -> dict[str, Any]:
     except Exception as exc:
         log.error("enrichment: understat_xg failed: %s", exc)
         summary["understat_xg"] = {"error": str(exc)}
+
+    # Understat match stats (PPDA, xPTS, deep completions)
+    try:
+        if verbose:
+            log.info("=== Enrichment: Understat PPDA/xPTS ===")
+        summary["understat_ppda"] = ingest_understat_match_stats()
+    except Exception as exc:
+        log.error("enrichment: understat_ppda failed: %s", exc)
+        summary["understat_ppda"] = {"error": str(exc)}
 
     elapsed = time.monotonic() - start
 

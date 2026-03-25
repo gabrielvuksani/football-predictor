@@ -162,7 +162,17 @@ m.utc_date, m.competition, m.home_team, m.away_team,
                ra.home_bias_ratio AS ref_home_bias_ratio,
                ra.historical_matches AS ref_historical_matches,
                (SELECT COUNT(*) FROM transfermarkt_injuries ti WHERE ti.team = m.home_team) AS tm_inj_count_h,
-               (SELECT COUNT(*) FROM transfermarkt_injuries ti WHERE ti.team = m.away_team) AS tm_inj_count_a"""
+               (SELECT COUNT(*) FROM transfermarkt_injuries ti WHERE ti.team = m.away_team) AS tm_inj_count_a,
+               (SELECT AVG(home_ppda) FROM understat_match_stats us WHERE us.home_team = m.home_team AND us.competition = m.competition) AS us_ppda_h,
+               (SELECT AVG(away_ppda) FROM understat_match_stats us WHERE us.away_team = m.away_team AND us.competition = m.competition) AS us_ppda_a,
+               (SELECT AVG(home_xpts) FROM understat_match_stats us WHERE us.home_team = m.home_team AND us.competition = m.competition) AS us_xpts_h,
+               (SELECT AVG(away_xpts) FROM understat_match_stats us WHERE us.away_team = m.away_team AND us.competition = m.competition) AS us_xpts_a,
+               (SELECT AVG(home_deep) FROM understat_match_stats us WHERE us.home_team = m.home_team AND us.competition = m.competition) AS us_deep_h,
+               (SELECT AVG(away_deep) FROM understat_match_stats us WHERE us.away_team = m.away_team AND us.competition = m.competition) AS us_deep_a,
+               ir_h.avg_injuries_per_season AS ir_inj_rate_h,
+               ir_h.avg_days_missed_per_season AS ir_days_h,
+               ir_a.avg_injuries_per_season AS ir_inj_rate_a,
+               ir_a.avg_days_missed_per_season AS ir_days_a"""
 
 _MATCH_JOINS = """\
 FROM matches m
@@ -178,6 +188,8 @@ FROM matches m
         LEFT JOIN venue_stats vs ON vs.team = m.home_team
         LEFT JOIN stadiums stm ON stm.team = m.home_team
         LEFT JOIN referee_assignments ra ON ra.match_id = m.match_id
+        LEFT JOIN team_injury_risk ir_h ON ir_h.team = m.home_team
+        LEFT JOIN team_injury_risk ir_a ON ir_a.team = m.away_team
 """
 
 
@@ -725,7 +737,8 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
 
 
 def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | None = None,
-                        competitions: np.ndarray | None = None) -> tuple[np.ndarray, list[str]]:
+                        competitions: np.ndarray | None = None,
+                        df: pd.DataFrame | None = None) -> tuple[np.ndarray, list[str]]:
     """Build focused feature matrix for v13 Oracle model.
 
     Returns (X, feature_names) where feature_names tracks column order exactly,
@@ -1080,6 +1093,28 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     venue_r = _r("venue")
     features["venue_ha_z"] = venue_r.features.get("venue_capacity_norm", np.zeros(n))
 
+    # ── v18: Understat PPDA + xPTS from SQL subqueries ──
+    if df is not None and "us_ppda_h" in df.columns:
+        ppda_h = pd.to_numeric(df["us_ppda_h"], errors="coerce").fillna(0).to_numpy()
+        ppda_a = pd.to_numeric(df["us_ppda_a"], errors="coerce").fillna(0).to_numpy()
+        xpts_h = pd.to_numeric(df["us_xpts_h"], errors="coerce").fillna(0).to_numpy()
+        xpts_a = pd.to_numeric(df["us_xpts_a"], errors="coerce").fillna(0).to_numpy()
+        deep_h = pd.to_numeric(df["us_deep_h"], errors="coerce").fillna(0).to_numpy()
+        deep_a = pd.to_numeric(df["us_deep_a"], errors="coerce").fillna(0).to_numpy()
+
+        # PPDA diff: negative = home team presses more (lower PPDA = more pressing)
+        features["ppda_diff"] = ppda_a - ppda_h  # reversed because low = good
+        # xPTS gap: difference between expected and actual points (regression signal)
+        features["xpts_diff"] = xpts_h - xpts_a
+        # Deep completions diff: passes into the box
+        features["deep_comp_diff"] = deep_h - deep_a
+
+    # ── v18: Injury risk from Kaggle Transfermarkt dataset (144K records) ──
+    if df is not None and "ir_inj_rate_h" in df.columns:
+        ir_h = pd.to_numeric(df["ir_inj_rate_h"], errors="coerce").fillna(0).to_numpy()
+        ir_a = pd.to_numeric(df["ir_inj_rate_a"], errors="coerce").fillna(0).to_numpy()
+        features["injury_risk_diff"] = ir_h - ir_a  # positive = home more injury-prone
+
     # ── v15: FPL Fixture Difficulty Rating (free, high-quality data) ──
     ctx_fdr_h = ctx_r.features.get("ctx_fdr_h", np.zeros(n))
     ctx_fdr_a = ctx_r.features.get("ctx_fdr_a", np.zeros(n))
@@ -1146,7 +1181,7 @@ def prepare_training_data(con, days: int = 1460) -> tuple[np.ndarray, np.ndarray
 
     results = _run_experts(df)
     competitions = df["competition"].to_numpy() if "competition" in df.columns else None
-    X, _ = _build_v13_features(results, competitions=competitions)
+    X, _ = _build_v13_features(results, competitions=competitions, df=df)
     y = np.array([
         _label(int(hg), int(ag))
         for hg, ag in zip(df["home_goals"], df["away_goals"])
@@ -1238,7 +1273,7 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
 
     # build meta features — v13 focused features (research: 55 > 400+ when SNR is low)
     competitions = df["competition"].to_numpy() if "competition" in df.columns else None
-    X, feature_names = _build_v13_features(all_results, competitions=competitions)
+    X, feature_names = _build_v13_features(all_results, competitions=competitions, df=df)
     y = np.array([_label(int(hg), int(ag))
                   for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
 
@@ -1951,7 +1986,7 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     # No hard-coded weights needed. Trust the trained model.
     # ================================================================
     up_competitions = up["competition"].to_numpy() if "competition" in up.columns else None
-    X, pred_feature_names = _build_v13_features(tail_results, competitions=up_competitions)
+    X, pred_feature_names = _build_v13_features(tail_results, competitions=up_competitions, df=up)
 
     # Stable feature alignment — match prediction features to training feature set
     saved_names = obj.get("feature_names", [])

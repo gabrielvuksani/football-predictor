@@ -259,7 +259,7 @@ class Backtester:
         # Build v13 feature matrix (all results, no DC appended here —
         # we skip the per-window DC refit for speed; the experts already
         # include Poisson-derived DC proxies).
-        X, feature_names = _build_v13_features(results, competitions=competitions_full)
+        X, feature_names = _build_v13_features(results, competitions=competitions_full, df=df)
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
         if verbose:

@@ -61,7 +61,7 @@ def tune_catboost(n_trials: int = 100, verbose: bool = True) -> dict:
     results = _run_experts(df)
 
     competitions = df["competition"].to_numpy() if "competition" in df.columns else None
-    X = _build_v13_features(results, competitions=competitions)
+    X, _ = _build_v13_features(results, competitions=competitions, df=df)
     y = np.array([_label(int(hg), int(ag))
                   for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
 
