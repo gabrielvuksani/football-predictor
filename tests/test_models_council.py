@@ -89,7 +89,7 @@ class TestExpertResult:
 class TestModelPath:
     def test_model_version_constant(self):
         from footy.models.council import MODEL_VERSION
-        assert MODEL_VERSION == "v13_oracle"
+        assert MODEL_VERSION == "v15_architect"
 
     def test_model_path_extension(self):
         from footy.models.council import MODEL_PATH

@@ -47,6 +47,10 @@ class PoissonExpert(Expert):
         _rho_cache: dict[str, float] = {}   # comp → estimated ρ
         _RHO_MIN_SAMPLES = 200  # need at least 200 finished matches for MLE
 
+        # Per-competition COM-Poisson dispersion learning
+        _comp_goals: dict[str, list[int]] = {}  # comp → collected goals
+        _learned_nu: dict[str, float] = {}      # comp → learned ν
+
         # Per-league home attack advantage: running avg of home_goals/away_goals
         _home_adv_sum_hg: dict[str, float] = {}  # comp → cumulative home goals
         _home_adv_sum_ag: dict[str, float] = {}  # comp → cumulative away goals
@@ -233,8 +237,9 @@ class PoissonExpert(Expert):
             cop_o25[i] = cop_feats["p_o25"]
 
             # v11: COM-Poisson (dispersion-aware Poisson)
-            # Estimate ν from historical variance/mean ratio for the competition
-            cmp_mx = build_com_poisson_matrix(l_h, l_a, nu_h=0.93, nu_a=0.93,
+            # Use per-competition learned ν or default 0.93
+            _nu = _learned_nu.get(comp, 0.93)
+            cmp_mx = build_com_poisson_matrix(l_h, l_a, nu_h=_nu, nu_a=_nu,
                                               max_goals=self.MAX_GOALS)
             cmp_feats = extract_match_probs(cmp_mx)
             cmp_ph[i] = cmp_feats["p_home"]
@@ -290,6 +295,15 @@ class PoissonExpert(Expert):
             _home_adv_sum_hg[comp] = _home_adv_sum_hg.get(comp, 0.0) + hg
             _home_adv_sum_ag[comp] = _home_adv_sum_ag.get(comp, 0.0) + ag
             _home_adv_count[comp] = _home_adv_count.get(comp, 0) + 1
+
+            # --- COM-Poisson dispersion learning ---
+            _comp_goals.setdefault(comp, []).append(hg)
+            _comp_goals[comp].append(ag)
+            if len(_comp_goals[comp]) >= 100 and comp not in _learned_nu:
+                from footy.models.parameter_learner import learn_com_poisson_nu
+                _learned_nu[comp] = learn_com_poisson_nu(
+                    np.array(_comp_goals[comp])
+                )
 
             # --- MLE rho estimation: accumulate per-competition history ---
             if hg is not None and ag is not None:

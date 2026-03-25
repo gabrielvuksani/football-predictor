@@ -375,7 +375,7 @@ class TestTrainingAndModelLab:
         r = client.get("/api/training/status")
         assert r.status_code == 200
         data = r.json()
-        assert data["active_version"].startswith("v13_oracle_")
+        assert data["active_version"].startswith(("v13_oracle_", "v15_architect_"))
         assert isinstance(data["expert_rankings"], list)
         assert isinstance(data["history"], list)
 
@@ -397,7 +397,7 @@ class TestTrainingAndModelLab:
         r = client.get("/api/model-lab")
         assert r.status_code == 200
         data = r.json()
-        assert data["active_version"].startswith("v13_oracle_")
+        assert data["active_version"].startswith(("v13_oracle_", "v15_architect_"))
         assert isinstance(data["ensemble_weights"], list)
         assert isinstance(data["expert_weights"], list)
 
