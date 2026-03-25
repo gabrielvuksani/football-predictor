@@ -2061,6 +2061,46 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
                 "confidence": round(float(result.confidence[idx]), 3),
             }
 
+        # v16: LLM Probability Rebalancer — adjusts for qualitative context
+        # Only runs if Groq/Ollama is available (graceful fallback)
+        llm_rebalance_result = None
+        try:
+            from footy.models.llm_rebalancer import rebalance_probabilities
+            home_team_name = str(up.iloc[j]["home_team"])
+            away_team_name = str(up.iloc[j]["away_team"])
+            comp_name = str(up.iloc[j].get("competition", ""))
+
+            # Build context for LLM
+            elo_res = _tr("elo", tail_results)
+            form_res = _tr("form", tail_results)
+            ctx_res = _tr("context", tail_results)
+            llm_context = {
+                "elo_diff": float(elo_res.features.get("elo_diff", np.zeros(tail))[j]),
+                "form_h": float(form_res.features.get("form_pts_h", np.zeros(tail))[j]),
+                "form_a": float(form_res.features.get("form_pts_a", np.zeros(tail))[j]),
+                "is_derby": bool(ctx_res.features.get("ctx_is_derby", np.zeros(tail))[j]),
+                "is_relegation": bool(ctx_res.features.get("ctx_is_relegation_a", np.zeros(tail))[j]),
+                "fatigue_diff": float(ctx_res.features.get("ctx_fatigue_diff", np.zeros(tail))[j]),
+            }
+
+            result_llm = rebalance_probabilities(
+                home_team=home_team_name,
+                away_team=away_team_name,
+                competition=comp_name,
+                ml_probs=[ph, p_d, pa],
+                context=llm_context,
+            )
+
+            if result_llm.applied:
+                ph, p_d, pa = result_llm.rebalanced
+                llm_rebalance_result = {
+                    "adjustments": result_llm.adjustments,
+                    "confidence": result_llm.confidence,
+                    "reasoning": result_llm.reasoning[:200],
+                }
+        except Exception:
+            pass  # LLM unavailable — use ML probabilities as-is
+
         notes_dict = {
             "model": stack_label,
             "btts": round(btts_val, 3),
@@ -2100,6 +2140,8 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             # v13: stack weights
             "stack_weights": list(stack_weights),
             # v15: conformal prediction set and upset risk
+            # v16: LLM rebalancer result
+            "llm_rebalance": llm_rebalance_result,
             "conformal_set": conformal_sets[j] if conformal_sets is not None else None,
             "conformal_set_size": len(conformal_sets[j]) if conformal_sets is not None else None,
             "upset_risk": round(float(upset_risk[j]), 3) if upset_risk is not None else None,
