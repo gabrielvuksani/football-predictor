@@ -1,5 +1,5 @@
 """
-Footy Predictor v14 — Modular API Routes
+Footy Predictor v15 — Modular API Routes
 
 Shared utilities and router registration for the FastAPI application.
 """
@@ -19,7 +19,9 @@ log = logging.getLogger("footy.api")
 settings = get_settings()
 
 # Validated sets used across multiple routers
-VALID_MODELS = frozenset({"v13_oracle", "v10_council"})
+VALID_MODELS = frozenset({"v15_architect", "v13_oracle", "v10_council"})
+# SQL-safe model version filter — queries predictions from any current model
+ACTIVE_MODEL_VERSIONS = "('v15_architect', 'v13_oracle')"
 VALID_COMPETITIONS = frozenset({
     "PL", "PD", "SA", "BL1", "FL1", "PT1", "TL1", "DED",
     "ISL", "AUS", "ELC", "PPL", "BEL", "SL", "SWS", "DK1", "SE1", "NO1", "PL1",
@@ -51,7 +53,7 @@ def safe_error(e: Exception, context: str = "request"):
 
 def validate_model(model: str) -> str:
     """Validate and return a safe model version string."""
-    return model if model in VALID_MODELS else "v13_oracle"
+    return model if model in VALID_MODELS else "v15_architect"
 
 
 def validate_competition(competition: str) -> str | None:

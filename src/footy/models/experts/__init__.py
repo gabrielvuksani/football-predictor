@@ -34,7 +34,6 @@ from footy.models.experts.referee import RefereeExpert
 from footy.models.experts.seasonal_pattern import SeasonalPatternExpert
 from footy.models.experts.venue import VenueExpert
 from footy.models.experts.weather import WeatherExpert
-from footy.models.experts.xpts import XPtsExpert
 from footy.models.experts.zip_expert import ZIPExpert
 from footy.models.experts.copula_expert import CopulaExpert
 from footy.models.experts.double_poisson_expert import DoublePoissonExpert

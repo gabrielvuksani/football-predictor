@@ -16,9 +16,9 @@ async def api_health():
     return {
         "status": "ok",
         "app": "footy-predictor",
-        "version": "14.0",
-        "model": "v13_oracle",
-        "experts": 50,
+        "version": "15.0",
+        "model": "v15_architect",
+        "experts": 49,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

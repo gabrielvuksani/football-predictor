@@ -1,4 +1,4 @@
-# Football Predictor v14 — "Apex"
+# Football Predictor v15 — "Architect"
 # Core dependencies (all free, all CPU-compatible)
 
 # Web framework

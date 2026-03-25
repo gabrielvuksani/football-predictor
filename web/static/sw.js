@@ -1,4 +1,4 @@
-const CACHE_NAME = 'footy-predictor-v14';
+const CACHE_NAME = 'footy-predictor-v15';
 const STATIC_ASSETS = [
   '/',
   '/static/style.css',

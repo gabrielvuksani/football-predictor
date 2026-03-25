@@ -103,7 +103,7 @@ Native SwiftUI app at `ios/FootyPredictor/`. MVVM-ish: Models/, Views/, Services
 
 ## Key Conventions
 
-- **Model version:** The active trained model is `v13_oracle`. The `VALID_MODELS` set in `web/routes/__init__.py` controls accepted versions. The app/UI version is v14 Apex.
+- **Model version:** The active trained model is `v15_architect`. The `VALID_MODELS` set in `web/routes/__init__.py` controls accepted versions (`v15_architect`, `v13_oracle`, `v10_council`).
 - **Competition codes:** 19 tracked competitions (PL, PD, SA, BL1, FL1, etc.) validated by `VALID_COMPETITIONS` in `web/routes/__init__.py`.
 - **Version strings:** When bumping versions, grep project-wide — version references exist in `web/api.py`, `web/routes/health.py`, `pyproject.toml`, `Dockerfile`, `requirements.txt`, `src/footy/models/council.py`, `src/footy/models/experts/__init__.py`, `web/static/sw.js`, `web/static/manifest.json`.
 - **Alpine.js bindings:** The HTML template uses x-data, x-show, x-for, x-if, @click, x-model, x-text, x-cloak. The `[x-cloak]` CSS rule is required to prevent FOUC.

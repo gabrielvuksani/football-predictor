@@ -95,12 +95,20 @@ class HMMExpert(Expert):
         state_prev: dict[str, np.ndarray] = {}     # previous posterior (for transition detection)
         match_count: dict[str, int] = {}
 
-        trans = self.TRANS
-        emission = self.EMISSION_RATES
+        # Per-competition parameter learning from data
+        _comp_goals: dict[str, list[int]] = {}
+        _learned_emission: dict[str, np.ndarray] = {}
+        _learned_trans: dict[str, np.ndarray] = {}
+
         init = self.INIT_STATE.copy()
 
         for i, r in enumerate(df.itertuples(index=False)):
             h, a = r.home_team, r.away_team
+
+            # Select per-competition learned params or defaults
+            comp = getattr(r, 'competition', 'default')
+            emission = _learned_emission.get(comp, self.EMISSION_RATES)
+            trans = _learned_trans.get(comp, self.TRANS)
 
             # Initialize unseen teams
             for t in (h, a):
@@ -170,6 +178,21 @@ class HMMExpert(Expert):
             if _is_finished(r):
                 hg = int(r.home_goals)
                 ag = int(r.away_goals)
+
+                # Collect goals for parameter learning
+                _comp_goals.setdefault(comp, []).append(hg)
+                _comp_goals[comp].append(ag)
+                # Learn params after warmup (200+ goals per competition)
+                if len(_comp_goals[comp]) >= 200 and comp not in _learned_emission:
+                    from footy.models.parameter_learner import learn_hmm_params
+                    params = learn_hmm_params(_comp_goals[comp])
+                    rates = params['emission_rates']
+                    avg = np.mean(rates)
+                    _learned_emission[comp] = np.column_stack([rates, avg * 2 - rates])
+                    _learned_trans[comp] = params['transition_matrix']
+                    # Use newly learned params immediately
+                    emission = _learned_emission[comp]
+                    trans = _learned_trans[comp]
 
                 # Update home team: observed (goals_scored=hg, goals_conceded=ag)
                 self._forward_update(state_post, state_prev, h, hg, ag, trans, emission)

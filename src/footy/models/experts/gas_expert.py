@@ -56,10 +56,23 @@ class GASExpert(Expert):
         # Track recent score magnitudes for volatility
         recent_scores: dict[str, list[float]] = {}
 
+        # Per-competition parameter learning from data
+        _comp_goals: dict[str, list[int]] = {}
+        _learned_params: dict[str, dict] = {}
+
         omega, A, B = self.OMEGA, self.A, self.B
 
         for i, r in enumerate(df.itertuples(index=False)):
             h, a = r.home_team, r.away_team
+
+            # Select per-competition learned params or defaults
+            comp = getattr(r, 'competition', 'default')
+            if comp in _learned_params:
+                omega = _learned_params[comp]['omega']
+                A = _learned_params[comp]['A']
+                B = _learned_params[comp]['B']
+            else:
+                omega, A, B = self.OMEGA, self.A, self.B
 
             for t in (h, a):
                 if t not in attack:
@@ -110,6 +123,19 @@ class GASExpert(Expert):
             # GAS update: use the SCORE of the Poisson log-likelihood
             if _is_finished(r):
                 hg, ag = int(r.home_goals), int(r.away_goals)
+
+                # Collect goals for parameter learning
+                _comp_goals.setdefault(comp, []).append(hg)
+                _comp_goals[comp].append(ag)
+                # Learn params after warmup (100+ goals per competition)
+                if len(_comp_goals[comp]) >= 100 and comp not in _learned_params:
+                    from footy.models.parameter_learner import learn_gas_params
+                    _learned_params[comp] = learn_gas_params(
+                        np.array(_comp_goals[comp])
+                    )
+                    omega = _learned_params[comp]['omega']
+                    A = _learned_params[comp]['A']
+                    B = _learned_params[comp]['B']
 
                 # Poisson score: s_t = y_t - exp(f_t) (gradient of Poisson log-lik)
                 score_h = hg - lambda_h  # positive = scored more than expected

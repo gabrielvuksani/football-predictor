@@ -50,6 +50,10 @@ class CopulaExpert(Expert):
         defense: dict[str, float] = {}
         game_count: dict[str, int] = {}
 
+        # Per-competition copula theta learning from data
+        _comp_goal_pairs: dict[str, dict[str, list[int]]] = {}  # comp -> {hg: [], ag: []}
+        _learned_thetas: dict[str, dict[str, float]] = {}  # comp -> {frank: θ, clayton: θ, gumbel: θ}
+
         # Output arrays
         probs = np.full((n, 3), 1.0 / 3.0)
         conf = np.zeros(n)
@@ -91,6 +95,7 @@ class CopulaExpert(Expert):
 
         for i, r in enumerate(df.itertuples(index=False)):
             h, a = r.home_team, r.away_team
+            comp = getattr(r, 'competition', 'default')
             att_h, def_h = _att(h), _def(h)
             att_a, def_a = _att(a), _def(a)
 
@@ -100,12 +105,23 @@ class CopulaExpert(Expert):
             cop_lambda_h[i] = l_h
             cop_lambda_a[i] = l_a
 
+            # Select per-competition learned thetas or defaults
+            if comp in _learned_thetas:
+                lt = _learned_thetas[comp]
+                families = [
+                    ("frank", lt["frank"]),
+                    ("clayton", lt["clayton"]),
+                    ("gumbel", lt["gumbel"]),
+                ]
+            else:
+                families = self.FAMILIES
+
             # Build score matrix for each copula family and extract 1X2
             family_probs = []   # list of (ph, pd, pa)
             family_p00 = []
             family_btts = []
             family_o25 = []
-            for family_name, theta in self.FAMILIES:
+            for family_name, theta in families:
                 mx = build_copula_score_matrix(
                     l_h, l_a,
                     theta=theta,
@@ -186,6 +202,22 @@ class CopulaExpert(Expert):
                 continue
 
             hg, ag = int(r.home_goals), int(r.away_goals)
+
+            # Collect goal pairs for parameter learning
+            if comp not in _comp_goal_pairs:
+                _comp_goal_pairs[comp] = {"hg": [], "ag": []}
+            _comp_goal_pairs[comp]["hg"].append(hg)
+            _comp_goal_pairs[comp]["ag"].append(ag)
+            # Learn thetas after warmup (100+ goal pairs per competition)
+            if len(_comp_goal_pairs[comp]["hg"]) >= 100 and comp not in _learned_thetas:
+                from footy.models.parameter_learner import learn_copula_theta
+                hg_arr = np.array(_comp_goal_pairs[comp]["hg"])
+                ag_arr = np.array(_comp_goal_pairs[comp]["ag"])
+                _learned_thetas[comp] = {
+                    "frank": learn_copula_theta(hg_arr, ag_arr, family="frank"),
+                    "clayton": learn_copula_theta(hg_arr, ag_arr, family="clayton"),
+                    "gumbel": learn_copula_theta(hg_arr, ag_arr, family="gumbel"),
+                }
 
             if h in attack:
                 attack[h] = (1 - self.ALPHA) * att_h + self.ALPHA * hg

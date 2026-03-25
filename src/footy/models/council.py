@@ -85,7 +85,7 @@ def _expert_by_name(experts, name):
 
 log = logging.getLogger(__name__)
 
-MODEL_VERSION = "v13_oracle"
+MODEL_VERSION = "v15_architect"
 MODEL_PATH = Path("data/models") / f"{MODEL_VERSION}.joblib"
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,11 @@ m.utc_date, m.competition, m.home_team, m.away_team,
                ra.red_cards_per_match AS ref_red_per_match,
                ra.penalties_per_match AS ref_penalty_per_match,
                ra.home_bias_ratio AS ref_home_bias_ratio,
-               ra.historical_matches AS ref_historical_matches"""
+               ra.historical_matches AS ref_historical_matches,
+               ns_h.news_tone AS news_tone_h,
+               ns_h.news_count AS news_count_h,
+               ns_a.news_tone AS news_tone_a,
+               ns_a.news_count AS news_count_a"""
 
 _MATCH_JOINS = """\
 FROM matches m
@@ -175,7 +179,15 @@ FROM matches m
         LEFT JOIN market_values mv_a ON mv_a.team = m.away_team
         LEFT JOIN venue_stats vs ON vs.team = m.home_team
         LEFT JOIN stadiums stm ON stm.team = m.home_team
-        LEFT JOIN referee_assignments ra ON ra.match_id = m.match_id"""
+        LEFT JOIN referee_assignments ra ON ra.match_id = m.match_id
+        LEFT JOIN (
+            SELECT team, AVG(tone) AS news_tone, COUNT(*) AS news_count
+            FROM news GROUP BY team
+        ) ns_h ON ns_h.team = m.home_team
+        LEFT JOIN (
+            SELECT team, AVG(tone) AS news_tone, COUNT(*) AS news_count
+            FROM news GROUP BY team
+        ) ns_a ON ns_a.team = m.away_team"""
 
 
 def _match_query(where: str, *, include_match_id: bool = False) -> str:
@@ -185,10 +197,35 @@ def _match_query(where: str, *, include_match_id: bool = False) -> str:
 
 
 def _run_experts(df: pd.DataFrame, experts: list[Expert] | None = None) -> list[ExpertResult]:
-    """Run all experts on a DataFrame of matches."""
+    """Run all experts on a DataFrame of matches.
+
+    v15: Uses ExpertGate to skip noise-producing experts (those consistently
+    returning flat 1/3 with zero confidence). Gated experts are replaced with
+    flat ExpertResult objects to maintain index alignment.
+    """
     if experts is None:
         experts = ALL_EXPERTS
-    return [expert.compute(df) for expert in experts]
+
+    from footy.models.expert_gate import ExpertGate
+    gate = ExpertGate(min_observations=50, entropy_threshold=0.98)
+
+    results = []
+    for expert in experts:
+        result = expert.compute(df)
+        # Record signal quality for gating
+        gate.record_batch(expert.name, result.probs, result.confidence)
+        if gate.is_active(expert.name):
+            results.append(result)
+        else:
+            # Replace gated expert with flat output to maintain alignment
+            n = len(df)
+            results.append(ExpertResult(
+                probs=np.full((n, 3), 1.0 / 3.0),
+                confidence=np.zeros(n),
+                features={},
+            ))
+            log.debug("Expert '%s' gated out (flat signal)", expert.name)
+    return results
 
 
 def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = None,
@@ -1674,6 +1711,22 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
             print(f"[council] walk-forward CV failed: {e}", flush=True)
         wf_passed = False  # gate failure = do not auto-deploy
 
+    # v15: Calibrate conformal predictor on the calibration split
+    conformal_predictor = None
+    try:
+        from footy.models.conformal import ConformalPredictor
+        cp = ConformalPredictor(alpha=0.10)  # 90% target coverage
+        cp.calibrate(P_cal, ycal)
+        conformal_predictor = cp
+        if verbose:
+            # Check coverage on test set
+            cp_sizes = cp.set_sizes(P)
+            print(f"[council] conformal predictor: calibrated (qhat={cp.qhat:.4f}), "
+                  f"mean set size={cp_sizes.mean():.2f}", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"[council] conformal prediction calibration failed: {e}", flush=True)
+
     # Save model artifact — only after gate validation
     model_artifact = {
         "model": gbm_model,
@@ -1686,10 +1739,11 @@ def train_and_save(con, days: int = 2555, eval_days: int = 365,
         "ou25_model": ou25_model,
         "stack_weights": learned_weights,
         "temperature": temperature,
+        "conformal": conformal_predictor,
         "n_features": int(X.shape[1]),
         "n_experts": len(ALL_EXPERTS),
         "wf_gate_passed": wf_passed,
-        "version": "v13_oracle",
+        "version": MODEL_VERSION,
         "feature_names": V13_FEATURE_NAMES[:X.shape[1]],
     }
 
@@ -1983,7 +2037,18 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     P_btts = btts_model.predict_proba(X) if btts_model else None
     P_ou25 = ou25_model.predict_proba(X) if ou25_model else None
 
-    stack_label = f"v13 Oracle ({len(ALL_EXPERTS)} experts, T={temperature:.2f})"
+    # v15: Compute conformal prediction sets and upset risk scores
+    conformal_predictor = obj.get("conformal")
+    conformal_sets = None
+    upset_risk = None
+    if conformal_predictor is not None:
+        try:
+            conformal_sets = conformal_predictor.predict_sets(P)
+            upset_risk = conformal_predictor.upset_risk_scores(P)
+        except Exception:
+            pass
+
+    stack_label = f"v15 Architect ({len(ALL_EXPERTS)} experts, T={temperature:.2f})"
 
     count = 0
     for j, (mid, ph, p_d, pa) in enumerate(zip(
@@ -2085,6 +2150,10 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
             "sk_expected_gd": round(sk_mean_gd_val, 2),
             # v13: stack weights
             "stack_weights": list(stack_weights),
+            # v15: conformal prediction set and upset risk
+            "conformal_set": conformal_sets[j] if conformal_sets is not None else None,
+            "conformal_set_size": len(conformal_sets[j]) if conformal_sets is not None else None,
+            "upset_risk": round(float(upset_risk[j]), 3) if upset_risk is not None else None,
             # Expert breakdown summary
             "experts": expert_probs_for_match,
         }
