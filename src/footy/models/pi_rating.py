@@ -29,11 +29,13 @@ import duckdb
 # Initial ratings
 INITIAL_RATING = 1500.0
 
-# Pi-rating specific parameters
+# Pi-rating specific parameters — v16 tuned from research (Constantinou 2013)
+# Optimal: lambda=0.06 for primary, gamma=0.6 for cross-update
 SCALE_CONSTANT = 600.0  # Controls expected goal difference scale
-BASE_LEARNING_RATE = 0.3  # Initial learning rate
-MIN_LEARNING_RATE = 0.05  # Floor for adaptive learning rate
-LEARNING_DECAY_RATE = 1.0 / 100.0  # Decay per match played
+BASE_LEARNING_RATE = 0.06  # Primary learning rate (was 0.3 — research: 0.04-0.08 optimal)
+MIN_LEARNING_RATE = 0.03  # Floor for adaptive learning rate
+LEARNING_DECAY_RATE = 1.0 / 200.0  # Slower decay per match played
+CROSS_UPDATE_RATE = 0.6  # Cross-rating update: how much played-context nudges other context
 
 
 @dataclass
