@@ -160,25 +160,7 @@ m.utc_date, m.competition, m.home_team, m.away_team,
                ra.red_cards_per_match AS ref_red_per_match,
                ra.penalties_per_match AS ref_penalty_per_match,
                ra.home_bias_ratio AS ref_home_bias_ratio,
-               ra.historical_matches AS ref_historical_matches,
-               ns_h.news_tone AS news_tone_h,
-               ns_h.news_count AS news_count_h,
-               ns_a.news_tone AS news_tone_a,
-               ns_a.news_count AS news_count_a,
-               fb_h.possession AS fbref_poss_h,
-               fb_h.xg AS fbref_xg_h,
-               fb_h.xga AS fbref_xga_h,
-               fb_h.shots_pg AS fbref_shots_h,
-               fb_h.pass_pct AS fbref_pass_pct_h,
-               fb_h.goals_pg AS fbref_gpg_h,
-               fb_h.goals_against_pg AS fbref_gapg_h,
-               fb_a.possession AS fbref_poss_a,
-               fb_a.xg AS fbref_xg_a,
-               fb_a.xga AS fbref_xga_a,
-               fb_a.shots_pg AS fbref_shots_a,
-               fb_a.pass_pct AS fbref_pass_pct_a,
-               fb_a.goals_pg AS fbref_gpg_a,
-               fb_a.goals_against_pg AS fbref_gapg_a"""
+               ra.historical_matches AS ref_historical_matches"""
 
 _MATCH_JOINS = """\
 FROM matches m
@@ -194,16 +176,7 @@ FROM matches m
         LEFT JOIN venue_stats vs ON vs.team = m.home_team
         LEFT JOIN stadiums stm ON stm.team = m.home_team
         LEFT JOIN referee_assignments ra ON ra.match_id = m.match_id
-        LEFT JOIN (
-            SELECT team, AVG(tone) AS news_tone, COUNT(*) AS news_count
-            FROM news GROUP BY team
-        ) ns_h ON ns_h.team = m.home_team
-        LEFT JOIN (
-            SELECT team, AVG(tone) AS news_tone, COUNT(*) AS news_count
-            FROM news GROUP BY team
-        ) ns_a ON ns_a.team = m.away_team
-        LEFT JOIN fbref_team_stats fb_h ON fb_h.team = m.home_team AND fb_h.competition = m.competition
-        LEFT JOIN fbref_team_stats fb_a ON fb_a.team = m.away_team AND fb_a.competition = m.competition"""
+"""
 
 
 def _match_query(where: str, *, include_match_id: bool = False) -> str:
