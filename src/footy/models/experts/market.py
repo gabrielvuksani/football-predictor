@@ -18,7 +18,9 @@ class MarketExpert(Expert):
 
     def compute(self, df: pd.DataFrame) -> ExpertResult:
         n = len(df)
-        ph = np.zeros(n); pd_ = np.zeros(n); pa = np.zeros(n)
+        # v15: initialize to flat 1/3 instead of 0/0/0 — prevents zero-probability
+        # injection into feature matrix when no odds are available
+        ph = np.full(n, 1/3); pd_ = np.full(n, 1/3); pa = np.full(n, 1/3)
         overround = np.zeros(n)
         src_quality = np.zeros(n)  # 3=closing, 2=avg, 1=max, 0=primary
         has_odds = np.zeros(n)
