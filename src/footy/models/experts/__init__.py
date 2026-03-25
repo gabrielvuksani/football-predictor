@@ -116,10 +116,9 @@ ALL_EXPERTS: list[Expert] = [
     WeatherExpert(),           # RE-ENABLED: Weather impact on match
     RefereeExpert(),           # RE-ENABLED: Referee tendencies
 
-    # Advanced stats (3)
-    xGRegressionExpert(),      # NEW: xG regression/mean reversion
-    FBrefAdvancedExpert(),     # NEW: Shot quality, discipline, dominance
-    XPtsExpert(),              # RE-ENABLED: Expected points analysis
+    # Advanced stats (2) — XPtsExpert removed v15 (reads nonexistent columns)
+    xGRegressionExpert(),      # xG regression/mean reversion
+    FBrefAdvancedExpert(),     # Shot quality, discipline, dominance
 
     # Structural (3) — shares league table tracker
     LeagueTableExpert(tracker=_shared_league_tracker),
