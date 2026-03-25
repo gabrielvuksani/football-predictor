@@ -34,7 +34,8 @@ class RefereeExpert(Expert):
         lenient_ref = np.zeros(n)
 
         for i, r in enumerate(df.itertuples(index=False)):
-            ref_name = getattr(r, "referee_name", None)
+            # v15: check both possible column names (SQL alias is ref_assigned_name)
+            ref_name = getattr(r, "ref_assigned_name", None) or getattr(r, "referee_name", None)
             if not ref_name or ref_name == "":
                 continue
 
