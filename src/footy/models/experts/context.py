@@ -57,6 +57,9 @@ class ContextExpert(Expert):
         midweek_turn_a = np.zeros(n)
         motivation_h = np.zeros(n)
         motivation_a = np.zeros(n)
+        # v15: FPL Fixture Difficulty Rating (PL only, free data)
+        fdr_h = np.zeros(n)
+        fdr_a = np.zeros(n)
         motivation_diff = np.zeros(n)
         is_relegation_h = np.zeros(n)
         is_relegation_a = np.zeros(n)
@@ -131,6 +134,10 @@ class ContextExpert(Expert):
             rest_ratio[i] = rh / max(ra, 0.5)
             short_rest_h[i] = 1.0 if rh < 3.0 else 0.0
             short_rest_a[i] = 1.0 if ra < 3.0 else 0.0
+
+            # v15: FPL Fixture Difficulty Rating (PL only, default 3.0 = average)
+            fdr_h[i] = _f(getattr(r, "fpl_fdr_h", 3.0)) or 3.0
+            fdr_a[i] = _f(getattr(r, "fpl_fdr_a", 3.0)) or 3.0
 
             # congestion
             for team, arr7, arr14, arr30, idx in [
@@ -281,5 +288,7 @@ class ContextExpert(Expert):
                 "ctx_is_safe_h": is_safe_h, "ctx_is_safe_a": is_safe_a,
                 "ctx_is_derby": is_derby,
                 "ctx_high_stakes": high_stakes,
+                # v15: FPL Fixture Difficulty Rating
+                "ctx_fdr_h": fdr_h, "ctx_fdr_a": fdr_a,
             },
         )

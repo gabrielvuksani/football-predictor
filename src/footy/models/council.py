@@ -1029,6 +1029,25 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     features["upset_max_signal"] = np.max(upset_signals, axis=1)
     features["upset_n_active"] = np.sum(upset_signals > 0.05, axis=1).astype(float)
 
+    # ── v15: DIRECT MARKET SIGNALS for BTTS/O2.5/AH heads ──
+    # These odds are queried from DB but were never used as features before
+    features["mkt_btts_implied"] = mkt_r.features.get("mkt_btts_implied", np.zeros(n))
+    features["mkt_has_btts"] = mkt_r.features.get("mkt_has_btts", np.zeros(n))
+    features["mkt_ou25"] = mkt_r.features.get("mkt_ou25", np.zeros(n))
+    features["mkt_has_ou"] = mkt_r.features.get("mkt_has_ou", np.zeros(n))
+    features["mkt_ah_line"] = mkt_r.features.get("mkt_ah_line", np.zeros(n))
+    features["mkt_ah_implied_h"] = np.where(
+        mkt_r.features.get("mkt_ah_home", np.zeros(n)) > 1.0,
+        1.0 / mkt_r.features.get("mkt_ah_home", np.ones(n)),
+        0.5
+    )
+    features["mkt_has_ah"] = mkt_r.features.get("mkt_has_ah", np.zeros(n))
+
+    # ── v15: FPL Fixture Difficulty Rating (free, high-quality data) ──
+    ctx_fdr_h = ctx_r.features.get("ctx_fdr_h", np.zeros(n))
+    ctx_fdr_a = ctx_r.features.get("ctx_fdr_a", np.zeros(n))
+    features["ctx_fdr_diff"] = ctx_fdr_h - ctx_fdr_a
+
     # Competition encoding — one-hot for top leagues (works with all sklearn models)
     if competitions is not None:
         _COMP_LIST = ["PL", "PD", "SA", "BL1", "FL1", "DED", "ELC", "PPL", "TR1", "BEL", "GR1"]
