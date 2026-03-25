@@ -996,9 +996,10 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     features["mkt_ou25"] = mkt_r.features.get("mkt_ou25", np.zeros(n))
     features["mkt_has_ou"] = mkt_r.features.get("mkt_has_ou", np.zeros(n))
     features["mkt_ah_line"] = mkt_r.features.get("mkt_ah_line", np.zeros(n))
+    ah_home_odds = np.maximum(mkt_r.features.get("mkt_ah_home", np.ones(n)), 1.01)
     features["mkt_ah_implied_h"] = np.where(
-        mkt_r.features.get("mkt_ah_home", np.zeros(n)) > 1.0,
-        1.0 / mkt_r.features.get("mkt_ah_home", np.ones(n)),
+        mkt_r.features.get("mkt_has_ah", np.zeros(n)) > 0,
+        1.0 / ah_home_odds,
         0.5
     )
     features["mkt_has_ah"] = mkt_r.features.get("mkt_has_ah", np.zeros(n))
@@ -1040,6 +1041,17 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
 
     X = np.hstack(blocks) if blocks else np.zeros((n, 0))
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # v16: Automatic zero-feature pruning — remove columns that are >95% zero
+    # These are features from data-starved experts or rare competitions
+    # that inject noise without signal. Dynamic, adapts to data availability.
+    if X.shape[0] > 100:  # only prune with enough data
+        zero_rates = (X == 0).mean(axis=0)
+        keep_mask = zero_rates < 0.95
+        if keep_mask.sum() < X.shape[1]:
+            n_pruned = X.shape[1] - keep_mask.sum()
+            X = X[:, keep_mask]
+            log.debug("Auto-pruned %d features (>95%% zero), %d remaining", n_pruned, X.shape[1])
 
     return X
 
