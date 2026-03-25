@@ -160,7 +160,9 @@ m.utc_date, m.competition, m.home_team, m.away_team,
                ra.red_cards_per_match AS ref_red_per_match,
                ra.penalties_per_match AS ref_penalty_per_match,
                ra.home_bias_ratio AS ref_home_bias_ratio,
-               ra.historical_matches AS ref_historical_matches"""
+               ra.historical_matches AS ref_historical_matches,
+               (SELECT COUNT(*) FROM transfermarkt_injuries ti WHERE ti.team = m.home_team) AS tm_inj_count_h,
+               (SELECT COUNT(*) FROM transfermarkt_injuries ti WHERE ti.team = m.away_team) AS tm_inj_count_a"""
 
 _MATCH_JOINS = """\
 FROM matches m
@@ -723,12 +725,11 @@ def _build_meta_X(results: list[ExpertResult], experts: list[Expert] | None = No
 
 
 def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | None = None,
-                        competitions: np.ndarray | None = None) -> np.ndarray:
+                        competitions: np.ndarray | None = None) -> tuple[np.ndarray, list[str]]:
     """Build focused feature matrix for v13 Oracle model.
 
-    ~55 features organized by signal strength, replacing the 400+ feature matrix.
-    Research (Groll 2024, Fischer & Heuer 2024) shows that feature selection
-    matters more than model complexity for football prediction.
+    Returns (X, feature_names) where feature_names tracks column order exactly,
+    including after auto-pruning. This replaces the stale V13_FEATURE_NAMES constant.
     """
     if experts is None:
         experts = ALL_EXPERTS
@@ -1050,60 +1051,15 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
         keep_mask = zero_rates < 0.95
         if keep_mask.sum() < X.shape[1]:
             n_pruned = X.shape[1] - keep_mask.sum()
+            numeric_keys = [k for k, keep in zip(numeric_keys, keep_mask) if keep]
             X = X[:, keep_mask]
             log.debug("Auto-pruned %d features (>95%% zero), %d remaining", n_pruned, X.shape[1])
 
-    return X
+    return X, numeric_keys
 
 
-# Feature names for v13 (used for SHAP analysis and debugging)
-V13_FEATURE_NAMES = [
-    # Tier 1: Strongest signal
-    "mkt_ph", "mkt_pd", "mkt_pa", "elo_diff", "elo_home_adv",
-    "pois_lambda_h", "pois_lambda_a", "dc_ph", "dc_pd", "dc_pa",
-    "xg_diff_h", "xg_diff_a", "form_pts_h", "form_pts_a", "glicko_diff",
-    # Tier 2: Strong signal
-    "pois_btts", "pois_o25", "pois_cs00", "mkt_move_h", "mkt_move_a",
-    "xgr_overperf_h", "xgr_overperf_a", "h2h_bogey", "h2h_venue_wr",
-    "mot_diff", "ctx_high_stakes", "ctx_fatigue_diff", "rot_rest_adv",
-    "lt_pos_diff", "mv_ratio",
-    # Tier 3: Moderate signal
-    "consensus_ph", "consensus_var_h", "consensus_entropy",
-    "agree_elo_mkt", "agree_form_h2h", "agree_pois_mkt", "cop_ph",
-    "mom_cross_diff", "gp_first_goal_diff", "gp_cs_diff",
-    "wx_bad", "ref_bias", "inj_diff",
-    # Tier 4: Context + v13 new experts
-    "kalman_diff", "mkt_ens_disagree", "season_progress",
-    "is_derby", "is_relegation",
-    # v13 new expert features
-    "pyth_luck_h", "pyth_luck_a", "pyth_regression",
-    "gas_diff", "gas_vol_h", "gas_vol_a",
-    "abs_diff", "abs_regime_h", "abs_regime_a",
-    "hmm_dominant_h", "hmm_dominant_a", "hmm_vulnerable_h", "hmm_vulnerable_a",
-    "tf_value_dom", "tf_depth_adv",
-    # News, betting, manager, lineup features
-    "ns_tone_diff", "ns_disruption_h", "ns_disruption_a",
-    "bm_move_h", "bm_move_a", "bm_sharp_signal",
-    "mgr_bounce_h", "mgr_bounce_a", "mgr_stability_diff",
-    "lu_squad_diff", "lu_rotation_h", "lu_rotation_a",
-    # Upset interaction features
-    "upset_pyth_mkt", "upset_hmm_mkt", "upset_regime_mkt", "upset_vol_fatigue",
-    "upset_news_mkt", "upset_sharp_mkt", "upset_bounce_away", "upset_rotation_mkt",
-    # Match dynamics features
-    "md_comeback_diff", "md_collapse_h", "md_resilience_diff",
-    "md_streak_h", "md_streak_a", "md_streak_break_h", "md_card_diff",
-    # Schedule context features
-    "sc_fatigue_diff", "sc_post_intl", "sc_honeymoon_diff", "sc_congestion", "sc_schedule_adv",
-    # Additional upset interactions
-    "upset_streak_mkt", "upset_fatigue_sched", "upset_resilience_mkt",
-    # Advanced derived features
-    "elo_form_agree", "mkt_confidence", "model_disagreement",
-    "def_quality_mismatch", "xg_surplus_h",
-    "upset_composite", "upset_max_signal", "upset_n_active",
-    # Opponent-adjusted features
-    "oa_strength_diff", "oa_ppg_h", "oa_ppg_a", "ppda_diff", "style_sp_diff",
-    "pts_safety_h", "pts_safety_a", "pts_title_h", "post_intl_diff",
-]
+# V13_FEATURE_NAMES removed — feature names are now generated dynamically
+# by _build_v13_features() and saved in the model artifact.
 
 
 def _prepare_df(con, finished_only: bool = True, days: int = 1460) -> pd.DataFrame:  # v16: 4 years (was 7) — research optimal
@@ -1134,7 +1090,7 @@ def prepare_training_data(con, days: int = 1460) -> tuple[np.ndarray, np.ndarray
 
     results = _run_experts(df)
     competitions = df["competition"].to_numpy() if "competition" in df.columns else None
-    X = _build_meta_X(results, competitions=competitions)
+    X, _ = _build_v13_features(results, competitions=competitions)
     y = np.array([
         _label(int(hg), int(ag))
         for hg, ag in zip(df["home_goals"], df["away_goals"])
@@ -1226,7 +1182,7 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
 
     # build meta features — v13 focused features (research: 55 > 400+ when SNR is low)
     competitions = df["competition"].to_numpy() if "competition" in df.columns else None
-    X = _build_v13_features(all_results, competitions=competitions)
+    X, feature_names = _build_v13_features(all_results, competitions=competitions)
     y = np.array([_label(int(hg), int(ag))
                   for hg, ag in zip(df["home_goals"], df["away_goals"])], dtype=int)
 
@@ -1413,8 +1369,15 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
                         if model_name == "CAT":
                             from catboost import CatBoostClassifier
                             fold_m = CatBoostClassifier(
-                                loss_function="MultiClass", iterations=1500,
-                                learning_rate=0.037, depth=8, l2_leaf_reg=9.55,
+                                loss_function="MultiClass",
+                                iterations=1500,
+                                learning_rate=0.0397,
+                                depth=7,
+                                l2_leaf_reg=5.90,
+                                bootstrap_type="MVS",
+                                subsample=0.933,
+                                min_data_in_leaf=27,
+                                random_strength=5.80,
                                 random_seed=42, verbose=0,
                             )
                             fold_m.fit(X_fold_tr, y_fold_tr)
@@ -1422,7 +1385,16 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
                             import xgboost as xgb
                             fold_m = xgb.XGBClassifier(
                                 objective="multi:softprob", num_class=3,
-                                max_depth=5, learning_rate=0.025, n_estimators=1500,
+                                max_depth=5,
+                                min_child_weight=13,
+                                gamma=0.38,
+                                subsample=0.73,
+                                colsample_bytree=0.90,
+                                learning_rate=0.025,
+                                n_estimators=1500,
+                                reg_alpha=0.003,
+                                reg_lambda=8.46,
+                                max_delta_step=1,
                                 random_state=42, verbosity=0,
                             )
                             fold_m.fit(X_fold_tr, y_fold_tr, verbose=False)
@@ -1549,6 +1521,12 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
     Y[np.arange(len(yte)), yte] = 1.0
     brier = float(np.mean(np.sum((P - Y) ** 2, axis=1) / 3))
     acc = float(np.mean(np.argmax(P, axis=1) == yte))
+
+    # RPS — Ranked Probability Score (proper scoring rule for ordered outcomes)
+    # Lower is better. Random baseline ~0.222, good model < 0.19
+    cum_pred = np.cumsum(P, axis=1)[:, :2]
+    cum_true = np.cumsum(Y, axis=1)[:, :2]
+    rps = float(np.mean(np.sum((cum_pred - cum_true) ** 2, axis=1) / 2))
 
     # ECE (10-bin)
     c_max = P.max(axis=1)
@@ -1705,7 +1683,7 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
         "n_experts": len(ALL_EXPERTS),
         "wf_gate_passed": wf_passed,
         "version": MODEL_VERSION,
-        "feature_names": V13_FEATURE_NAMES[:X.shape[1]],
+        "feature_names": feature_names,
     }
 
     if wf_passed:
@@ -1721,7 +1699,7 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
 
     out = {
         "n_train": n_tr, "n_test": n_te,
-        "logloss": round(logloss, 5), "brier": round(brier, 5),
+        "logloss": round(logloss, 5), "brier": round(brier, 5), "rps": round(rps, 5),
         "accuracy": round(acc, 4), "ece": round(float(ece), 4),
         "n_features": int(X.shape[1]),
         "n_experts": len(ALL_EXPERTS),
@@ -1906,16 +1884,19 @@ def predict_upcoming(con, lookahead_days: int = 7, verbose: bool = True) -> int:
     # No hard-coded weights needed. Trust the trained model.
     # ================================================================
     up_competitions = up["competition"].to_numpy() if "competition" in up.columns else None
-    X = _build_v13_features(tail_results, competitions=up_competitions)
+    X, pred_feature_names = _build_v13_features(tail_results, competitions=up_competitions)
 
-    # Feature-count validation
-    expected_n_features = obj.get("n_features")
-    if expected_n_features is not None and X.shape[1] != expected_n_features:
-        if X.shape[1] < expected_n_features:
-            pad = np.zeros((X.shape[0], expected_n_features - X.shape[1]))
-            X = np.hstack([X, pad])
-        else:
-            X = X[:, :expected_n_features]
+    # Stable feature alignment — match prediction features to training feature set
+    saved_names = obj.get("feature_names", [])
+    if saved_names and pred_feature_names != saved_names:
+        name_to_col = {name: i for i, name in enumerate(pred_feature_names)}
+        new_X = np.zeros((X.shape[0], len(saved_names)))
+        for j, sname in enumerate(saved_names):
+            if sname in name_to_col:
+                new_X[:, j] = X[:, name_to_col[sname]]
+        X = new_X
+        log.debug("Aligned %d prediction features to %d training features",
+                  len(pred_feature_names), len(saved_names))
 
     # Layer 2: Multi-model stacking at prediction time
     cat_model_pred = obj.get("cat_model")

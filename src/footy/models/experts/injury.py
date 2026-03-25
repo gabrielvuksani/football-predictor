@@ -1,4 +1,4 @@
-"""InjuryAvailabilityExpert — FPL + API-Football injury/suspension data."""
+"""InjuryAvailabilityExpert — FPL + API-Football + Transfermarkt injury/suspension data."""
 from __future__ import annotations
 
 import math
@@ -11,19 +11,11 @@ from footy.models.experts._base import Expert, ExpertResult, _f, _norm3
 
 class InjuryAvailabilityExpert(Expert):
     """
-    Incorporates player availability from FPL + API-Football data.
+    Incorporates player availability from FPL + API-Football + Transfermarkt data.
 
-    Reads columns JOINed by _prepare_df:
-      - fpl_inj_score_h/a, fpl_squad_str_h/a, fpl_available_h/a,
-        fpl_doubtful_h/a, fpl_injured_h/a, fpl_suspended_h/a
-      - fpl_fdr_h/a, fpl_fdr6_h/a  (fixture difficulty 1-5)
-      - af_inj_h/a  (API-Football injury counts)
-
-    Improvements over v10:
-      - **Reads suspended player data** (fpl_suspended_h/a)
-      - **Reads FDR6** (6-match lookahead fixture difficulty)
-      - **Increased probability impact** (from 0.02 to 0.04 per unit)
-      - **FDR future schedule asymmetry** feature
+    v16: Added Transfermarkt injury fallback for all 18 leagues. Previously
+    only PL had injury data (FPL). Now reads tm_inj_count_h/a from the
+    transfermarkt_injuries table as a universal fallback.
     """
     name = "injury"
 
@@ -107,9 +99,23 @@ class InjuryAvailabilityExpert(Expert):
             af_inj_h[i] = _af_h
             af_inj_a[i] = _af_a
 
-            # Combined injury differential: FPL score + AF counts + suspensions
-            total_h = inj_score_h[i] + _af_h * 0.1 + _sus_h * 0.15
-            total_a = inj_score_a[i] + _af_a * 0.1 + _sus_a * 0.15
+            # v16: Transfermarkt injury counts (available for all leagues)
+            _tm_h = _f(getattr(r, 'tm_inj_count_h', None))
+            _tm_a = _f(getattr(r, 'tm_inj_count_a', None))
+
+            # Use Transfermarkt as fallback when FPL/AF data unavailable
+            has_fpl_data = (_is_h > 0 or _is_a > 0 or (_ss_h is not None and not (isinstance(_ss_h, float) and math.isnan(_ss_h))))
+            has_af_data = (_af_h > 0 or _af_a > 0)
+            if not has_fpl_data and not has_af_data and (_tm_h > 0 or _tm_a > 0):
+                # Approximate FPL-scale injury_score from Transfermarkt count
+                inj_score_h[i] = min(_tm_h / 10.0, 1.0)
+                inj_score_a[i] = min(_tm_a / 10.0, 1.0)
+                unavailable_h[i] = _tm_h
+                unavailable_a[i] = _tm_a
+
+            # Combined injury differential: FPL score + AF counts + TM counts + suspensions
+            total_h = inj_score_h[i] + _af_h * 0.1 + _sus_h * 0.15 + (0 if has_fpl_data else _tm_h * 0.08)
+            total_a = inj_score_a[i] + _af_a * 0.1 + _sus_a * 0.15 + (0 if has_fpl_data else _tm_a * 0.08)
             inj_diff[i] = total_h - total_a
             squad_str_diff[i] = squad_str_h[i] - squad_str_a[i]
 
@@ -121,10 +127,11 @@ class InjuryAvailabilityExpert(Expert):
             probs[i] = list(_norm3(p_h, p_d, p_a))
 
             # Confidence: based on data availability — higher ceiling
-            has_fpl = 1.0 if (_is_h > 0 or _is_a > 0 or _ss_h is not None) else 0.0
-            has_af = 1.0 if (_af_h > 0 or _af_a > 0) else 0.0
+            has_fpl_flag = 1.0 if has_fpl_data else 0.0
+            has_af_flag = 1.0 if has_af_data else 0.0
             has_sus = 1.0 if (_sus_h > 0 or _sus_a > 0) else 0.0
-            conf[i] = min(0.6, has_fpl * 0.3 + has_af * 0.2 + has_sus * 0.1)
+            has_tm = 1.0 if (_tm_h > 0 or _tm_a > 0) else 0.0
+            conf[i] = min(0.6, has_fpl_flag * 0.3 + has_af_flag * 0.2 + has_sus * 0.1 + has_tm * 0.2)
 
         return ExpertResult(
             probs=probs,

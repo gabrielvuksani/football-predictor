@@ -1,8 +1,12 @@
-"""Expert modules for the v14 Apex prediction system.
+"""Expert modules for the v16 Sentinel prediction system.
 
-Provides 50 specialised experts that each produce probability distributions
+Provides 45 specialised experts that each produce probability distributions
 + domain-specific features. Import ``ALL_EXPERTS`` for the default ordered
 list, or import individual expert classes as needed.
+
+v16 changes:
+- Removed 5 data-starved experts that consistently produced flat 1/3
+  (NewsSentiment, Opta, CrowdMomentum, Lineup, Transfer)
 
 v12 changes:
 - Re-enabled 6 previously-excluded experts (Injury, Weather, Referee,
@@ -129,17 +133,14 @@ ALL_EXPERTS: list[Expert] = [
     GASExpert(),               # Score-driven dynamic strength (Koopman & Lit 2019)
     AdaptiveBayesianExpert(),  # Spike-and-slab adaptive shrinkage
     HMMExpert(),               # Hidden Markov Model regime detection
-    TransferExpert(),          # Transfer window activity impact
-    NewsSentimentExpert(),     # News disruption and media sentiment
     BettingMovementExpert(),   # Smart money and line movement signals
     ManagerExpert(),           # Manager/coaching change detection
-    LineupExpert(),            # Lineup strength and rotation detection
     MatchDynamicsExpert(),     # HT/FT patterns, comebacks, streaks, set pieces, cards
     ScheduleContextExpert(),   # Midweek fatigue, intl breaks, promotion honeymoon, congestion
     OpponentAdjustedExpert(),  # Opponent-quality-adjusted metrics, PPDA, set piece style, pts to safety
-    OptaExpert(),              # Opta/TheAnalyst win probability predictions
-    CrowdMomentumExpert(),     # Stadium atmosphere, home fortress, altitude, capacity
     MoraleExpert(),            # Team confidence, fragility, recovery, consistency
+    # v16: Removed 5 data-starved experts: TransferExpert, NewsSentimentExpert,
+    # LineupExpert, OptaExpert, CrowdMomentumExpert (all produced flat 1/3 due to empty data)
 ]
 
 # Add TrueSkill expert if available

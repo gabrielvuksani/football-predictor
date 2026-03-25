@@ -621,18 +621,16 @@ def compute_venue_stats() -> int:
         con.execute(
             """INSERT OR REPLACE INTO venue_stats
                (team, competition, home_matches,
-                home_wins, home_draws, home_losses,
                 home_win_pct, home_draw_pct, home_loss_pct,
-                avg_goals_scored, avg_goals_conceded,
-                clean_sheet_pct, btts_pct, home_ppg,
+                avg_home_scored, avg_home_conceded,
+                home_clean_sheet_pct, home_btts_pct,
                 home_advantage_strength, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
             [
                 ts["team"], comp, ts["home_matches"],
-                ts["home_wins"], ts["home_draws"], ts["home_losses"],
                 ts["home_win_pct"], ts["home_draw_pct"], ts["home_loss_pct"],
                 ts["avg_goals_scored"], ts["avg_goals_conceded"],
-                ts["clean_sheet_pct"], ts["btts_pct"], ts["home_ppg"],
+                ts["clean_sheet_pct"], ts["btts_pct"],
                 float(advantage),
             ],
         )
