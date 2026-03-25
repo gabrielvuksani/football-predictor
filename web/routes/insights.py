@@ -31,7 +31,7 @@ async def api_value_bets(min_edge: float = Query(0.03, ge=0, le=0.5)):
             JOIN predictions p ON m.match_id = p.match_id
             LEFT JOIN match_extras e ON m.match_id = e.match_id
             WHERE m.status = 'UPCOMING'
-              AND p.model_version = 'v13_oracle'
+              AND p.model_version IN ('v15_architect','v13_oracle')
             ORDER BY m.utc_date ASC
             LIMIT 50
         """).fetchall()
@@ -85,7 +85,7 @@ async def api_btts_ou():
             SELECT m.match_id, m.home_team, m.away_team, m.competition, p.notes
             FROM matches m
             JOIN predictions p ON m.match_id = p.match_id
-            WHERE m.status = 'UPCOMING' AND p.model_version = 'v13_oracle'
+            WHERE m.status = 'UPCOMING' AND p.model_version IN ('v15_architect','v13_oracle')
             ORDER BY m.utc_date ASC
         """).fetchall()
 
@@ -130,7 +130,7 @@ async def api_accumulators():
                    p.p_home, p.p_draw, p.p_away
             FROM matches m
             JOIN predictions p ON m.match_id = p.match_id
-            WHERE m.status = 'UPCOMING' AND p.model_version = 'v13_oracle'
+            WHERE m.status = 'UPCOMING' AND p.model_version IN ('v15_architect','v13_oracle')
               AND (p.p_home > 0.55 OR p.p_away > 0.55 OR p.p_draw > 0.5)
             ORDER BY GREATEST(p.p_home, p.p_draw, p.p_away) DESC LIMIT 20
         """).fetchall()
@@ -213,7 +213,7 @@ async def api_accuracy(days_back: int = Query(30, ge=7, le=365)):
                    AVG(ps.logloss) as avg_log_loss
             FROM prediction_scores ps
             JOIN matches m ON ps.match_id = m.match_id
-            WHERE ps.model_version = 'v13_oracle'
+            WHERE ps.model_version IN ('v15_architect','v13_oracle')
               AND m.status = 'FINISHED' AND m.home_goals IS NOT NULL
               AND m.utc_date > NOW() - INTERVAL {days_back} DAY
         """).fetchone()
@@ -246,7 +246,7 @@ async def api_round_preview(competition: str):
         row = db.execute("""
             SELECT COUNT(*), AVG(GREATEST(p.p_home, p.p_draw, p.p_away))
             FROM matches m
-            LEFT JOIN predictions p ON m.match_id = p.match_id AND p.model_version = 'v13_oracle'
+            LEFT JOIN predictions p ON m.match_id = p.match_id AND p.model_version IN ('v15_architect','v13_oracle')
             WHERE m.competition = $1 AND m.status = 'UPCOMING'
               AND m.utc_date < NOW() + INTERVAL 7 DAY
         """, [competition]).fetchone()
@@ -276,7 +276,7 @@ async def api_post_match_review(days_back: int = Query(7, ge=1, le=30)):
                         ELSE 0 END
             FROM prediction_scores ps
             JOIN matches m ON ps.match_id = m.match_id
-            WHERE ps.model_version = 'v13_oracle'
+            WHERE ps.model_version IN ('v15_architect','v13_oracle')
               AND m.status = 'FINISHED' AND m.home_goals IS NOT NULL
               AND m.utc_date > NOW() - INTERVAL {days_back} DAY
         """).fetchone()

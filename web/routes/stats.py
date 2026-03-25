@@ -19,17 +19,17 @@ async def api_dashboard_stats():
 
     try:
         total_preds = db.execute(
-            "SELECT COUNT(*) FROM predictions WHERE model_version = 'v13_oracle'"
+            "SELECT COUNT(*) FROM predictions WHERE model_version IN ('v15_architect','v13_oracle')"
         ).fetchone()[0] or 0
 
         avg_conf = db.execute(
-            "SELECT AVG(GREATEST(p_home, p_draw, p_away)) FROM predictions WHERE model_version = 'v13_oracle' AND p_home IS NOT NULL"
+            "SELECT AVG(GREATEST(p_home, p_draw, p_away)) FROM predictions WHERE model_version IN ('v15_architect','v13_oracle') AND p_home IS NOT NULL"
         ).fetchone()[0] or 0.5
 
         top_pred = db.execute("""
             SELECT m.home_team, m.away_team, p.p_home, p.p_draw, p.p_away
             FROM predictions p JOIN matches m ON p.match_id = m.match_id
-            WHERE p.model_version = 'v13_oracle' AND p.p_home IS NOT NULL
+            WHERE p.model_version IN ('v15_architect','v13_oracle') AND p.p_home IS NOT NULL
             ORDER BY GREATEST(p.p_home, p.p_draw, p.p_away) DESC LIMIT 1
         """).fetchone()
 
@@ -47,7 +47,7 @@ async def api_dashboard_stats():
                         THEN COUNT(CASE WHEN ps.correct = TRUE THEN 1 END) * 100.0 / COUNT(*)
                         ELSE 0 END
             FROM prediction_scores ps JOIN matches m ON ps.match_id = m.match_id
-            WHERE ps.model_version = 'v13_oracle' AND m.status = 'FINISHED'
+            WHERE ps.model_version IN ('v15_architect','v13_oracle') AND m.status = 'FINISHED'
               AND m.home_goals IS NOT NULL AND m.utc_date > NOW() - INTERVAL 30 DAY
         """).fetchone()
         accuracy = accuracy_row[0] if accuracy_row and accuracy_row[0] else 0
@@ -55,7 +55,7 @@ async def api_dashboard_stats():
         recent_correct = db.execute("""
             SELECT COUNT(CASE WHEN ps.correct = TRUE THEN 1 END), COUNT(*)
             FROM prediction_scores ps JOIN matches m ON ps.match_id = m.match_id
-            WHERE ps.model_version = 'v13_oracle' AND m.status = 'FINISHED'
+            WHERE ps.model_version IN ('v15_architect','v13_oracle') AND m.status = 'FINISHED'
               AND m.home_goals IS NOT NULL AND m.utc_date > NOW() - INTERVAL 7 DAY
         """).fetchone()
         recent_acc = (recent_correct[0] or 0) / max(1, recent_correct[1] or 1)
@@ -88,14 +88,14 @@ async def api_stats():
         top_pred = db.execute("""
             SELECT m.home_team, m.away_team, MAX(GREATEST(p.p_home, p.p_draw, p.p_away))
             FROM matches m JOIN predictions p ON m.match_id = p.match_id
-            WHERE p.model_version = 'v13_oracle'
+            WHERE p.model_version IN ('v15_architect','v13_oracle')
             GROUP BY m.match_id, m.home_team, m.away_team
             ORDER BY MAX(GREATEST(p.p_home, p.p_draw, p.p_away)) DESC LIMIT 1
         """).fetchone()
 
         avg_conf_row = db.execute("""
             SELECT AVG(GREATEST(p_home, p_draw, p_away)), COUNT(*)
-            FROM predictions WHERE model_version = 'v13_oracle' AND p_home IS NOT NULL
+            FROM predictions WHERE model_version IN ('v15_architect','v13_oracle') AND p_home IS NOT NULL
         """).fetchone()
         avg_confidence = round(float(avg_conf_row[0]), 4) if avg_conf_row and avg_conf_row[0] is not None else 0.0
         n_predictions = int(avg_conf_row[1]) if avg_conf_row and avg_conf_row[1] else 0

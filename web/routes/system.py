@@ -41,7 +41,7 @@ async def api_ensemble_weights():
 
     try:
         import joblib
-        model_path = Path(settings.db_path).parent / "models" / "v13_oracle.joblib"
+        model_path = Path(settings.db_path).parent / "models" / "v15_architect.joblib"
         if model_path.exists():
             model = joblib.load(model_path)
             if hasattr(model, "weights_") and model.weights_ is not None:
@@ -143,7 +143,7 @@ async def api_model_lab():
         ensemble_weights = []
     return {
         "status": "active", "active_version": version,
-        "models": ["v13_oracle"],
+        "models": ["v15_architect"],
         "ensemble_weights": ensemble_weights, "expert_weights": ensemble_weights,
         "message": "Model lab available",
     }
@@ -201,7 +201,7 @@ async def api_expert_performance():
             }
             for r in rows
         ]
-        return {"experts": experts, "total": len(experts), "model_version": "v13_oracle"}
+        return {"experts": experts, "total": len(experts), "model_version": "v15_architect"}
     except Exception as e:
         return safe_error(e, "expert performance")
 

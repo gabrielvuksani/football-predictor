@@ -40,7 +40,7 @@ def summary():
 
 
 @app.command()
-def improvement(model: str = "v13_oracle", days: int = 180):
+def improvement(model: str = "v15_architect", days: int = 180):
     """Deep error analysis with actionable recommendations for model improvement."""
     from footy.performance_tracker import generate_improvement_report
     report = generate_improvement_report(model, days)
@@ -48,7 +48,7 @@ def improvement(model: str = "v13_oracle", days: int = 180):
 
 
 @app.command()
-def errors(model: str = "v13_oracle", days: int = 180):
+def errors(model: str = "v15_architect", days: int = 180):
     """Show prediction error patterns: confusion matrix, calibration, market accuracy."""
     from footy.performance_tracker import analyze_prediction_errors
     import json

@@ -6,7 +6,7 @@ Tracks model versions, training windows, validates improvements, and auto-deploy
 
 Features:
 - Drift detection: monitors prediction accuracy on recent results
-- Auto-retrain: triggers v13_oracle retraining when new-match or drift thresholds are met
+- Auto-retrain: triggers v15_architect retraining when new-match or drift thresholds are met
 - Performance gating: only deploys if new model beats current on held-out set
 - Automatic rollback: reverts if deployed model degrades within grace window
 - Full audit trail: every train/deploy/rollback is logged with metrics
@@ -74,7 +74,7 @@ class ContinuousTrainingManager:
     Example usage:
         manager = ContinuousTrainingManager()
         manager.setup_continuous_training(
-            model_type="v13_oracle",
+            model_type="v15_architect",
             retrain_threshold_matches=10,
             performance_threshold_improvement=0.01,
             grace_window_hours=24,
@@ -700,15 +700,15 @@ class ContinuousTrainingManager:
         End-to-end auto-retrain: check thresholds → train → validate → deploy/rollback.
 
         1. Checks if retraining is needed (new matches or drift detected)
-        2. Trains new v13_oracle model
+        2. Trains new v15_architect model
         3. Compares test-set performance vs current model
         4. Deploys only if performance improves (or force=True)
         5. Backs up old model artifact for rollback
 
         Returns summary dict.
         """
-        check = self.check_and_retrain("v13_oracle")
-        result = check.get("v13_oracle", {})
+        check = self.check_and_retrain("v15_architect")
+        result = check.get("v15_architect", {})
         status = result.get("status", "")
 
         if not force and status not in ("ready_to_retrain", "drift_detected"):
@@ -728,8 +728,8 @@ class ContinuousTrainingManager:
 
         # ---- Backup current model artifact ----
         model_dir = Path("data/models")
-        current_artifact = model_dir / "v13_oracle.joblib"
-        backup_artifact = model_dir / "v13_oracle.joblib.bak"
+        current_artifact = model_dir / "v15_architect.joblib"
+        backup_artifact = model_dir / "v15_architect.joblib.bak"
         if current_artifact.exists():
             shutil.copy2(current_artifact, backup_artifact)
 
@@ -788,7 +788,7 @@ class ContinuousTrainingManager:
         # ---- Record training ----
         from datetime import timezone as _tz
         ts = datetime.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
-        new_version = f"v13_oracle_{ts}"
+        new_version = f"v15_architect_{ts}"
 
         versioned_artifact = model_dir / f"{new_version}.joblib"
         if current_artifact.exists():
@@ -796,7 +796,7 @@ class ContinuousTrainingManager:
 
         record = self.record_training(
             model_version=new_version,
-            model_type="v13_oracle",
+            model_type="v15_architect",
             training_window_days=train_result.get("window_days", 3650),
             n_matches_used=new_metrics["n_train"],
             n_matches_test=new_metrics["n_test"],
@@ -807,7 +807,7 @@ class ContinuousTrainingManager:
         # ---- Deploy or rollback ----
         perf_row = self.con.execute(
             "SELECT performance_threshold_improvement FROM retraining_schedules WHERE model_type = ?",
-            ["v13_oracle"],
+            ["v15_architect"],
         ).fetchone()
         threshold = perf_row[0] if perf_row else 0.01
         improved = record.get("improvement_pct", 0) >= threshold or force
@@ -819,7 +819,7 @@ class ContinuousTrainingManager:
                     """UPDATE drift_events
                        SET retrain_completed = TRUE,
                            notes = notes || ' | retrain_completed'
-                       WHERE model_type = 'v13_oracle'
+                       WHERE model_type = 'v15_architect'
                          AND retrain_completed = FALSE
                          AND retrain_triggered = TRUE""",
                 )
@@ -838,7 +838,7 @@ class ContinuousTrainingManager:
         self._drift_event_timestamp = None
 
         if improved:
-            deploy = self.deploy_model(new_version, "v13_oracle", force=True)
+            deploy = self.deploy_model(new_version, "v15_architect", force=True)
             if verbose:
                 log.info("Auto-retrain: deployed %s (improvement %.2f%%)",
                          new_version, record["improvement_pct"] * 100.0)
@@ -883,7 +883,7 @@ class ContinuousTrainingManager:
 
         Args:
             model_version: New version identifier (e.g., "v5_ultimate_20260214_v2")
-            model_type: Model type (v5_ultimate, v13_oracle, etc.)
+            model_type: Model type (v5_ultimate, v15_architect, etc.)
             training_window_days: Number of days of data used for training
             n_matches_used: Number of matches in training set
             n_matches_test: Number of matches in test set
@@ -1131,11 +1131,11 @@ class ContinuousTrainingManager:
         from footy.models.advanced_math import extract_match_probs
 
         ensemble = SelfCalibratingEnsemble()
-        active_model = "v13_oracle"
+        active_model = "v15_architect"
         try:
             active_row = self.con.execute(
                 "SELECT active_version FROM model_deployments WHERE model_type = ?",
-                ["v13_oracle"],
+                ["v15_architect"],
             ).fetchone()
             if active_row and active_row[0]:
                 active_model = str(active_row[0])

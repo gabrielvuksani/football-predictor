@@ -33,7 +33,7 @@ async def api_last_updated():
 
     try:
         row = db.execute(
-            "SELECT MAX(created_at) FROM predictions WHERE model_version = 'v13_oracle'"
+            "SELECT MAX(created_at) FROM predictions WHERE model_version IN ('v15_architect','v13_oracle')"
         ).fetchone()
         return {"last_updated": str(row[0])[:19] if row and row[0] else None}
     except Exception:

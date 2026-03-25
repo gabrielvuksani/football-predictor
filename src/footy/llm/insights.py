@@ -25,7 +25,7 @@ from footy.providers.news_gdelt import fetch_team_news
 log = logging.getLogger("footy.llm.insights")
 
 # Active model version for consistent prediction queries
-_ACTIVE_MODEL = "v13_oracle"
+_ACTIVE_MODEL = "v15_architect"
 
 
 def _model_version() -> str:
@@ -287,7 +287,7 @@ def explain_match(
     home_pred: float,
     draw_pred: float,
     away_pred: float,
-    model_version: str = "v13_oracle"
+    model_version: str = "v15_architect"
 ) -> dict:
     """
     Generate detailed LLM explanation for why a match has given probabilities.

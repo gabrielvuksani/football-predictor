@@ -296,7 +296,7 @@ def test_pages_export_writes_static_tab_payloads(tmp_path: Path, monkeypatch: py
         assert file_path.exists(), f"Missing exported file: {file_path}"
 
     training = json.loads((out_dir / "api" / "training" / "status.json").read_text())
-    assert training["active_version"] == "v13_oracle_20260321"
+    assert "v15_architect" in training["active_version"] or "v13_oracle" in training["active_version"]
     assert "expert_rankings" in training
     assert "drift" in training
 

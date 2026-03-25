@@ -284,7 +284,7 @@ async def api_predictions_history():
                    AVG(ps.brier) AS avg_brier
             FROM prediction_scores ps
             JOIN matches m ON ps.match_id = m.match_id
-            WHERE ps.model_version = 'v13_oracle' AND m.status = 'FINISHED'
+            WHERE ps.model_version IN ('v15_architect','v13_oracle') AND m.status = 'FINISHED'
             GROUP BY week_label ORDER BY week_label ASC
         """).fetchall()
 
