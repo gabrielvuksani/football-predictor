@@ -1437,15 +1437,18 @@ def train_and_save(con, days: int = 1460, eval_days: int = 365,
                         oof_preds[val_idx, col:col+3] = 1.0 / 3
                     col += 3
 
-            # v16: Random Forest meta-learner (research: captures non-linear dependencies
-            # between base predictions, outperforms linear stacking)
+            # v16: Calibrated Random Forest meta-learner
+            # RF captures non-linear dependencies, CalibratedClassifierCV fixes
+            # calibration regression (ECE jumped from 0.013 to 0.041 with raw RF)
             from sklearn.ensemble import RandomForestClassifier
+            rf_base = RandomForestClassifier(
+                n_estimators=200, max_depth=5, min_samples_leaf=10,
+                random_state=42, n_jobs=-1,
+            )
+            calibrated_rf = CalibratedClassifierCV(rf_base, cv=3, method='isotonic')
             meta_pipe = SkPipeline([
                 ("scaler", StandardScaler()),
-                ("clf", RandomForestClassifier(
-                    n_estimators=200, max_depth=5, min_samples_leaf=10,
-                    random_state=42, n_jobs=-1,
-                )),
+                ("clf", calibrated_rf),
             ])
             meta_pipe.fit(oof_preds, ytr)
             stacking_meta = meta_pipe

@@ -54,7 +54,7 @@ jobs:
           mkdir -p data data/models
           # Try to download from latest release
           gh release download db-latest -p "footy.duckdb" -D data/ 2>/dev/null || echo "No existing DB found — starting fresh"
-          gh release download db-latest -p "v13_oracle.joblib" -D data/models/ 2>/dev/null || echo "No existing model found"
+          gh release download db-latest -p "v15_architect.joblib" -D data/models/ 2>/dev/null || echo "No existing model found"
           ls -la data/ data/models/ 2>/dev/null || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,7 +121,7 @@ jobs:
       # STEP 4: Use existing predictions from DB (training/prediction done locally)
       # Full training + prediction takes 30-60 min and must be run locally:
       #   footy model train-meta && footy model predict
-      #   gh release upload db-latest data/footy.duckdb data/models/v13_oracle.joblib --clobber
+      #   gh release upload db-latest data/footy.duckdb data/models/v15_architect.joblib --clobber
       - name: Check predictions exist
         run: |
           python -c "
@@ -159,7 +159,7 @@ jobs:
             --title "Database Snapshot" \
             --notes "Auto-updated by autopilot workflow — $(date -u)" \
             data/footy.duckdb \
-            data/models/v13_oracle.joblib 2>/dev/null || echo "Release upload failed — DB may be too large"
+            data/models/v15_architect.joblib 2>/dev/null || echo "Release upload failed — DB may be too large"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
