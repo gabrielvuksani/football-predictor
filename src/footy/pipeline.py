@@ -614,6 +614,14 @@ def score_finished_predictions(verbose: bool = True) -> dict:
         # Check if retraining is recommended
         if loop.should_retrain():
             log.warning("Self-learning loop recommends model retraining — drift detected or accuracy declining")
+
+        # v15: Persist Hedge weights and league temperatures to DB
+        try:
+            from footy.db import connect
+            write_con = connect()
+            loop.persist_to_db(write_con)
+        except Exception as persist_err:
+            log.debug("Failed to persist self-learning state: %s", persist_err)
     except Exception as e:
         log.debug("self-learning feedback: %s", e)
 
