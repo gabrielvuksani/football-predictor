@@ -779,8 +779,7 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     lt_r = _r("league_table"); mom_r = _r("momentum"); mot_r = _r("motivation")
     kalman_r = _r("kalman_elo"); glicko_r = _r("glicko2")
     xgr_r = _r("xg_regression"); rot_r = _r("squad_rotation")
-    gp_r = _r("goal_pattern"); ref_r = _r("referee"); wx_r = _r("weather")
-    inj_r = _r("injury"); mv_r = _r("market_value")
+    gp_r = _r("goal_pattern"); mv_r = _r("market_value")
 
     # ── TIER 1: Strongest signal (~15 features) ──
     # Market implied probabilities (strongest single predictor per research)
@@ -848,44 +847,54 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     # Market value
     features["mv_ratio"] = mv_r.features.get("mv_value_ratio", np.zeros(n))
 
-    # ── TIER 3: Moderate signal (~15 features) ──
-    # Expert consensus stats
+    # ══════════════════════════════════════════════════════════════
+    # v16 SENTINEL: PRUNED & FOCUSED FEATURE SET (~50 features)
+    # Research: 15-25 well-chosen features outperform 140 noisy ones.
+    # Removed: ~90 features that were mostly zeros or redundant.
+    # Added: draw-specific features, rolling composites, league cluster.
+    # ══════════════════════════════════════════════════════════════
+
+    # ── TIER 3: Composite signals (merging redundant experts) ──
     all_probs = np.stack([r.probs for r in results], axis=0)
     mean_probs = np.nan_to_num(np.mean(all_probs, axis=0), nan=1.0/3)
     features["consensus_ph"] = mean_probs[:, 0]
     features["consensus_var_h"] = np.var(all_probs[:, :, 0], axis=0)
     features["consensus_entropy"] = -np.sum(mean_probs * np.log(mean_probs + 1e-12), axis=1)
 
-    # Key expert agreements
-    features["agree_elo_mkt"] = 1.0 - np.abs(elo_r.probs[:, 0] - mkt_r.probs[:, 0])
-    features["agree_form_h2h"] = 1.0 - np.abs(form_r.probs[:, 0] - h2h_r.probs[:, 0])
-    features["agree_pois_mkt"] = 1.0 - np.abs(pois_r.probs[:, 0] - mkt_r.probs[:, 0])
+    # Composite rating diff (merges 7 redundant rating systems into 1)
+    # Instead of: elo_diff, glicko_diff, kalman_diff, gas_diff, abs_diff, pi_diff, network_diff
+    kalman_r = _r("kalman_elo"); gas_r = _r("gas"); abs_r = _r("adaptive_bayesian")
+    pi_r = _r("pi_rating")
+    rating_diffs = np.column_stack([
+        features["elo_diff"],
+        features["glicko_diff"],
+        kalman_r.features.get("kalman_diff", np.zeros(n)),
+        gas_r.features.get("gas_diff", np.zeros(n)),
+        abs_r.features.get("abs_diff", np.zeros(n)),
+        pi_r.features.get("pi_diff", np.zeros(n)),
+    ])
+    features["rating_composite_diff"] = np.mean(rating_diffs, axis=1)
+    features["rating_disagreement"] = np.std(rating_diffs, axis=1)
 
-    # Copula (Frank) probability
+    # Composite goal model (merges 8 Poisson variants into key signals)
     cop_r = _r("copula")
     features["cop_ph"] = cop_r.probs[:, 0]
+    features["goal_model_agree"] = 1.0 - np.abs(pois_r.probs[:, 0] - cop_r.probs[:, 0])
 
-    # Momentum
+    # Key agreement signals (kept — these are genuinely informative)
+    features["agree_elo_mkt"] = 1.0 - np.abs(elo_r.probs[:, 0] - mkt_r.probs[:, 0])
+    features["agree_pois_mkt"] = 1.0 - np.abs(pois_r.probs[:, 0] - mkt_r.probs[:, 0])
+
+    # Momentum (single composite instead of multiple)
     features["mom_cross_diff"] = mom_r.features.get("mom_ema_cross_diff", np.zeros(n))
 
-    # Goal patterns
+    # Goal patterns (pruned to 1 feature from 4)
     gp_first_h = gp_r.features.get("gp_first_goal_h", np.zeros(n))
     gp_first_a = gp_r.features.get("gp_first_goal_a", np.zeros(n))
     features["gp_first_goal_diff"] = gp_first_h - gp_first_a
-    gp_cs_h = gp_r.features.get("gp_cs_vs_top_h", np.zeros(n))
-    gp_cs_a = gp_r.features.get("gp_cs_vs_top_a", np.zeros(n))
-    features["gp_cs_diff"] = gp_cs_h - gp_cs_a
 
-    # Weather, referee, injury
-    features["wx_bad"] = wx_r.features.get("wx_bad_weather", np.zeros(n))
-    features["ref_bias"] = ref_r.features.get("ref_home_bias", np.zeros(n))
-    features["inj_diff"] = inj_r.features.get("inj_diff", np.zeros(n))
-
-    # ── TIER 4: Context + v13 New Expert Signals (~20 features) ──
-    # Kalman strength
-    features["kalman_diff"] = kalman_r.features.get("kalman_diff", np.zeros(n))
-
-    # Upset composite: market-ensemble disagreement
+    # ── TIER 4: Context signals (pruned heavily) ──
+    # Market-ensemble disagreement (strong upset signal)
     conf_weights = np.stack([r.confidence for r in results], axis=0)
     conf_sum = conf_weights.sum(axis=0, keepdims=True) + 1e-12
     weighted_ph = np.sum(all_probs[:, :, 0] * (conf_weights / conf_sum), axis=0)
@@ -895,192 +904,65 @@ def _build_v13_features(results: list[ExpertResult], experts: list[Expert] | Non
     sp_r = _r("seasonal_pattern")
     features["season_progress"] = sp_r.features.get("sp_season_progress", np.zeros(n))
 
-    # Derby flag
+    # Context flags (kept — binary flags are cheap and occasionally strong)
     features["is_derby"] = ctx_r.features.get("ctx_is_derby", np.zeros(n))
-
-    # Relegation flag
     features["is_relegation"] = ctx_r.features.get("ctx_is_relegation_a", np.zeros(n))
 
-    # ── v13 NEW EXPERT FEATURES ──
-    # Pythagorean expectation — strongest regression-to-mean signal
+    # Pythagorean regression (strongest regression-to-mean signal)
     pyth_r = _r("pythagorean")
-    features["pyth_luck_h"] = pyth_r.features.get("pyth_luck_h", np.zeros(n))
-    features["pyth_luck_a"] = pyth_r.features.get("pyth_luck_a", np.zeros(n))
     features["pyth_regression"] = pyth_r.features.get("pyth_regression_signal", np.zeros(n))
 
-    # GAS dynamic strength — score-driven, robust to outliers
-    gas_r = _r("gas")
-    features["gas_diff"] = gas_r.features.get("gas_diff", np.zeros(n))
-    features["gas_vol_h"] = gas_r.features.get("gas_volatility_h", np.zeros(n))
-    features["gas_vol_a"] = gas_r.features.get("gas_volatility_a", np.zeros(n))
-
-    # Adaptive Bayesian — spike-and-slab regime detection
-    abs_r = _r("adaptive_bayesian")
-    features["abs_diff"] = abs_r.features.get("abs_diff", np.zeros(n))
-    features["abs_regime_h"] = abs_r.features.get("abs_regime_h", np.zeros(n))
-    features["abs_regime_a"] = abs_r.features.get("abs_regime_a", np.zeros(n))
-
-    # HMM team states — performance regime detection
+    # HMM state composite (merges 4 HMM features into 1 mismatch signal)
     hmm_r = _r("hmm")
-    features["hmm_dominant_h"] = hmm_r.features.get("hmm_dominant_h", np.zeros(n))
-    features["hmm_dominant_a"] = hmm_r.features.get("hmm_dominant_a", np.zeros(n))
-    features["hmm_vulnerable_h"] = hmm_r.features.get("hmm_vulnerable_h", np.zeros(n))
-    features["hmm_vulnerable_a"] = hmm_r.features.get("hmm_vulnerable_a", np.zeros(n))
-
-    # Transfer impact
-    tf_r = _r("transfer")
-    features["tf_value_dom"] = tf_r.features.get("tf_value_dominance", np.zeros(n))
-    features["tf_depth_adv"] = tf_r.features.get("tf_depth_advantage", np.zeros(n))
-
-    # News sentiment — media disruption detection
-    ns_r = _r("news_sentiment")
-    features["ns_tone_diff"] = ns_r.features.get("ns_tone_diff", np.zeros(n))
-    features["ns_disruption_h"] = ns_r.features.get("ns_disruption_h", np.zeros(n))
-    features["ns_disruption_a"] = ns_r.features.get("ns_disruption_a", np.zeros(n))
-
-    # Betting movement — smart money detection
-    bm_r = _r("betting_movement")
-    features["bm_move_h"] = bm_r.features.get("bm_move_h", np.zeros(n))
-    features["bm_move_a"] = bm_r.features.get("bm_move_a", np.zeros(n))
-    features["bm_sharp_signal"] = bm_r.features.get("bm_sharp_signal", np.zeros(n))
-
-    # Manager impact — coaching change detection
-    mgr_r = _r("manager")
-    features["mgr_bounce_h"] = mgr_r.features.get("mgr_bounce_h", np.zeros(n))
-    features["mgr_bounce_a"] = mgr_r.features.get("mgr_bounce_a", np.zeros(n))
-    features["mgr_stability_diff"] = (
-        mgr_r.features.get("mgr_stability_h", np.zeros(n)) -
-        mgr_r.features.get("mgr_stability_a", np.zeros(n))
+    features["hmm_state_mismatch"] = (
+        hmm_r.features.get("hmm_dominant_h", np.zeros(n)) -
+        hmm_r.features.get("hmm_dominant_a", np.zeros(n))
     )
 
-    # Lineup strength — rotation and availability
-    lu_r = _r("lineup")
-    features["lu_squad_diff"] = (
-        lu_r.features.get("lu_squad_strength_h", np.zeros(n)) -
-        lu_r.features.get("lu_squad_strength_a", np.zeros(n))
-    )
-    features["lu_rotation_h"] = lu_r.features.get("lu_rotation_risk_h", np.zeros(n))
-    features["lu_rotation_a"] = lu_r.features.get("lu_rotation_risk_a", np.zeros(n))
-
-    # ── UPSET INTERACTION FEATURES ──
-    # These cross signals from multiple experts to detect upsets
-    mkt_ph = features["mkt_ph"]
-    # Pythagorean luck × market favourite — overperforming favourite regresses
-    features["upset_pyth_mkt"] = features["pyth_luck_h"] * mkt_ph
-    # HMM vulnerable × market favourite — regime mismatch
-    features["upset_hmm_mkt"] = features["hmm_vulnerable_h"] * mkt_ph
-    # Adaptive Bayesian regime change × market — team in flux
-    features["upset_regime_mkt"] = features["abs_regime_h"] * mkt_ph
-    # GAS volatility × fatigue — unpredictable + tired
-    features["upset_vol_fatigue"] = features["gas_vol_h"] * features["ctx_fatigue_diff"]
-    # News disruption × market favourite — bad news for favourite
-    features["upset_news_mkt"] = features.get("ns_disruption_h", np.zeros(n)) * mkt_ph
-    # Betting movement against favourite — sharp money opposing
-    features["upset_sharp_mkt"] = features.get("bm_sharp_signal", np.zeros(n)) * (1.0 - mkt_ph)
-    # Manager bounce for underdog — new manager energy
-    features["upset_bounce_away"] = features.get("mgr_bounce_a", np.zeros(n)) * (1.0 - mkt_ph)
-    # Lineup rotation for favourite — weakened team
-    features["upset_rotation_mkt"] = features.get("lu_rotation_h", np.zeros(n)) * mkt_ph
-
-    # ── MATCH DYNAMICS FEATURES ──
-    md_r = _r("match_dynamics")
-    features["md_comeback_diff"] = md_r.features.get("md_comeback_a", np.zeros(n)) - md_r.features.get("md_comeback_h", np.zeros(n))
-    features["md_collapse_h"] = md_r.features.get("md_collapse_h", np.zeros(n))
-    features["md_resilience_diff"] = md_r.features.get("md_resilience_a", np.zeros(n)) - md_r.features.get("md_resilience_h", np.zeros(n))
-    features["md_streak_h"] = md_r.features.get("md_streak_h", np.zeros(n))
-    features["md_streak_a"] = md_r.features.get("md_streak_a", np.zeros(n))
-    features["md_streak_break_h"] = md_r.features.get("md_streak_break_h", np.zeros(n))
-    features["md_card_diff"] = md_r.features.get("md_card_rate_h", np.zeros(n)) - md_r.features.get("md_card_rate_a", np.zeros(n))
-
-    # ── SCHEDULE CONTEXT FEATURES ──
-    sched_r = _r("schedule_context")
-    features["sc_fatigue_diff"] = sched_r.features.get("sc_midweek_fatigue_h", np.zeros(n)) - sched_r.features.get("sc_midweek_fatigue_a", np.zeros(n))
-    features["sc_post_intl"] = sched_r.features.get("sc_post_intl_break", np.zeros(n))
-    features["sc_honeymoon_diff"] = sched_r.features.get("sc_promoted_honeymoon_h", np.zeros(n)) - sched_r.features.get("sc_promoted_honeymoon_a", np.zeros(n))
-    features["sc_congestion"] = sched_r.features.get("sc_holiday_congestion", np.zeros(n))
-    features["sc_schedule_adv"] = sched_r.features.get("sc_schedule_advantage", np.zeros(n))
-
-    # ── ADDITIONAL UPSET INTERACTIONS with dynamics/schedule ──
-    features["upset_streak_mkt"] = features["md_streak_break_h"] * mkt_ph  # winning streak about to break
-    features["upset_fatigue_sched"] = features.get("sc_fatigue_diff", np.zeros(n)) * mkt_ph  # fatigued favourite
-    features["upset_resilience_mkt"] = features["md_resilience_diff"] * (1.0 - mkt_ph)  # resilient underdog
-
-    # ── OPPONENT-ADJUSTED FEATURES (research: top 3 feature category) ──
+    # Opponent-adjusted PPG (strongest from that expert)
     oa_r = _r("opponent_adjusted")
     features["oa_strength_diff"] = oa_r.features.get("oa_strength_diff", np.zeros(n))
-    features["oa_ppg_h"] = oa_r.features.get("oa_ppg_h", np.zeros(n))
-    features["oa_ppg_a"] = oa_r.features.get("oa_ppg_a", np.zeros(n))
-    features["ppda_diff"] = oa_r.features.get("ppda_h", np.zeros(n)) - oa_r.features.get("ppda_a", np.zeros(n))
-    features["style_sp_diff"] = oa_r.features.get("style_set_piece_h", np.zeros(n)) - oa_r.features.get("style_set_piece_a", np.zeros(n))
-    features["pts_safety_h"] = oa_r.features.get("pts_to_safety_h", np.zeros(n))
-    features["pts_safety_a"] = oa_r.features.get("pts_to_safety_a", np.zeros(n))
-    features["pts_title_h"] = oa_r.features.get("pts_to_title_h", np.zeros(n))
-    features["post_intl_diff"] = oa_r.features.get("post_intl_record_h", np.zeros(n)) - oa_r.features.get("post_intl_record_a", np.zeros(n))
+    features["pts_safety_diff"] = (
+        oa_r.features.get("pts_to_safety_h", np.zeros(n)) -
+        oa_r.features.get("pts_to_safety_a", np.zeros(n))
+    )
 
-    # ── ADVANCED DERIVED FEATURES — Data manipulation for maximum signal ──
-    # These combine multiple expert signals in ways proven by research to be predictive
-
-    # 1. Elo × Form agreement — when rating AND form agree, prediction is stronger
+    # ── ADVANCED DERIVED FEATURES ──
     features["elo_form_agree"] = features["elo_diff"] * (features["form_pts_h"] - features["form_pts_a"])
-
-    # ── CROWD/STADIUM FEATURES ──
-    crowd_r = _r("crowd_momentum")
-    features["cm_home_fortress"] = crowd_r.features.get("cm_home_fortress_h", np.zeros(n))
-    features["cm_away_fortress"] = crowd_r.features.get("cm_away_fortress_a", np.zeros(n))
-    features["cm_dominance"] = crowd_r.features.get("cm_home_dominance", np.zeros(n))
-    features["cm_capacity"] = crowd_r.features.get("cm_capacity", np.zeros(n))
-
-    # ── MORALE/PSYCHOLOGY FEATURES ──
-    morale_r = _r("morale")
-    features["ml_confidence_diff"] = morale_r.features.get("ml_confidence_h", np.zeros(n)) - morale_r.features.get("ml_confidence_a", np.zeros(n))
-    features["ml_fragility_diff"] = morale_r.features.get("ml_fragility_h", np.zeros(n)) - morale_r.features.get("ml_fragility_a", np.zeros(n))
-    features["ml_recovery_diff"] = morale_r.features.get("ml_recovery_h", np.zeros(n)) - morale_r.features.get("ml_recovery_a", np.zeros(n))
-    features["ml_consistency_diff"] = morale_r.features.get("ml_consistency_h", np.zeros(n)) - morale_r.features.get("ml_consistency_a", np.zeros(n))
-
-    # ── OPTA PREDICTIONS ──
-    opta_r = _r("opta")
-    features["opta_ph"] = opta_r.features.get("opta_ph", np.zeros(n))
-    features["opta_pd"] = opta_r.features.get("opta_pd", np.zeros(n))
-    features["opta_pa"] = opta_r.features.get("opta_pa", np.zeros(n))
-    features["opta_has"] = opta_r.features.get("opta_has", np.zeros(n))
-
-    # 2. Market confidence — how extreme is the market favourite?
     features["mkt_confidence"] = np.abs(features["mkt_ph"] - features["mkt_pa"])
-
-    # 3. Multi-model disagreement — when models diverge, upsets are more likely
-    model_stack = np.column_stack([
+    features["model_disagreement"] = np.std(np.column_stack([
         features["mkt_ph"], features.get("dc_ph", np.zeros(n)),
         features["consensus_ph"], features["cop_ph"],
         elo_r.probs[:, 0], pois_r.probs[:, 0],
-    ])
-    features["model_disagreement"] = np.std(model_stack, axis=1)
-
-    # 4. Defensive quality matchup — strong defense vs weak attack = low scoring
+    ]), axis=1)
     features["def_quality_mismatch"] = (
-        form_r.features.get("form_ga_h", np.zeros(n)) -  # home goals conceded
-        form_r.features.get("form_gf_a", np.zeros(n))     # away goals scored
+        form_r.features.get("form_ga_h", np.zeros(n)) -
+        form_r.features.get("form_gf_a", np.zeros(n))
     )
 
-    # 5. Expected goals surplus — teams consistently outscoring xG will regress
-    features["xg_surplus_h"] = features["form_pts_h"] - features.get("xgr_overperf_h", np.zeros(n))
+    # Single upset composite (replaces 11 individual interaction features)
+    features["upset_composite"] = (
+        features["pyth_regression"] * 0.2 +
+        features["hmm_state_mismatch"] * 0.2 +
+        features["model_disagreement"] * 0.3 +
+        features["mkt_ens_disagree"] * 0.3
+    )
 
-    # 6. Combined upset risk — weighted sum of all upset signals
-    upset_signals = np.column_stack([
-        features.get("upset_pyth_mkt", np.zeros(n)),
-        features.get("upset_hmm_mkt", np.zeros(n)),
-        features.get("upset_regime_mkt", np.zeros(n)),
-        features.get("upset_vol_fatigue", np.zeros(n)),
-        features.get("upset_news_mkt", np.zeros(n)),
-        features.get("upset_sharp_mkt", np.zeros(n)),
-        features.get("upset_bounce_away", np.zeros(n)),
-        features.get("upset_rotation_mkt", np.zeros(n)),
-        features.get("upset_streak_mkt", np.zeros(n)),
-        features.get("upset_fatigue_sched", np.zeros(n)),
-        features.get("upset_resilience_mkt", np.zeros(n)),
-    ])
-    features["upset_composite"] = np.mean(upset_signals, axis=1)
-    features["upset_max_signal"] = np.max(upset_signals, axis=1)
-    features["upset_n_active"] = np.sum(upset_signals > 0.05, axis=1).astype(float)
+    # ── v16: LEAGUE CLUSTER FEATURE ──
+    # Research: per-league models improve draw prediction significantly
+    # Cluster A (attacking, low draws): BL1, DED, FL1
+    # Cluster B (balanced): PL, PD, ELC, PPL
+    # Cluster C (defensive, high draws): SA, TR1, GR1, BEL
+    _CLUSTER_MAP = {
+        "BL1": 0, "DED": 0, "FL1": 0, "SE1": 0, "NO1": 0,  # attacking
+        "PL": 1, "PD": 1, "ELC": 1, "PPL": 1, "SWS": 1, "DK1": 1, "PL1": 1,  # balanced
+        "SA": 2, "TR1": 2, "GR1": 2, "BEL": 2, "SL": 2, "PT1": 2,  # defensive
+    }
+    if competitions is not None:
+        comp_arr = np.array([str(c) for c in competitions])
+        features["league_cluster"] = np.array([
+            _CLUSTER_MAP.get(c, 1) for c in comp_arr
+        ], dtype=float)
 
     # ── v16: DRAW-SPECIFIC FEATURES ──
     # Research shows draws are 27% of outcomes but predicted at only 20-35% precision.
